@@ -155,7 +155,7 @@ export const AppointmentFormModal: React.FC<AppointmentFormModalProps> = ({
       setTime(res.slots[0].hora);
       setSelectedN8nInicio(res.slots[0].inicio);
     } else if (res.slots.length === 0) {
-      setSlotsInfo(res.mensagem || 'Nenhum horário livre retornado pelo n8n nesta data.');
+      setSlotsInfo(res.mensagem || 'Nenhum horário livre encontrado nesta data.');
       setSelectedN8nInicio('');
     }
     setSlotsLoading(false);
@@ -262,7 +262,7 @@ export const AppointmentFormModal: React.FC<AppointmentFormModalProps> = ({
                 {existingAppointment ? 'Editar Consulta Médica' : 'Novo Agendamento'}
               </h3>
               <p className="text-xs text-slate-400">
-                Integrado ao Supabase Realtime & disponibilidade n8n
+                Verificação automática de horários disponíveis e confirmação de consulta
               </p>
             </div>
           </div>
@@ -488,11 +488,11 @@ export const AppointmentFormModal: React.FC<AppointmentFormModalProps> = ({
               </div>
             </div>
 
-            {/* n8n Availability Bar */}
+            {/* Availability Bar */}
             <div className="p-3 bg-sky-50/70 rounded-xl border border-sky-200/80 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] font-bold text-sky-900">
-                  Horários Disponíveis (Webhook n8n)
+                  Horários Disponíveis
                 </span>
                 <button
                   type="button"
@@ -508,7 +508,7 @@ export const AppointmentFormModal: React.FC<AppointmentFormModalProps> = ({
               {slotsLoading ? (
                 <div className="text-[11px] text-sky-700 flex items-center gap-1.5 py-1">
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Consultando agenda em tempo real no n8n...</span>
+                  <span>Consultando agenda em tempo real...</span>
                 </div>
               ) : n8nSlots.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5">
@@ -532,7 +532,7 @@ export const AppointmentFormModal: React.FC<AppointmentFormModalProps> = ({
                 </div>
               ) : (
                 <p className="text-[11px] text-slate-600">
-                  {slotsInfo || 'Nenhum horário disponível retornado pelo n8n — você ainda pode definir um horário manual ou encaixe acima.'}
+                  {slotsInfo || 'Nenhum horário disponível sugerido — você ainda pode definir um horário manual ou encaixe acima.'}
                 </p>
               )}
             </div>
@@ -598,15 +598,15 @@ export const AppointmentFormModal: React.FC<AppointmentFormModalProps> = ({
               />
             </label>
 
-            {/* n8n Sync Toggle */}
+            {/* Automatic Notification Toggle */}
             {!existingAppointment && (
               <label className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 flex items-center justify-between gap-2 cursor-pointer">
                 <div className="text-xs text-emerald-900">
                   <span className="font-bold flex items-center gap-1">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                    Notificar via n8n
+                    Enviar Confirmação Automática
                   </span>
-                  <span className="text-[11px] text-emerald-700">Envia confirmação ao fluxo WhatsApp/Agenda.</span>
+                  <span className="text-[11px] text-emerald-700">Notifica o paciente sobre a consulta via WhatsApp.</span>
                 </div>
                 <input
                   type="checkbox"

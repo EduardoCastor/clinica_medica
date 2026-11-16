@@ -48,6 +48,7 @@ export const ClinicSettings: React.FC = () => {
     clinic.n8nWebhookAgendamento || DEFAULT_N8N_WEBHOOK_AGENDAMENTO
   );
 
+  const [activeSection, setActiveSection] = useState<'geral' | 'integracoes'>('geral');
   const [isSaved, setIsSaved] = useState(false);
 
   // New Branch Modal State
@@ -145,14 +146,109 @@ export const ClinicSettings: React.FC = () => {
     <div className="space-y-8 max-w-5xl">
       
       {/* Header */}
-      <div className="pb-2 border-b border-slate-200">
-        <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">
-          Configurações da Clínica & Rede de Filiais
-        </h1>
-        <p className="text-xs text-slate-500 mt-1">
-          Identidade jurídica, informações de contato, unidades (matriz e filiais) e consultórios cadastrados.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-slate-200">
+        <div>
+          <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">
+            Configurações da Clínica & Rede de Filiais
+          </h1>
+          <p className="text-xs text-slate-500 mt-1">
+            Identidade jurídica, informações de contato, unidades (matriz e filiais) e consultórios cadastrados.
+          </p>
+        </div>
+
+        <div className="inline-flex items-center p-1 bg-slate-100 rounded-xl border border-slate-200 text-xs font-semibold shrink-0">
+          <button
+            type="button"
+            onClick={() => setActiveSection('geral')}
+            className={`px-3 py-1.5 rounded-lg transition ${
+              activeSection === 'geral'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Clínica & Unidades
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveSection('integracoes')}
+            className={`px-3 py-1.5 rounded-lg transition ${
+              activeSection === 'integracoes'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Integrações Avançadas
+          </button>
+        </div>
       </div>
+
+      {activeSection === 'integracoes' ? (
+        <form onSubmit={handleSaveClinic} className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 space-y-5">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+            <div className="flex items-center gap-2">
+              <Link2 className="w-5 h-5 text-sky-600" />
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">
+                  Integrações de Agendamento Online (Webhooks)
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Configuração técnica de endpoints externos de disponibilidade e confirmação automática.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              className="px-4 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5"
+            >
+              {isSaved ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
+              <span>{isSaved ? 'Salvo com Sucesso!' : 'Salvar Integrações'}</span>
+            </button>
+          </div>
+
+          <div className="flex items-center justify-end">
+            <button
+              type="button"
+              onClick={() => {
+                setN8nWebhookDisponibilidade(DEFAULT_N8N_WEBHOOK_DISPONIBILIDADE);
+                setN8nWebhookAgendamento(DEFAULT_N8N_WEBHOOK_AGENDAMENTO);
+              }}
+              className="text-xs font-semibold text-sky-700 hover:underline"
+            >
+              Restaurar Endpoints Padrão
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Endpoint de Disponibilidade (GET)
+              </label>
+              <input
+                type="url"
+                value={n8nWebhookDisponibilidade}
+                onChange={(e) => setN8nWebhookDisponibilidade(e.target.value)}
+                placeholder={DEFAULT_N8N_WEBHOOK_DISPONIBILIDADE}
+                className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Endpoint de Confirmação / Agendamento (POST)
+              </label>
+              <input
+                type="url"
+                value={n8nWebhookAgendamento}
+                onChange={(e) => setN8nWebhookAgendamento(e.target.value)}
+                placeholder={DEFAULT_N8N_WEBHOOK_AGENDAMENTO}
+                className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
+              />
+            </div>
+          </div>
+        </form>
+      ) : (
+        <>
 
       {/* Clinic Institutional Info Form */}
       <form onSubmit={handleSaveClinic} className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 space-y-5">
@@ -252,56 +348,6 @@ export const ClinicSettings: React.FC = () => {
             onChange={(e) => setInstitutionalBio(e.target.value)}
             className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500 leading-relaxed"
           />
-        </div>
-
-        {/* n8n Online Booking Webhooks */}
-        <div className="pt-4 border-t border-slate-100 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <Link2 className="w-4 h-4 text-amber-600" />
-              <span className="text-xs font-bold text-slate-900">
-                Webhooks n8n — Agendamento Online (agenda.*)
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setN8nWebhookDisponibilidade(DEFAULT_N8N_WEBHOOK_DISPONIBILIDADE);
-                setN8nWebhookAgendamento(DEFAULT_N8N_WEBHOOK_AGENDAMENTO);
-              }}
-              className="text-[11px] font-semibold text-sky-700 hover:underline"
-            >
-              Restaurar Endpoints Padrão
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Webhook de Disponibilidade (GET)
-              </label>
-              <input
-                type="url"
-                value={n8nWebhookDisponibilidade}
-                onChange={(e) => setN8nWebhookDisponibilidade(e.target.value)}
-                placeholder={DEFAULT_N8N_WEBHOOK_DISPONIBILIDADE}
-                className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Webhook de Confirmação / Agendamento (POST)
-              </label>
-              <input
-                type="url"
-                value={n8nWebhookAgendamento}
-                onChange={(e) => setN8nWebhookAgendamento(e.target.value)}
-                placeholder={DEFAULT_N8N_WEBHOOK_AGENDAMENTO}
-                className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
-              />
-            </div>
-          </div>
         </div>
       </form>
 
@@ -522,10 +568,10 @@ export const ClinicSettings: React.FC = () => {
                   <div className="flex items-center justify-between">
                     <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-800">
                       <Calendar className="w-4 h-4 text-amber-600" />
-                      3. Agenda Online (n8n)
+                      3. Agenda Online
                     </span>
                     <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
-                      {bookDom.isVerified ? 'Integrado n8n' : 'Aguardando DNS'}
+                      {bookDom.isVerified ? 'Ativo' : 'Aguardando DNS'}
                     </span>
                   </div>
 
@@ -551,7 +597,7 @@ export const ClinicSettings: React.FC = () => {
                   </div>
 
                   <p className="text-[11px] text-slate-500 leading-relaxed">
-                    Portal dedicado para agendamento online direto com disponibilidade em tempo real via n8n e sincronização automática na Agenda do ERP.
+                    Portal dedicado para agendamento online direto com disponibilidade em tempo real e sincronização automática na Agenda da clínica.
                   </p>
                 </div>
               );
@@ -564,6 +610,8 @@ export const ClinicSettings: React.FC = () => {
 
         </div>
       </div>
+      </>
+      )}
 
       {/* New Branch Modal */}
       {isNewBranchOpen && (

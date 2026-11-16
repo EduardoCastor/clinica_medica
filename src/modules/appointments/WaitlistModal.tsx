@@ -100,7 +100,7 @@ export const WaitlistModal: React.FC<WaitlistModalProps> = ({ isOpen, onClose, o
             <div>
               <h3 className="text-base font-bold text-white">Lista de Espera e Cancelamentos</h3>
               <p className="text-xs text-slate-400">
-                Sincronizada com Supabase (public.waitlist) para encaixes imediatos
+                Gerenciamento prioritário de pacientes para encaixes imediatos
               </p>
             </div>
           </div>

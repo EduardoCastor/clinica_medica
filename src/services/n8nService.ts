@@ -291,7 +291,7 @@ export async function submitBookingToN8nAndSupabase(
     status: 'scheduled',
     appointmentType: 'presencial',
     isOverbook: true,
-    notes: `Agendado online via n8n (${webhookAgendamento}). Horário original: ${input.data} às ${input.horaFormatada}.`,
+    notes: `Agendamento online confirmado. Horário selecionado: ${input.data} às ${input.horaFormatada}.`,
     createdAt: nowIso,
   };
 

@@ -94,11 +94,9 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
 
   // Sync & Feedback States
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
-  const [syncSource, setSyncSource] = useState<'supabase' | 'local_fallback' | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [copiedAgendaLink, setCopiedAgendaLink] = useState<boolean>(false);
-  const [isRealtimeConnected, setIsRealtimeConnected] = useState<boolean>(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<string>('');
 
   // Modals
@@ -124,7 +122,6 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
     async (silent = false) => {
       if (!silent) setIsSyncing(true);
       const res = await StorageService.fetchAppointmentsFromCloudDetailed();
-      setSyncSource(res.source);
       setSyncError(res.error || null);
 
       const filteredByBranch = shouldFilterByBranch
@@ -159,9 +156,7 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
             void loadAppointments(true);
           }
         )
-        .subscribe((subStatus) => {
-          setIsRealtimeConnected(subStatus === 'SUBSCRIBED');
-        });
+        .subscribe();
     }
 
     const handleStorageUpdate = () => {
@@ -194,7 +189,7 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
     setUpdatingId(id);
     const res = await StorageService.updateAppointmentStatusInCloud(id, status, reasonOrNotes);
     if (!res.success && res.error) {
-      setSyncError(`Erro ao atualizar status no Supabase: ${res.error}`);
+      setSyncError(`Não foi possível atualizar o status no servidor (${res.error}).`);
     }
     setAppointments(
       StorageService.getAppointments(shouldFilterByBranch ? activeBranchId : undefined)
@@ -346,28 +341,11 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
       {/* Top Header */}
       <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-3 border-b border-slate-200">
         <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">
-              Agenda Visual de Consultas
-            </h1>
-            <span
-              className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border ${
-                syncSource === 'local_fallback'
-                  ? 'text-amber-800 bg-amber-50 border-amber-200'
-                  : isRealtimeConnected
-                    ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
-                    : 'text-sky-700 bg-sky-50 border-sky-200'
-              }`}
-            >
-              {syncSource === 'local_fallback'
-                ? 'Modo Local (Sem conexão Supabase)'
-                : isRealtimeConnected
-                  ? 'Realtime Supabase Ativo'
-                  : 'Supabase Conectado'}
-            </span>
-          </div>
+          <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">
+            Agenda Visual de Consultas
+          </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Controle em tempo real integrado ao portal <code className="font-mono text-slate-700">{bookingDomain}</code> e automação n8n.
+            Gestão de atendimentos em tempo real integrada ao portal <code className="font-mono text-slate-700">{bookingDomain}</code>.
           </p>
         </div>
 
@@ -434,13 +412,13 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
         </div>
       </div>
 
-      {/* Diagnostic Banner when Supabase query fails or credentials are missing */}
+      {/* Sync retry banner if server communication fails */}
       {syncError && (
         <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-amber-900">
           <div className="flex items-start gap-2">
             <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
             <div>
-              <p className="font-bold">Aviso na sincronização com o Supabase:</p>
+              <p className="font-bold">Aviso na atualização da agenda:</p>
               <p className="text-amber-800 mt-0.5">{syncError}</p>
             </div>
           </div>

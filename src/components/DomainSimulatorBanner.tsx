@@ -91,7 +91,7 @@ export const DomainSimulatorBanner: React.FC<DomainSimulatorBannerProps> = ({
               <span className="font-semibold text-amber-300 font-mono flex items-center gap-1">
                 <Calendar className="w-3.5 h-3.5 text-amber-400" />
                 {PRODUCTION_DOMAINS.CLINIC_BOOKING}
-                <span className="text-slate-400 font-sans font-normal">(Agenda Online n8n do Cliente)</span>
+                <span className="text-slate-400 font-sans font-normal">(Agenda Online do Cliente)</span>
               </span>
             )}
           </span>
@@ -178,7 +178,7 @@ export const DomainSimulatorBanner: React.FC<DomainSimulatorBannerProps> = ({
                 ? 'bg-amber-600 text-white border-amber-400 shadow-xs'
                 : 'bg-slate-900 text-slate-300 hover:bg-slate-800 hover:text-white border-slate-800'
             }`}
-            title="Simular: agenda.drnewtonmureb.com.br (Agendamento Online n8n do Cliente)"
+            title="Simular: agenda.drnewtonmureb.com.br (Agendamento Online do Cliente)"
           >
             <Calendar className="w-3.5 h-3.5 text-amber-400" />
             <span>5. Agenda do Cliente</span>

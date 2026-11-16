@@ -28,7 +28,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenSupabaseConfig,
   onOpenWebsitePreview,
 }) => {
-  const { currentUser, currentRole, switchUser, usersList, logout, isImpersonating, stopImpersonation } = useAuth();
+  const { currentUser, currentRole, switchUser, usersList, logout, isSuperAdmin, isImpersonating, stopImpersonation } = useAuth();
   const { clinic, branches, activeBranchId, setActiveBranchId } = useTenant();
   const [showRoleDropdown, setShowRoleDropdown] = useState(false);
   const [showBranchDropdown, setShowBranchDropdown] = useState(false);
@@ -212,14 +212,16 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
           </div>
 
-          {/* Database / Supabase Config Button */}
-          <button
-            onClick={onOpenSupabaseConfig}
-            className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors border border-slate-200"
-            title="Configurar Conexão Supabase / PostgreSQL"
-          >
-            <Database className="w-4 h-4 text-emerald-600" />
-          </button>
+          {/* Database Config Button (Visible exclusively in Super Admin support sessions) */}
+          {(isSuperAdmin || isImpersonating) && (
+            <button
+              onClick={onOpenSupabaseConfig}
+              className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors border border-slate-200"
+              title="Configurações Avançadas de Banco de Dados"
+            >
+              <Database className="w-4 h-4 text-emerald-600" />
+            </button>
+          )}
 
           {/* PWA Install Button */}
           <PWAInstallButton />

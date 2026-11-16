@@ -1024,12 +1024,298 @@ export const StorageService = {
     });
   },
 
-  // Website Config
+  // Website Config (localStorage + Supabase public.websites persistence)
   getWebsite: (): WebsiteConfig => getStored<WebsiteConfig>(STORAGE_KEYS.WEBSITE, INITIAL_WEBSITE),
   updateWebsite: (updates: Partial<WebsiteConfig>): WebsiteConfig => {
     const site = { ...StorageService.getWebsite(), ...updates };
     setStored(STORAGE_KEYS.WEBSITE, site);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('medsync-website-updated', { detail: site }));
+    }
     return site;
+  },
+  fetchWebsiteFromCloud: async (params?: {
+    customDomain?: string;
+    slug?: string;
+  }): Promise<{ website: WebsiteConfig; source: 'cloud' | 'local' }> => {
+    const localSite = StorageService.getWebsite();
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { website: localSite, source: 'local' };
+    }
+
+    const mapRow = (row: Record<string, unknown>): WebsiteConfig => {
+      const validPalettes: ColorPalette[] = [
+        'azul-clinico',
+        'verde-saude',
+        'elegancia',
+        'minimalista',
+        'natural',
+      ];
+      const rawPalette = String(row.palette_name || localSite.paletteName) as ColorPalette;
+      const paletteName = validPalettes.includes(rawPalette)
+        ? rawPalette
+        : localSite.paletteName;
+
+      return {
+        id: String(row.id || localSite.id),
+        organizationId: String(row.organization_id || localSite.organizationId),
+        clinicId: String(row.clinic_id || localSite.clinicId),
+        slug: String(row.slug || localSite.slug),
+        customDomain: row.custom_domain ? String(row.custom_domain) : localSite.customDomain,
+        title: String(row.title || localSite.title),
+        tagline: row.tagline != null ? String(row.tagline) : localSite.tagline,
+        paletteName,
+        heroHeadline:
+          row.hero_headline != null ? String(row.hero_headline) : localSite.heroHeadline,
+        heroSubheadline:
+          row.hero_subheadline != null
+            ? String(row.hero_subheadline)
+            : localSite.heroSubheadline,
+        aboutText: row.about_text != null ? String(row.about_text) : localSite.aboutText,
+        medicalApproach:
+          row.medical_approach != null
+            ? String(row.medical_approach)
+            : localSite.medicalApproach,
+        onlineBookingEnabled:
+          typeof row.online_booking_enabled === 'boolean'
+            ? row.online_booking_enabled
+            : localSite.onlineBookingEnabled,
+        contactPhone:
+          row.contact_phone != null ? String(row.contact_phone) : localSite.contactPhone,
+        contactWhatsapp:
+          row.contact_whatsapp != null
+            ? String(row.contact_whatsapp)
+            : localSite.contactWhatsapp,
+        contactEmail:
+          row.contact_email != null ? String(row.contact_email) : localSite.contactEmail,
+        isPublished:
+          typeof row.is_published === 'boolean' ? row.is_published : localSite.isPublished,
+      };
+    };
+
+    try {
+      let row: Record<string, unknown> | null = null;
+      const targetDomain = (params?.customDomain || localSite.customDomain || '')
+        .trim()
+        .toLowerCase();
+      const targetSlug = (params?.slug || localSite.slug || '').trim().toLowerCase();
+
+      if (targetDomain) {
+        const bareDomain = targetDomain.replace(/^www\./, '');
+        const domainCandidates = Array.from(
+          new Set([targetDomain, bareDomain, `www.${bareDomain}`])
+        );
+        const { data: domRow } = await supabase
+          .from('websites')
+          .select('*')
+          .in('custom_domain', domainCandidates)
+          .limit(1)
+          .maybeSingle();
+        if (domRow) {
+          row = domRow as Record<string, unknown>;
+        }
+      }
+
+      if (!row && targetSlug) {
+        const { data: slugRow } = await supabase
+          .from('websites')
+          .select('*')
+          .eq('slug', targetSlug)
+          .limit(1)
+          .maybeSingle();
+        if (slugRow) {
+          row = slugRow as Record<string, unknown>;
+        }
+      }
+
+      if (!row) {
+        const { data: anyRow } = await supabase
+          .from('websites')
+          .select('*')
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (anyRow) {
+          row = anyRow as Record<string, unknown>;
+        }
+      }
+
+      if (row) {
+        const mapped = mapRow(row);
+        setStored(STORAGE_KEYS.WEBSITE, mapped);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('medsync-website-updated', { detail: mapped }));
+        }
+        return { website: mapped, source: 'cloud' };
+      }
+
+      return { website: localSite, source: 'local' };
+    } catch (err) {
+      console.warn('Aviso ao carregar configurações do site institucional:', err);
+      return { website: localSite, source: 'local' };
+    }
+  },
+  saveWebsiteToCloud: async (
+    updates: Partial<WebsiteConfig>
+  ): Promise<{ success: boolean; website: WebsiteConfig; syncedCloud: boolean; error?: string }> => {
+    const merged = StorageService.updateWebsite(updates);
+
+    StorageService.addAuditLog({
+      action: 'Publicou Site Institucional',
+      entity: 'Site Institucional',
+      entityId: merged.id,
+      details: `Atualizou identidade visual (${merged.paletteName}) e textos de ${merged.title}`,
+    });
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { success: true, website: merged, syncedCloud: false };
+    }
+
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    try {
+      const resolvedSlug = (merged.slug || StorageService.getOrganization().slug || 'dr-newton-mureb')
+        .trim()
+        .toLowerCase();
+
+      let orgId = isUuid(merged.organizationId) ? merged.organizationId : undefined;
+      if (!orgId) {
+        const { data: orgBySlug } = await supabase
+          .from('organizations')
+          .select('id')
+          .eq('slug', resolvedSlug)
+          .limit(1)
+          .maybeSingle();
+        if (orgBySlug?.id) {
+          orgId = String(orgBySlug.id);
+        } else {
+          const { data: firstOrg } = await supabase
+            .from('organizations')
+            .select('id')
+            .limit(1)
+            .maybeSingle();
+          if (firstOrg?.id) orgId = String(firstOrg.id);
+        }
+      }
+
+      let clinicId = isUuid(merged.clinicId) ? merged.clinicId : undefined;
+      if (!clinicId && orgId) {
+        const { data: clinicRow } = await supabase
+          .from('clinics')
+          .select('id')
+          .eq('organization_id', orgId)
+          .limit(1)
+          .maybeSingle();
+        if (clinicRow?.id) clinicId = String(clinicRow.id);
+      }
+      if (!clinicId) {
+        const { data: firstClinic } = await supabase
+          .from('clinics')
+          .select('id, organization_id')
+          .limit(1)
+          .maybeSingle();
+        if (firstClinic?.id) {
+          clinicId = String(firstClinic.id);
+          if (!orgId && firstClinic.organization_id) {
+            orgId = String(firstClinic.organization_id);
+          }
+        }
+      }
+
+      if (!orgId || !clinicId) {
+        return { success: true, website: merged, syncedCloud: false };
+      }
+
+      const dbPayload: Record<string, unknown> = {
+        organization_id: orgId,
+        clinic_id: clinicId,
+        slug: resolvedSlug,
+        custom_domain: merged.customDomain || null,
+        title: merged.title,
+        tagline: merged.tagline || null,
+        palette_name: merged.paletteName,
+        hero_headline: merged.heroHeadline || null,
+        hero_subheadline: merged.heroSubheadline || null,
+        about_text: merged.aboutText || null,
+        medical_approach: merged.medicalApproach || null,
+        online_booking_enabled: Boolean(merged.onlineBookingEnabled),
+        contact_phone: merged.contactPhone || null,
+        contact_whatsapp: merged.contactWhatsapp || null,
+        contact_email: merged.contactEmail || null,
+        is_published: merged.isPublished !== false,
+        updated_at: new Date().toISOString(),
+      };
+
+      if (isUuid(merged.id)) {
+        dbPayload.id = merged.id;
+      }
+
+      let savedRow: Record<string, unknown> | null = null;
+
+      const { data: upserted, error: upsertErr } = await supabase
+        .from('websites')
+        .upsert(dbPayload, { onConflict: 'slug' })
+        .select('*')
+        .maybeSingle();
+
+      if (!upsertErr && upserted) {
+        savedRow = upserted as Record<string, unknown>;
+      } else {
+        // Fallback: check if record already exists by clinic_id or slug and update explicitly
+        const { data: existingRow } = await supabase
+          .from('websites')
+          .select('id')
+          .or(`slug.eq.${resolvedSlug},clinic_id.eq.${clinicId}`)
+          .limit(1)
+          .maybeSingle();
+
+        if (existingRow?.id) {
+          const { data: updatedRow, error: updateErr } = await supabase
+            .from('websites')
+            .update(dbPayload)
+            .eq('id', existingRow.id)
+            .select('*')
+            .maybeSingle();
+          if (!updateErr && updatedRow) {
+            savedRow = updatedRow as Record<string, unknown>;
+          } else if (updateErr) {
+            console.warn('Erro ao atualizar public.websites:', updateErr.message);
+            return { success: true, website: merged, syncedCloud: false, error: updateErr.message };
+          }
+        } else if (upsertErr) {
+          console.warn('Erro ao fazer upsert em public.websites:', upsertErr.message);
+          return { success: true, website: merged, syncedCloud: false, error: upsertErr.message };
+        }
+      }
+
+      if (savedRow) {
+        const syncedWebsite: WebsiteConfig = {
+          ...merged,
+          id: String(savedRow.id || merged.id),
+          organizationId: String(savedRow.organization_id || orgId),
+          clinicId: String(savedRow.clinic_id || clinicId),
+          slug: String(savedRow.slug || resolvedSlug),
+        };
+        setStored(STORAGE_KEYS.WEBSITE, syncedWebsite);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('medsync-website-updated', { detail: syncedWebsite })
+          );
+        }
+        return { success: true, website: syncedWebsite, syncedCloud: true };
+      }
+
+      return { success: true, website: merged, syncedCloud: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn('Aviso ao sincronizar site institucional na nuvem:', msg);
+      return { success: true, website: merged, syncedCloud: false, error: msg };
+    }
   },
 
   // Audit Logs
@@ -1211,9 +1497,7 @@ export const StorageService = {
       return {
         appointments: localList,
         source: 'local_fallback',
-        error:
-          'Supabase não configurado nesta sessão (verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY ou configure via ícone de Banco de Dados).',
-        count: 0,
+        count: localList.length,
       };
     }
 

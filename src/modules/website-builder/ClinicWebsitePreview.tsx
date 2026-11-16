@@ -1,17 +1,15 @@
-import React, { useState } from 'react';
-import { 
-  Building2, 
-  MapPin, 
-  Phone, 
-  Mail, 
-  Clock, 
-  Calendar, 
-  CheckCircle2, 
-  Stethoscope, 
-  Activity, 
-  ShieldCheck, 
-  Sparkles, 
-  ArrowRight, 
+import React, { useState, useEffect } from 'react';
+import {
+  MapPin,
+  Phone,
+  Mail,
+  Clock,
+  Calendar,
+  Stethoscope,
+  Activity,
+  ShieldCheck,
+  Sparkles,
+  ArrowRight,
   X,
   User
 } from 'lucide-react';
@@ -20,6 +18,7 @@ import { WebsiteConfig, ColorPalette } from '../../types';
 import { PatientPortal } from '../patient-portal/PatientPortal';
 import { ClinicBrandLogo, CLINIC_OFFICIAL_DATA } from '../../components/ClinicBrandLogo';
 import { DomainResolver, PRODUCTION_DOMAINS } from '../../services/domainResolver';
+import { useTenant } from '../../contexts/TenantContext';
 
 interface ClinicWebsitePreviewProps {
   onBackToPanel?: () => void;
@@ -27,12 +26,60 @@ interface ClinicWebsitePreviewProps {
 }
 
 export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBackToPanel, isProduction = false }) => {
-  const [config, setConfig] = useState<WebsiteConfig>(StorageService.getWebsite());
+  const { tenantContext, organization } = useTenant();
+  const [config, setConfig] = useState<WebsiteConfig>(() => StorageService.getWebsite());
   const [isPatientPortalOpen, setIsPatientPortalOpen] = useState(false);
   const clinic = StorageService.getClinic();
   const branches = StorageService.getBranches();
   const professionals = StorageService.getProfessionals();
   const services = StorageService.getServices();
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadWebsiteConfig = async () => {
+      const targetDomain =
+        tenantContext.domain?.domain ||
+        (typeof window !== 'undefined' ? window.location.hostname : '') ||
+        config.customDomain;
+
+      const { website } = await StorageService.fetchWebsiteFromCloud({
+        customDomain: targetDomain,
+        slug: organization.slug || config.slug,
+      });
+
+      if (mounted) {
+        setConfig(website);
+      }
+    };
+
+    void loadWebsiteConfig();
+
+    const handleWebsiteUpdated = () => {
+      if (mounted) {
+        setConfig(StorageService.getWebsite());
+      }
+    };
+
+    window.addEventListener('medsync-website-updated', handleWebsiteUpdated);
+    window.addEventListener('medsync_storage_update', handleWebsiteUpdated);
+
+    return () => {
+      mounted = false;
+      window.removeEventListener('medsync-website-updated', handleWebsiteUpdated);
+      window.removeEventListener('medsync_storage_update', handleWebsiteUpdated);
+    };
+  }, [tenantContext.domain?.domain, organization.slug]);
+
+  useEffect(() => {
+    if (isProduction && config.title && typeof document !== 'undefined') {
+      document.title = config.title;
+    }
+  }, [isProduction, config.title]);
+
+  const displayPhone = config.contactPhone || clinic.phone || CLINIC_OFFICIAL_DATA.phone;
+  const displayWhatsapp = config.contactWhatsapp || clinic.whatsapp || CLINIC_OFFICIAL_DATA.whatsapp;
+  const displayEmail = config.contactEmail || clinic.email || CLINIC_OFFICIAL_DATA.email;
 
   const handleOpenBookingPortal = () => {
     const clinicDomains = StorageService.getDomainsByClinic(clinic.id);
@@ -125,11 +172,13 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
       
       {/* Floating Control Bar for Demo / Testing Palette (Only visible in editor preview) */}
       {!isProduction && onBackToPanel && (
-        <div className="bg-slate-900 text-white px-4 py-2 text-xs flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 sticky top-16 z-30">
+        <div className="bg-slate-900 text-white px-4 py-2 text-xs flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 sticky top-0 z-30">
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-sky-400">Site Institucional White-Label:</span>
-            <span className="text-slate-300">{config.title}</span>
-            <span className="text-slate-500">({config.customDomain})</span>
+            <span className="font-semibold text-sky-400">Site Institucional:</span>
+            <span className="text-slate-300 truncate max-w-xs sm:max-w-md">{config.title}</span>
+            {config.customDomain && (
+              <span className="text-slate-400 hidden sm:inline">({config.customDomain})</span>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
@@ -140,7 +189,7 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
                 onChange={(e) => {
                   const next = { ...config, paletteName: e.target.value as ColorPalette };
                   setConfig(next);
-                  StorageService.updateWebsite(next);
+                  void StorageService.saveWebsiteToCloud(next);
                 }}
                 className="bg-slate-800 text-white px-2.5 py-1 rounded-md border border-slate-700 text-xs focus:ring-1 focus:ring-sky-500 font-medium"
               >
@@ -163,7 +212,7 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
       )}
 
       {/* Website Top Bar */}
-      <header className={`border-b border-slate-200/80 sticky ${!isProduction && onBackToPanel ? 'top-26' : 'top-0'} z-20 backdrop-blur-md ${theme.headerBg}`}>
+      <header className={`border-b border-slate-200/80 sticky ${!isProduction && onBackToPanel ? 'top-10' : 'top-0'} z-20 backdrop-blur-md ${theme.headerBg}`}>
         <div className="max-w-6xl mx-auto px-6 h-18 flex items-center justify-between gap-8">
           
           {/* Brand */}
@@ -227,13 +276,15 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
               <span>Portal do Paciente</span>
             </button>
 
-            <button
-              onClick={handleOpenBookingPortal}
-              className={`px-4 py-2 text-xs font-bold rounded-xl shadow-xs transition whitespace-nowrap flex items-center gap-1.5 ${theme.primary}`}
-            >
-              <Calendar className="w-3.5 h-3.5" />
-              <span>Agendar Consulta</span>
-            </button>
+            {config.onlineBookingEnabled && (
+              <button
+                onClick={handleOpenBookingPortal}
+                className={`px-4 py-2 text-xs font-bold rounded-xl shadow-xs transition whitespace-nowrap flex items-center gap-1.5 ${theme.primary}`}
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span>Agendar Consulta</span>
+              </button>
+            )}
           </div>
 
         </div>
@@ -245,7 +296,7 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
           
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-white/10 text-[#E5C158] backdrop-blur-xs border border-[#D4AF37]/30">
             <Sparkles className="w-3.5 h-3.5 text-[#E5C158]" />
-            <span>Cabo Frio - RJ · Assessoria WhatsApp 24/7: {CLINIC_OFFICIAL_DATA.whatsapp}</span>
+            <span>{CLINIC_OFFICIAL_DATA.city} - {CLINIC_OFFICIAL_DATA.state} · Assessoria WhatsApp 24/7: {displayWhatsapp}</span>
           </div>
 
           <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-white leading-tight max-w-3xl">
@@ -257,13 +308,15 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
           </p>
 
           <div className="pt-4 flex flex-col sm:flex-row items-center gap-3">
-            <button
-              onClick={handleOpenBookingPortal}
-              className={`w-full sm:w-auto px-6 py-3.5 text-xs font-bold rounded-xl shadow-md transition flex items-center justify-center gap-2 ${theme.primary}`}
-            >
-              <Calendar className="w-4 h-4" />
-              <span>Solicitar Agendamento Online</span>
-            </button>
+            {config.onlineBookingEnabled && (
+              <button
+                onClick={handleOpenBookingPortal}
+                className={`w-full sm:w-auto px-6 py-3.5 text-xs font-bold rounded-xl shadow-md transition flex items-center justify-center gap-2 ${theme.primary}`}
+              >
+                <Calendar className="w-4 h-4" />
+                <span>Solicitar Agendamento Online</span>
+              </button>
+            )}
             <a
               href="#filosofia"
               className="w-full sm:w-auto px-6 py-3.5 text-xs font-semibold text-white bg-white/10 hover:bg-white/20 rounded-xl transition border border-white/20 text-center"
@@ -276,13 +329,14 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
       </section>
 
       {/* Filosofia & Abordagem Médica */}
-      <section id="filosofia" className="py-20 px-6 max-w-5xl mx-auto space-y-12">
+      <section id="filosofia" className={`py-20 px-6 ${theme.lightBg}`}>
+        <div className="max-w-5xl mx-auto space-y-12">
         <div className="text-center max-w-3xl mx-auto space-y-3">
-          <span className="text-xs font-bold uppercase tracking-wider text-[#9A7B2C]">
+          <span className={`text-xs font-bold uppercase tracking-wider ${theme.primaryText}`}>
             {CLINIC_OFFICIAL_DATA.specialty}
           </span>
           <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900">
-            Mais de 40 anos de experiência médica dedicados à saúde, bem-estar e longevidade.
+            {config.tagline || 'Mais de 40 anos de experiência médica dedicados à saúde, bem-estar e longevidade.'}
           </h2>
           <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
             {config.aboutText || CLINIC_OFFICIAL_DATA.bio}
@@ -317,20 +371,21 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
             </div>
             <h3 className="font-bold text-slate-900 text-sm">Longevidade & Assessoria 24/7</h3>
             <p className="text-xs text-slate-600 leading-relaxed">
-              Acompanhamento contínuo em soroterapia, hipertrofia, pós-bariátrica, fibromialgia e SOP com assessoria médica próxima via WhatsApp ({CLINIC_OFFICIAL_DATA.whatsapp}).
+              Acompanhamento contínuo em soroterapia, hipertrofia, pós-bariátrica, fibromialgia e SOP com assessoria médica próxima via WhatsApp ({displayWhatsapp}).
             </p>
           </div>
         </div>
 
         {/* Ethical Transparency Box */}
-        <div className="p-6 bg-amber-50/60 rounded-2xl border border-amber-200 text-xs text-amber-900 space-y-2">
-          <h4 className="font-bold text-sm text-amber-950 flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-amber-600" />
+        <div className={`p-6 rounded-2xl border text-xs space-y-2 ${theme.accentBg}`}>
+          <h4 className="font-bold text-sm flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4" />
             <span>Compromisso Ético e Responsabilidade Médica (CFM)</span>
           </h4>
-          <p className="leading-relaxed text-amber-900">
+          <p className="leading-relaxed">
             {config.medicalApproach}
           </p>
+        </div>
         </div>
       </section>
 
@@ -419,16 +474,18 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
                   <span className="flex items-center gap-1.5">
                     <MapPin className="w-3.5 h-3.5 text-[#9A7B2C]" />
                     <span>
-                      Atendimento Presencial: {CLINIC_OFFICIAL_DATA.city} - {CLINIC_OFFICIAL_DATA.state} · Assessoria 24/7 ({CLINIC_OFFICIAL_DATA.whatsapp})
+                      Atendimento Presencial: {CLINIC_OFFICIAL_DATA.city} - {CLINIC_OFFICIAL_DATA.state} · Assessoria 24/7 ({displayWhatsapp})
                     </span>
                   </span>
-                  <button
-                    onClick={handleOpenBookingPortal}
-                    className={`px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-1.5 transition ${theme.primary}`}
-                  >
-                    <span>Agendar Consulta</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
+                  {config.onlineBookingEnabled && (
+                    <button
+                      onClick={handleOpenBookingPortal}
+                      className={`px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-1.5 transition ${theme.primary}`}
+                    >
+                      <span>Agendar Consulta</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -440,17 +497,17 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
       {/* Localização & Contato (Unidade Matriz Cabo Frio) */}
       <section id="unidades" className="py-20 px-6 max-w-5xl mx-auto space-y-10">
         <div className="text-center space-y-2">
-          <span className="text-xs font-bold uppercase tracking-wider text-[#9A7B2C]">Estrutura e Localização</span>
+          <span className={`text-xs font-bold uppercase tracking-wider ${theme.primaryText}`}>Estrutura e Localização</span>
           <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900">Consultório em Cabo Frio - RJ</h2>
         </div>
 
         <div className={`grid grid-cols-1 ${branches.length > 1 ? 'sm:grid-cols-2' : 'max-w-2xl mx-auto'} gap-6`}>
           {branches.map(b => (
-            <div key={b.id} className="p-6 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-4">
+            <div key={b.id} className={`p-6 bg-white rounded-2xl border ${theme.cardBorder} shadow-xs space-y-4`}>
               <div className="flex items-center justify-between gap-2">
                 <h3 className="font-bold text-base text-slate-900">{b.name}</h3>
                 {b.isHeadquarters && (
-                  <span className="text-[10px] font-bold text-[#9A7B2C] bg-amber-50 px-2.5 py-0.5 rounded border border-amber-200 shrink-0">
+                  <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded border shrink-0 ${theme.badge} ${theme.cardBorder}`}>
                     Sede Matriz
                   </span>
                 )}
@@ -465,11 +522,11 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
                 </p>
                 <p className="flex items-center gap-2">
                   <Phone className="w-4 h-4 text-[#9A7B2C] shrink-0" />
-                  <span>Telefone: {b.phone} · WhatsApp 24/7: {b.whatsapp}</span>
+                  <span>Telefone: {displayPhone || b.phone} · WhatsApp 24/7: {displayWhatsapp || b.whatsapp}</span>
                 </p>
                 <p className="flex items-center gap-2">
                   <Mail className="w-4 h-4 text-[#9A7B2C] shrink-0" />
-                  <span>{b.email || CLINIC_OFFICIAL_DATA.email}</span>
+                  <span>{displayEmail || b.email}</span>
                 </p>
                 <p className="flex items-center gap-2">
                   <Clock className="w-4 h-4 text-[#9A7B2C] shrink-0" />
@@ -477,14 +534,16 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
                 </p>
               </div>
 
-              <div className="pt-2">
-                <button
-                  onClick={handleOpenBookingPortal}
-                  className={`w-full py-2.5 text-xs font-bold rounded-xl text-center transition ${theme.primary}`}
-                >
-                  Solicitar Agendamento em Cabo Frio
-                </button>
-              </div>
+              {config.onlineBookingEnabled && (
+                <div className="pt-2">
+                  <button
+                    onClick={handleOpenBookingPortal}
+                    className={`w-full py-2.5 text-xs font-bold rounded-xl text-center transition ${theme.primary}`}
+                  >
+                    Solicitar Agendamento em Cabo Frio
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -506,7 +565,8 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
             </p>
           </div>
           <div className="text-left sm:text-right text-[11px] space-y-1">
-            <p>Tel: {CLINIC_OFFICIAL_DATA.phone} · WhatsApp 24/7: {CLINIC_OFFICIAL_DATA.whatsapp}</p>
+            <p>Tel: {displayPhone} · WhatsApp 24/7: {displayWhatsapp}</p>
+            <p>{displayEmail}</p>
             <p>© {new Date().getFullYear()} {CLINIC_OFFICIAL_DATA.tradeName}. Todos os direitos reservados.</p>
           </div>
         </div>
