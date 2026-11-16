@@ -15,14 +15,17 @@ import {
   Save,
   KeyRound,
   Link2,
+  FlaskConical,
 } from 'lucide-react';
 import { MessageTemplate, MessageLog } from '../../types';
 import { StorageService } from '../../services/storage';
 import { useTenant } from '../../contexts/TenantContext';
 import {
   sendWhatsAppMessage,
+  simulateWhatsAppMessage,
   checkMegaapiConnectionStatus,
   resolveMegaapiCredentials,
+  normalizeMegaapiBaseUrl,
   MegaapiConnectionResult,
 } from '../../services/megaApiService';
 
@@ -38,9 +41,11 @@ export const CommunicationModule: React.FC = () => {
   const [selectedTemplateId, setSelectedTemplateId] = useState(templates[0]?.id || '');
   const [customText, setCustomText] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [isSimulationMode, setIsSimulationMode] = useState(false);
   const [dispatchFeedback, setDispatchFeedback] = useState<{
     type: 'success' | 'error';
     text: string;
+    canSimulateFallback?: boolean;
   } | null>(null);
 
   // Megaapi Settings & Status State
@@ -140,9 +145,45 @@ export const CommunicationModule: React.FC = () => {
     ? customText
     : generatePreview(selectedTemplate?.content || '');
 
+  const handleSimulateTestDispatch = async () => {
+    if (!selectedPatient) return;
+    setIsSending(true);
+    setDispatchFeedback(null);
+
+    const recipientPhone = selectedPatient.whatsapp || selectedPatient.phone;
+    const simResult = await simulateWhatsAppMessage(recipientPhone, effectiveMessageText, {
+      organizationId: organization.id || clinic.organizationId,
+      branchId: selectedPatient.originBranchId,
+      patientId: selectedPatient.id,
+      patientName: selectedPatient.fullName,
+    });
+
+    setMessages(StorageService.getMessages());
+    setIsSending(false);
+
+    if (!simResult.success) {
+      setDispatchFeedback({
+        type: 'error',
+        text: simResult.error || 'Erro ao executar envio de teste.',
+      });
+      return;
+    }
+
+    setCustomText('');
+    setDispatchFeedback({
+      type: 'success',
+      text: `Envio de teste (simulação) concluído para ${selectedPatient.fullName} (${simResult.cleanPhone}) e gravado ${simResult.syncedSupabase ? 'na tabela public.messages do Supabase' : 'no histórico local'}!`,
+    });
+  };
+
   const handleSendRealMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedPatient) return;
+
+    if (isSimulationMode) {
+      await handleSimulateTestDispatch();
+      return;
+    }
 
     const creds = resolveMegaapiCredentials({
       megaapiInstanceUrl,
@@ -152,9 +193,9 @@ export const CommunicationModule: React.FC = () => {
     if (!creds.isConfigured) {
       setDispatchFeedback({
         type: 'error',
-        text: 'Configure a URL da instância Megaapi e o Token na aba "Configuração Megaapi" antes de disparar mensagens reais.',
+        text: 'Configure a URL da instância Megaapi e o Token na aba "Configuração Megaapi" ou ative o Modo de Simulação / Teste.',
+        canSimulateFallback: true,
       });
-      setActiveTab('config');
       return;
     }
 
@@ -174,7 +215,7 @@ export const CommunicationModule: React.FC = () => {
         branchId: selectedPatient.originBranchId,
         patientId: selectedPatient.id,
         patientName: selectedPatient.fullName,
-        recordAttemptOnFailure: true,
+        recordAttemptOnFailure: false,
       }
     );
 
@@ -185,6 +226,7 @@ export const CommunicationModule: React.FC = () => {
       setDispatchFeedback({
         type: 'error',
         text: result.error || 'Não foi possível enviar a mensagem pela instância Megaapi.',
+        canSimulateFallback: Boolean(result.isCorsError || result.isNotFoundError),
       });
       return;
     }
@@ -192,7 +234,7 @@ export const CommunicationModule: React.FC = () => {
     setCustomText('');
     setDispatchFeedback({
       type: 'success',
-      text: `Mensagem enviada via Megaapi para ${selectedPatient.fullName} (${result.cleanPhone}) e registrada no histórico!`,
+      text: `Mensagem enviada via Megaapi para ${selectedPatient.fullName} (${result.cleanPhone}) e registrada ${result.syncedSupabase ? 'na tabela public.messages do Supabase' : 'no histórico'}!`,
     });
   };
 
@@ -201,8 +243,9 @@ export const CommunicationModule: React.FC = () => {
     setIsSavingConfig(true);
     setConfigFeedback(null);
 
-    const trimmedUrl = megaapiInstanceUrl.trim();
+    const trimmedUrl = normalizeMegaapiBaseUrl(megaapiInstanceUrl);
     const trimmedToken = megaapiToken.trim();
+    setMegaapiInstanceUrl(trimmedUrl);
 
     updateClinic({
       megaapiInstanceUrl: trimmedUrl,
@@ -261,6 +304,18 @@ export const CommunicationModule: React.FC = () => {
         <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-100 px-2.5 py-0.5 rounded-full border border-slate-200">
           <Settings className="w-3.5 h-3.5" />
           <span>Megaapi Não Configurado</span>
+        </span>
+      );
+    }
+    if (connectionStatus.status === 'CORS_BLOCKED' || connectionStatus.status === 'NOT_FOUND') {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-800 bg-amber-50 px-2.5 py-0.5 rounded-full border border-amber-200">
+          <AlertCircle className="w-3.5 h-3.5" />
+          <span>
+            {connectionStatus.status === 'NOT_FOUND'
+              ? 'Rota Megaapi 404'
+              : 'Bloqueio CORS (Browser)'}
+          </span>
         </span>
       );
     }
@@ -361,18 +416,32 @@ export const CommunicationModule: React.FC = () => {
 
           {dispatchFeedback && (
             <div
-              className={`p-3 rounded-xl border text-[11px] flex items-start gap-2 ${
+              className={`p-3 rounded-xl border text-[11px] space-y-2 ${
                 dispatchFeedback.type === 'success'
                   ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
                   : 'bg-rose-50 border-rose-200 text-rose-800'
               }`}
             >
-              {dispatchFeedback.type === 'success' ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-              ) : (
-                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+              <div className="flex items-start gap-2">
+                {dispatchFeedback.type === 'success' ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                )}
+                <span>{dispatchFeedback.text}</span>
+              </div>
+
+              {dispatchFeedback.canSimulateFallback && (
+                <button
+                  type="button"
+                  onClick={() => void handleSimulateTestDispatch()}
+                  disabled={isSending}
+                  className="w-full py-1.5 px-3 text-[11px] font-bold text-amber-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded-lg transition inline-flex items-center justify-center gap-1.5"
+                >
+                  <FlaskConical className="w-3.5 h-3.5" />
+                  <span>Simular Envio e Gravar em public.messages</span>
+                </button>
               )}
-              <span>{dispatchFeedback.text}</span>
             </div>
           )}
 
@@ -445,18 +514,63 @@ export const CommunicationModule: React.FC = () => {
               </div>
             </div>
 
-            <button
-              type="submit"
-              disabled={isSending || !selectedPatient}
-              className="w-full py-2.5 px-4 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 rounded-xl shadow-xs transition flex items-center justify-center gap-2"
-            >
-              {isSending ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Send className="w-3.5 h-3.5" />
+            {/* Simulation Mode Toggle */}
+            <label className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-amber-50/70 border border-amber-200 text-[11px] cursor-pointer">
+              <div className="flex items-center gap-2">
+                <FlaskConical className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                <div>
+                  <span className="font-bold text-amber-950 block">Modo Simulação / Teste</span>
+                  <span className="text-[10px] text-amber-800">
+                    Grava o log no Supabase sem depender de CORS externo
+                  </span>
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={isSimulationMode}
+                onChange={(e) => setIsSimulationMode(e.target.checked)}
+                className="w-4 h-4 text-amber-600 rounded"
+              />
+            </label>
+
+            <div className="flex flex-col gap-2">
+              <button
+                type="submit"
+                disabled={isSending || !selectedPatient}
+                className={`w-full py-2.5 px-4 text-xs font-semibold text-white disabled:opacity-60 rounded-xl shadow-xs transition flex items-center justify-center gap-2 ${
+                  isSimulationMode
+                    ? 'bg-amber-600 hover:bg-amber-700'
+                    : 'bg-emerald-600 hover:bg-emerald-700'
+                }`}
+              >
+                {isSending ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : isSimulationMode ? (
+                  <FlaskConical className="w-3.5 h-3.5" />
+                ) : (
+                  <Send className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {isSending
+                    ? 'Processando...'
+                    : isSimulationMode
+                      ? 'Disparar Teste (Gravar no Supabase)'
+                      : 'Enviar Mensagem Agora'}
+                </span>
+              </button>
+
+              {!isSimulationMode && (
+                <button
+                  type="button"
+                  onClick={() => void handleSimulateTestDispatch()}
+                  disabled={isSending || !selectedPatient}
+                  className="w-full py-2 px-3 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-60 rounded-xl transition inline-flex items-center justify-center gap-1.5"
+                >
+                  <FlaskConical className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Disparar Mensagem de Teste (Simulação)</span>
+                </button>
               )}
-              <span>{isSending ? 'Enviando via Megaapi...' : 'Enviar Mensagem Agora'}</span>
-            </button>
+            </div>
           </form>
         </div>
 
@@ -689,14 +803,16 @@ export const CommunicationModule: React.FC = () => {
                 className={`p-4 rounded-xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
                   connectionStatus.connected
                     ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                    : connectionStatus.status === 'QRCODE_REQUIRED'
+                    : connectionStatus.status === 'QRCODE_REQUIRED' ||
+                        connectionStatus.status === 'NOT_FOUND' ||
+                        connectionStatus.status === 'CORS_BLOCKED'
                       ? 'bg-amber-50 border-amber-200 text-amber-900'
                       : connectionStatus.status === 'UNCONFIGURED'
                         ? 'bg-slate-50 border-slate-200 text-slate-700'
                         : 'bg-rose-50 border-rose-200 text-rose-900'
                 }`}
               >
-                <div className="space-y-1">
+                <div className="space-y-1.5">
                   <div className="font-bold flex items-center gap-2">
                     {connectionStatus.connected ? (
                       <CheckCircle2 className="w-4 h-4 text-emerald-600" />
@@ -707,11 +823,33 @@ export const CommunicationModule: React.FC = () => {
                     )}
                     <span>Status da Instância: {connectionStatus.status}</span>
                   </div>
-                  <p className="text-[11px]">{connectionStatus.message}</p>
+                  <p className="text-[11px] leading-relaxed">{connectionStatus.message}</p>
+                  {connectionStatus.testedEndpoint && (
+                    <p className="text-[10px] font-mono opacity-80">
+                      Endpoint testado: {connectionStatus.testedEndpoint}
+                    </p>
+                  )}
                   {connectionStatus.phoneNumber && (
                     <p className="text-[11px] font-mono">
                       Número conectado: {connectionStatus.phoneNumber}
                     </p>
+                  )}
+                  {(connectionStatus.status === 'NOT_FOUND' ||
+                    connectionStatus.status === 'CORS_BLOCKED') && (
+                    <div className="pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsSimulationMode(true);
+                          void handleSimulateTestDispatch();
+                        }}
+                        disabled={isSending || !selectedPatient}
+                        className="px-3 py-1.5 text-[11px] font-bold text-amber-950 bg-amber-200/80 hover:bg-amber-200 rounded-lg transition inline-flex items-center gap-1.5"
+                      >
+                        <FlaskConical className="w-3.5 h-3.5" />
+                        <span>Ativar Simulação e Disparar Teste Agora</span>
+                      </button>
+                    </div>
                   )}
                 </div>
 
@@ -748,11 +886,11 @@ export const CommunicationModule: React.FC = () => {
                     required
                     value={megaapiInstanceUrl}
                     onChange={(e) => setMegaapiInstanceUrl(e.target.value)}
-                    placeholder="https://api.megaapi.com.br/v2/instances/sua-instancia"
+                    placeholder="https://apibusiness1.megaapi.com.br/rest/v1/instance/sua-instancia"
                     className="w-full px-3 py-2.5 font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
                   />
-                  <span className="text-[11px] text-slate-400 mt-1 block">
-                    Informe a URL base da instância (v2 ou REST) fornecida no painel da Megaapi.
+                  <span className="text-[11px] text-slate-500 mt-1 block">
+                    Aceita URL completa (ex: <code className="font-mono">/rest/v1/...</code>, <code className="font-mono">/api/v1/...</code>) ou domínio base (ex: <code className="font-mono">https://apibusiness1.megaapi.com.br</code>, normalizado automaticamente).
                   </span>
                 </div>
 

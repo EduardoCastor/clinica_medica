@@ -31,6 +31,7 @@ import {
 import {
   checkMegaapiConnectionStatus,
   MegaapiConnectionResult,
+  normalizeMegaapiBaseUrl,
 } from '../../services/megaApiService';
 
 export const ClinicSettings: React.FC = () => {
@@ -89,7 +90,7 @@ export const ClinicSettings: React.FC = () => {
       institutionalBio,
       n8nWebhookDisponibilidade: n8nWebhookDisponibilidade.trim() || DEFAULT_N8N_WEBHOOK_DISPONIBILIDADE,
       n8nWebhookAgendamento: n8nWebhookAgendamento.trim() || DEFAULT_N8N_WEBHOOK_AGENDAMENTO,
-      megaapiInstanceUrl: megaapiInstanceUrl.trim(),
+      megaapiInstanceUrl: normalizeMegaapiBaseUrl(megaapiInstanceUrl),
       megaapiToken: megaapiToken.trim(),
     };
     updateClinic(payload);
@@ -298,13 +299,20 @@ export const ClinicSettings: React.FC = () => {
 
             {megaapiStatus && (
               <div
-                className={`p-3 rounded-xl border text-xs ${
+                className={`p-3 rounded-xl border text-xs space-y-1 ${
                   megaapiStatus.connected
                     ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
                     : 'bg-amber-50 border-amber-200 text-amber-900'
                 }`}
               >
-                <strong>Status ({megaapiStatus.status}):</strong> {megaapiStatus.message}
+                <p>
+                  <strong>Status ({megaapiStatus.status}):</strong> {megaapiStatus.message}
+                </p>
+                {megaapiStatus.testedEndpoint && (
+                  <p className="text-[11px] font-mono opacity-80 break-all">
+                    Endpoint verificado: {megaapiStatus.testedEndpoint}
+                  </p>
+                )}
               </div>
             )}
 
@@ -317,7 +325,7 @@ export const ClinicSettings: React.FC = () => {
                   type="url"
                   value={megaapiInstanceUrl}
                   onChange={(e) => setMegaapiInstanceUrl(e.target.value)}
-                  placeholder="https://api.megaapi.com.br/v2/instances/sua-instancia"
+                  placeholder="https://apibusiness1.megaapi.com.br/rest/v1/instance/sua-instancia"
                   className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
                 />
               </div>
