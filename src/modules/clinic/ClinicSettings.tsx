@@ -17,7 +17,9 @@ import {
   Server,
   CheckCircle2,
   Calendar,
-  Link2
+  Link2,
+  MessageCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { useTenant } from '../../contexts/TenantContext';
 import { Branch, Room, ClinicDomain } from '../../types';
@@ -26,6 +28,10 @@ import {
   DEFAULT_N8N_WEBHOOK_DISPONIBILIDADE,
   DEFAULT_N8N_WEBHOOK_AGENDAMENTO,
 } from '../../services/n8nService';
+import {
+  checkMegaapiConnectionStatus,
+  MegaapiConnectionResult,
+} from '../../services/megaApiService';
 
 export const ClinicSettings: React.FC = () => {
   const { clinic, updateClinic, branches, refreshData } = useTenant();
@@ -47,6 +53,10 @@ export const ClinicSettings: React.FC = () => {
   const [n8nWebhookAgendamento, setN8nWebhookAgendamento] = useState(
     clinic.n8nWebhookAgendamento || DEFAULT_N8N_WEBHOOK_AGENDAMENTO
   );
+  const [megaapiInstanceUrl, setMegaapiInstanceUrl] = useState(clinic.megaapiInstanceUrl || '');
+  const [megaapiToken, setMegaapiToken] = useState(clinic.megaapiToken || '');
+  const [megaapiStatus, setMegaapiStatus] = useState<MegaapiConnectionResult | null>(null);
+  const [isTestingMegaapi, setIsTestingMegaapi] = useState(false);
 
   const [activeSection, setActiveSection] = useState<'geral' | 'integracoes'>('geral');
   const [isSaved, setIsSaved] = useState(false);
@@ -66,9 +76,9 @@ export const ClinicSettings: React.FC = () => {
   const [roomName, setRoomName] = useState('');
   const [roomBranchId, setRoomBranchId] = useState(branches[0]?.id || '');
 
-  const handleSaveClinic = (e: React.FormEvent) => {
+  const handleSaveClinic = async (e: React.FormEvent) => {
     e.preventDefault();
-    updateClinic({
+    const payload = {
       legalName,
       tradeName,
       documentNumber,
@@ -79,9 +89,23 @@ export const ClinicSettings: React.FC = () => {
       institutionalBio,
       n8nWebhookDisponibilidade: n8nWebhookDisponibilidade.trim() || DEFAULT_N8N_WEBHOOK_DISPONIBILIDADE,
       n8nWebhookAgendamento: n8nWebhookAgendamento.trim() || DEFAULT_N8N_WEBHOOK_AGENDAMENTO,
-    });
+      megaapiInstanceUrl: megaapiInstanceUrl.trim(),
+      megaapiToken: megaapiToken.trim(),
+    };
+    updateClinic(payload);
+    await StorageService.saveClinicToCloud(payload);
     setIsSaved(true);
     setTimeout(() => setIsSaved(false), 2000);
+  };
+
+  const handleTestMegaapi = async () => {
+    setIsTestingMegaapi(true);
+    const res = await checkMegaapiConnectionStatus({
+      megaapiInstanceUrl,
+      megaapiToken,
+    });
+    setMegaapiStatus(res);
+    setIsTestingMegaapi(false);
   };
 
   const handleAddBranch = (e: React.FormEvent) => {
@@ -244,6 +268,72 @@ export const ClinicSettings: React.FC = () => {
                 placeholder={DEFAULT_N8N_WEBHOOK_AGENDAMENTO}
                 className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
               />
+            </div>
+          </div>
+
+          <div className="pt-4 border-t border-slate-200 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <MessageCircle className="w-4 h-4 text-emerald-600" />
+                <div>
+                  <h3 className="text-xs font-bold text-slate-900">
+                    WhatsApp Business (API Megaapi)
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Credenciais usadas nos envios da Central de Comunicação e confirmações automáticas.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => void handleTestMegaapi()}
+                disabled={isTestingMegaapi}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition inline-flex items-center gap-1.5"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isTestingMegaapi ? 'animate-spin' : ''}`} />
+                <span>{isTestingMegaapi ? 'Verificando...' : 'Testar Conexão'}</span>
+              </button>
+            </div>
+
+            {megaapiStatus && (
+              <div
+                className={`p-3 rounded-xl border text-xs ${
+                  megaapiStatus.connected
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    : 'bg-amber-50 border-amber-200 text-amber-900'
+                }`}
+              >
+                <strong>Status ({megaapiStatus.status}):</strong> {megaapiStatus.message}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  URL da Instância Megaapi
+                </label>
+                <input
+                  type="url"
+                  value={megaapiInstanceUrl}
+                  onChange={(e) => setMegaapiInstanceUrl(e.target.value)}
+                  placeholder="https://api.megaapi.com.br/v2/instances/sua-instancia"
+                  className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Token de Acesso (Bearer Token)
+                </label>
+                <input
+                  type="password"
+                  value={megaapiToken}
+                  onChange={(e) => setMegaapiToken(e.target.value)}
+                  placeholder="Token da instância Megaapi"
+                  className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
+              </div>
             </div>
           </div>
         </form>

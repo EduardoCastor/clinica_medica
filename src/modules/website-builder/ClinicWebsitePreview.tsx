@@ -14,7 +14,8 @@ import {
   User
 } from 'lucide-react';
 import { StorageService } from '../../services/storage';
-import { WebsiteConfig, ColorPalette } from '../../types';
+import { getSupabase } from '../../services/supabaseClient';
+import { WebsiteConfig, ColorPalette, Clinic } from '../../types';
 import { PatientPortal } from '../patient-portal/PatientPortal';
 import { ClinicBrandLogo, CLINIC_OFFICIAL_DATA } from '../../components/ClinicBrandLogo';
 import { DomainResolver, PRODUCTION_DOMAINS } from '../../services/domainResolver';
@@ -28,8 +29,8 @@ interface ClinicWebsitePreviewProps {
 export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBackToPanel, isProduction = false }) => {
   const { tenantContext, organization } = useTenant();
   const [config, setConfig] = useState<WebsiteConfig>(() => StorageService.getWebsite());
+  const [liveClinic, setLiveClinic] = useState<Clinic>(() => StorageService.getClinic());
   const [isPatientPortalOpen, setIsPatientPortalOpen] = useState(false);
-  const clinic = StorageService.getClinic();
   const branches = StorageService.getBranches();
   const professionals = StorageService.getProfessionals();
   const services = StorageService.getServices();
@@ -38,38 +39,86 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
     let mounted = true;
 
     const loadWebsiteConfig = async () => {
+      const currentHostname =
+        typeof window !== 'undefined' ? window.location.hostname : '';
       const targetDomain =
         tenantContext.domain?.domain ||
-        (typeof window !== 'undefined' ? window.location.hostname : '') ||
+        (currentHostname && !currentHostname.includes('localhost') ? currentHostname : '') ||
         config.customDomain;
 
-      const { website } = await StorageService.fetchWebsiteFromCloud({
+      const { website, clinic: fetchedClinic } = await StorageService.fetchWebsiteFromCloud({
         customDomain: targetDomain,
         slug: organization.slug || config.slug,
+        organizationId: tenantContext.organizationId || organization.id,
       });
 
       if (mounted) {
         setConfig(website);
+        if (fetchedClinic) {
+          setLiveClinic(fetchedClinic);
+        } else {
+          setLiveClinic(StorageService.getClinic());
+        }
       }
     };
 
     void loadWebsiteConfig();
 
-    const handleWebsiteUpdated = () => {
-      if (mounted) {
+    const handleWebsiteUpdated = (event?: Event) => {
+      if (!mounted) return;
+      const customEvt = event as CustomEvent<WebsiteConfig> | undefined;
+      if (customEvt?.detail && customEvt.detail.paletteName) {
+        setConfig(customEvt.detail);
+      } else {
         setConfig(StorageService.getWebsite());
+      }
+      setLiveClinic(StorageService.getClinic());
+    };
+
+    const handleCrossTabStorage = (e: StorageEvent) => {
+      if (!mounted) return;
+      if (e.key === 'medsync_website' || e.key === 'medsync_clinic' || e.key === null) {
+        setConfig(StorageService.getWebsite());
+        setLiveClinic(StorageService.getClinic());
       }
     };
 
     window.addEventListener('medsync-website-updated', handleWebsiteUpdated);
     window.addEventListener('medsync_storage_update', handleWebsiteUpdated);
+    window.addEventListener('storage', handleCrossTabStorage);
+
+    const supabase = getSupabase();
+    let channel: ReturnType<NonNullable<typeof supabase>['channel']> | null = null;
+    if (supabase) {
+      channel = supabase
+        .channel('public-website-live-sync')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'websites' },
+          () => {
+            void loadWebsiteConfig();
+          }
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'clinics' },
+          () => {
+            void loadWebsiteConfig();
+          }
+        )
+        .subscribe();
+    }
 
     return () => {
       mounted = false;
       window.removeEventListener('medsync-website-updated', handleWebsiteUpdated);
       window.removeEventListener('medsync_storage_update', handleWebsiteUpdated);
+      window.removeEventListener('storage', handleCrossTabStorage);
+      if (supabase && channel) {
+        void supabase.removeChannel(channel);
+      }
     };
-  }, [tenantContext.domain?.domain, organization.slug]);
+  }, [tenantContext.domain?.domain, tenantContext.organizationId, organization.slug, organization.id]);
 
   useEffect(() => {
     if (isProduction && config.title && typeof document !== 'undefined') {
@@ -77,6 +126,7 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
     }
   }, [isProduction, config.title]);
 
+  const clinic = liveClinic;
   const displayPhone = config.contactPhone || clinic.phone || CLINIC_OFFICIAL_DATA.phone;
   const displayWhatsapp = config.contactWhatsapp || clinic.whatsapp || CLINIC_OFFICIAL_DATA.whatsapp;
   const displayEmail = config.contactEmail || clinic.email || CLINIC_OFFICIAL_DATA.email;
@@ -339,7 +389,7 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
             {config.tagline || 'Mais de 40 anos de experiência médica dedicados à saúde, bem-estar e longevidade.'}
           </h2>
           <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-            {config.aboutText || CLINIC_OFFICIAL_DATA.bio}
+            {config.aboutText || clinic.institutionalBio || CLINIC_OFFICIAL_DATA.bio}
           </p>
         </div>
 
@@ -567,7 +617,7 @@ export const ClinicWebsitePreview: React.FC<ClinicWebsitePreviewProps> = ({ onBa
           <div className="text-left sm:text-right text-[11px] space-y-1">
             <p>Tel: {displayPhone} · WhatsApp 24/7: {displayWhatsapp}</p>
             <p>{displayEmail}</p>
-            <p>© {new Date().getFullYear()} {CLINIC_OFFICIAL_DATA.tradeName}. Todos os direitos reservados.</p>
+            <p>© {new Date().getFullYear()} {config.title || clinic.tradeName || CLINIC_OFFICIAL_DATA.tradeName}. Todos os direitos reservados.</p>
           </div>
         </div>
       </footer>

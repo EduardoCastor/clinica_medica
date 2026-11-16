@@ -22,12 +22,15 @@ export const WebsiteEditor: React.FC<WebsiteEditorProps> = ({ onOpenPreview }) =
   const [isSaving, setIsSaving] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
 
+  const [saveError, setSaveError] = useState<string | null>(null);
+
   useEffect(() => {
     let mounted = true;
     const syncLatest = async () => {
       const { website } = await StorageService.fetchWebsiteFromCloud({
         customDomain: config.customDomain,
         slug: organization.slug || config.slug,
+        organizationId: organization.id,
       });
       if (mounted) {
         setConfig(website);
@@ -37,7 +40,7 @@ export const WebsiteEditor: React.FC<WebsiteEditorProps> = ({ onOpenPreview }) =
     return () => {
       mounted = false;
     };
-  }, [organization.slug]);
+  }, [organization.slug, organization.id]);
 
   const palettes: Array<{ id: ColorPalette; name: string; colors: string[]; desc: string }> = [
     {
@@ -75,11 +78,20 @@ export const WebsiteEditor: React.FC<WebsiteEditorProps> = ({ onOpenPreview }) =
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSaving(true);
-    const result = await StorageService.saveWebsiteToCloud(config);
+    setSaveError(null);
+    const result = await StorageService.saveWebsiteToCloud({
+      ...config,
+      organizationId: config.organizationId || organization.id,
+      clinicId: config.clinicId || clinic.id,
+      slug: config.slug || organization.slug || 'dr-newton-mureb',
+    });
     setConfig(result.website);
     setIsSaving(false);
+    if (result.error) {
+      setSaveError('Alterações aplicadas localmente, mas houve instabilidade ao sincronizar na nuvem. Tente novamente em instantes.');
+    }
     setIsSaved(true);
-    setTimeout(() => setIsSaved(false), 2500);
+    setTimeout(() => setIsSaved(false), 2800);
   };
 
   return (
@@ -312,8 +324,13 @@ export const WebsiteEditor: React.FC<WebsiteEditorProps> = ({ onOpenPreview }) =
         </div>
 
         {/* Save Button */}
-        <div className="flex items-center justify-end gap-3">
-          {isSaved && (
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          {saveError && (
+            <span className="text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg">
+              {saveError}
+            </span>
+          )}
+          {isSaved && !saveError && (
             <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg">
               Alterações salvas e publicadas no site da clínica!
             </span>
@@ -332,10 +349,10 @@ export const WebsiteEditor: React.FC<WebsiteEditorProps> = ({ onOpenPreview }) =
             )}
             <span>
               {isSaving
-                ? 'Publicando...'
+                ? 'Salvando...'
                 : isSaved
-                  ? 'Configurações Salvas!'
-                  : 'Salvar e Publicar'}
+                  ? 'Alterações Salvas!'
+                  : 'Salvar Alterações'}
             </span>
           </button>
         </div>

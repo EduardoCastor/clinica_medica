@@ -98,6 +98,8 @@ export interface Clinic {
   institutionalBio: string;
   n8nWebhookDisponibilidade?: string;
   n8nWebhookAgendamento?: string;
+  megaapiInstanceUrl?: string;
+  megaapiToken?: string;
   createdAt: string;
 }
 
@@ -464,12 +466,14 @@ export interface MessageLog {
   organizationId: string;
   branchId?: string;
   patientId?: string;
+  appointmentId?: string;
   patientName: string;
   recipientPhone: string;
   channel: 'whatsapp' | 'email' | 'sms';
   direction: 'outbound' | 'inbound';
   content: string;
   status: 'sent' | 'delivered' | 'read' | 'failed';
+  externalMessageId?: string;
   sentAt: string;
 }
 

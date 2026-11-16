@@ -24,6 +24,7 @@ import { StorageService } from '../../services/storage';
 import { useTenant } from '../../contexts/TenantContext';
 import { getSupabase } from '../../services/supabaseClient';
 import { PRODUCTION_DOMAINS, DomainResolver } from '../../services/domainResolver';
+import { sendWhatsAppMessage, resolveMegaapiCredentials } from '../../services/megaApiService';
 import { AppointmentFormModal } from './AppointmentFormModal';
 import { WaitlistModal } from './WaitlistModal';
 
@@ -57,13 +58,17 @@ function formatLongDatePtBr(ymd: string): string {
   });
 }
 
-function buildWhatsappUrl(phone: string, apt: Appointment, branchAddress?: string): string {
-  const digits = phone.replace(/\D/g, '');
-  const fullDigits = digits.startsWith('55') && digits.length >= 12 ? digits : `55${digits}`;
+function buildWhatsappConfirmationText(apt: Appointment, branchAddress?: string): string {
   const dt = new Date(apt.startTime);
   const dateStr = dt.toLocaleDateString('pt-BR');
   const timeStr = dt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-  const text = `Olá, ${apt.patientName}! Confirmamos sua consulta (${apt.serviceName || 'Atendimento Médico'}) com ${apt.professionalName} no dia ${dateStr} às ${timeStr}${branchAddress ? ` na ${branchAddress}` : ''}. Caso precise remarcar, nos avise por aqui.`;
+  return `Olá, ${apt.patientName}! Confirmamos sua consulta (${apt.serviceName || 'Atendimento Médico'}) com ${apt.professionalName} no dia ${dateStr} às ${timeStr}${branchAddress ? ` na ${branchAddress}` : ''}. Caso precise remarcar, nos avise por aqui.`;
+}
+
+function buildWhatsappUrl(phone: string, apt: Appointment, branchAddress?: string): string {
+  const digits = phone.replace(/\D/g, '');
+  const fullDigits = digits.startsWith('55') && digits.length >= 12 ? digits : `55${digits}`;
+  const text = buildWhatsappConfirmationText(apt, branchAddress);
   return `https://wa.me/${fullDigits}?text=${encodeURIComponent(text)}`;
 }
 
@@ -96,6 +101,11 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [sendingWhatsappId, setSendingWhatsappId] = useState<string | null>(null);
+  const [whatsappFeedback, setWhatsappFeedback] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
   const [copiedAgendaLink, setCopiedAgendaLink] = useState<boolean>(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<string>('');
 
@@ -195,6 +205,51 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
       StorageService.getAppointments(shouldFilterByBranch ? activeBranchId : undefined)
     );
     setUpdatingId(null);
+  };
+
+  const handleSendAppointmentWhatsapp = async (apt: Appointment, branchAddr?: string) => {
+    if (!apt.patientPhone) return;
+    const text = buildWhatsappConfirmationText(apt, branchAddr);
+    const megaCreds = resolveMegaapiCredentials(clinic);
+
+    if (megaCreds.isConfigured) {
+      setSendingWhatsappId(apt.id);
+      setWhatsappFeedback(null);
+      const res = await sendWhatsAppMessage(apt.patientPhone, text, clinic, {
+        organizationId: apt.organizationId || clinic.organizationId,
+        branchId: apt.branchId,
+        patientId: apt.patientId,
+        patientName: apt.patientName,
+        appointmentId: apt.id,
+        recordAttemptOnFailure: true,
+      });
+      setSendingWhatsappId(null);
+      if (res.success) {
+        setWhatsappFeedback({
+          type: 'success',
+          text: `Confirmação enviada via WhatsApp para ${apt.patientName}!`,
+        });
+        setTimeout(() => setWhatsappFeedback(null), 4000);
+      } else {
+        setWhatsappFeedback({
+          type: 'error',
+          text: res.error || 'Erro ao enviar confirmação pelo WhatsApp.',
+        });
+      }
+    } else {
+      await StorageService.sendMessageToCloud({
+        organizationId: apt.organizationId || clinic.organizationId,
+        branchId: apt.branchId,
+        patientId: apt.patientId,
+        appointmentId: apt.id,
+        patientName: apt.patientName,
+        recipientPhone: apt.patientPhone,
+        channel: 'whatsapp',
+        direction: 'outbound',
+        content: text,
+        status: 'sent',
+      });
+    }
   };
 
   const handleConfirmCancel = async () => {
@@ -597,6 +652,25 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
         </div>
       </div>
 
+      {whatsappFeedback && (
+        <div
+          className={`p-3 rounded-xl border text-xs flex items-center justify-between gap-3 ${
+            whatsappFeedback.type === 'success'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              : 'bg-rose-50 border-rose-200 text-rose-800'
+          }`}
+        >
+          <span>{whatsappFeedback.text}</span>
+          <button
+            type="button"
+            onClick={() => setWhatsappFeedback(null)}
+            className="text-[11px] font-bold underline shrink-0"
+          >
+            Fechar
+          </button>
+        </div>
+      )}
+
       {/* Appointments Table (responsive overflow-x with unclipped Actions column) */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
@@ -735,16 +809,30 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
                                 Confirmar
                               </button>
                               {waHref && (
-                                <a
-                                  href={waHref}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="px-2 py-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition inline-flex items-center gap-1"
-                                  title="Enviar confirmação via WhatsApp"
-                                >
-                                  <MessageCircle className="w-3 h-3" />
-                                  <span>WhatsApp</span>
-                                </a>
+                                resolveMegaapiCredentials(clinic).isConfigured ? (
+                                  <button
+                                    type="button"
+                                    disabled={sendingWhatsappId === apt.id}
+                                    onClick={() => void handleSendAppointmentWhatsapp(apt, branchAddr)}
+                                    className="px-2 py-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition inline-flex items-center gap-1 disabled:opacity-60"
+                                    title="Enviar confirmação automática via WhatsApp"
+                                  >
+                                    <MessageCircle className="w-3 h-3" />
+                                    <span>{sendingWhatsappId === apt.id ? 'Enviando...' : 'WhatsApp'}</span>
+                                  </button>
+                                ) : (
+                                  <a
+                                    href={waHref}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={() => void handleSendAppointmentWhatsapp(apt, branchAddr)}
+                                    className="px-2 py-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition inline-flex items-center gap-1"
+                                    title="Enviar confirmação via WhatsApp"
+                                  >
+                                    <MessageCircle className="w-3 h-3" />
+                                    <span>WhatsApp</span>
+                                  </a>
+                                )
                               )}
                               <button
                                 type="button"
@@ -778,16 +866,30 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
                                 <span>Chegou</span>
                               </button>
                               {waHref && (
-                                <a
-                                  href={waHref}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="px-2 py-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition inline-flex items-center gap-1"
-                                  title="Enviar mensagem de confirmação no WhatsApp"
-                                >
-                                  <MessageCircle className="w-3 h-3" />
-                                  <span>WhatsApp</span>
-                                </a>
+                                resolveMegaapiCredentials(clinic).isConfigured ? (
+                                  <button
+                                    type="button"
+                                    disabled={sendingWhatsappId === apt.id}
+                                    onClick={() => void handleSendAppointmentWhatsapp(apt, branchAddr)}
+                                    className="px-2 py-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition inline-flex items-center gap-1 disabled:opacity-60"
+                                    title="Enviar mensagem de confirmação via WhatsApp"
+                                  >
+                                    <MessageCircle className="w-3 h-3" />
+                                    <span>{sendingWhatsappId === apt.id ? 'Enviando...' : 'WhatsApp'}</span>
+                                  </button>
+                                ) : (
+                                  <a
+                                    href={waHref}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={() => void handleSendAppointmentWhatsapp(apt, branchAddr)}
+                                    className="px-2 py-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition inline-flex items-center gap-1"
+                                    title="Enviar mensagem de confirmação no WhatsApp"
+                                  >
+                                    <MessageCircle className="w-3 h-3" />
+                                    <span>WhatsApp</span>
+                                  </a>
+                                )
                               )}
                               <button
                                 type="button"

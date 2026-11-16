@@ -2,6 +2,7 @@ import { Appointment, Patient } from '../types';
 import { StorageService } from './storage';
 import { getSupabase } from './supabaseClient';
 import { formatCpf } from './brazilianFormatters';
+import { sendWhatsAppMessage, resolveMegaapiCredentials } from './megaApiService';
 
 export const DEFAULT_N8N_WEBHOOK_DISPONIBILIDADE =
   'https://n8n.srv1352561.hstgr.cloud/webhook/agendadisp';
@@ -297,17 +298,30 @@ export async function submitBookingToN8nAndSupabase(
 
   StorageService.saveAppointment(newAppointment);
 
-  StorageService.sendMessage({
-    organizationId,
-    branchId: targetBranch?.id || 'branch_cf_centro',
-    patientId: savedPatient.id,
-    patientName: savedPatient.fullName,
-    recipientPhone: input.celularFormatted,
-    channel: 'whatsapp',
-    direction: 'outbound',
-    content: `Olá, ${savedPatient.fullName}! Seu agendamento (${input.tipoAtendimento}) com ${newAppointment.professionalName} foi confirmado para ${input.data.split('-').reverse().join('/')} às ${input.horaFormatada} em ${input.unidade}.`,
-    status: 'delivered',
-  });
+  const confirmationMessage = `Olá, ${savedPatient.fullName}! Seu agendamento (${input.tipoAtendimento}) com ${newAppointment.professionalName} foi confirmado para ${input.data.split('-').reverse().join('/')} às ${input.horaFormatada} em ${input.unidade}.`;
+
+  const megaapiCreds = resolveMegaapiCredentials(clinic);
+  if (megaapiCreds.isConfigured) {
+    await sendWhatsAppMessage(input.celularFormatted, confirmationMessage, clinic, {
+      organizationId,
+      branchId: targetBranch?.id || 'branch_cf_centro',
+      patientId: savedPatient.id,
+      patientName: savedPatient.fullName,
+      recordAttemptOnFailure: true,
+    });
+  } else {
+    await StorageService.sendMessageToCloud({
+      organizationId,
+      branchId: targetBranch?.id || 'branch_cf_centro',
+      patientId: savedPatient.id,
+      patientName: savedPatient.fullName,
+      recipientPhone: input.celularFormatted,
+      channel: 'whatsapp',
+      direction: 'outbound',
+      content: confirmationMessage,
+      status: 'delivered',
+    });
+  }
 
   // 3. Synchronize gracefully with Supabase (if VITE_SUPABASE_URL & KEY are active)
   let syncedSupabase = false;

@@ -556,12 +556,279 @@ export const StorageService = {
     return org;
   },
 
-  // Clinic
+  // Clinic (localStorage + Supabase public.clinics)
   getClinic: (): Clinic => getStored<Clinic>(STORAGE_KEYS.CLINIC, INITIAL_CLINIC),
   updateClinic: (updates: Partial<Clinic>): Clinic => {
     const clinic = { ...StorageService.getClinic(), ...updates };
     setStored(STORAGE_KEYS.CLINIC, clinic);
     return clinic;
+  },
+  fetchClinicFromCloud: async (params?: {
+    clinicId?: string;
+    organizationId?: string;
+    customDomain?: string;
+    slug?: string;
+  }): Promise<{ clinic: Clinic; source: 'cloud' | 'local' }> => {
+    const localClinic = StorageService.getClinic();
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { clinic: localClinic, source: 'local' };
+    }
+
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    try {
+      let resolvedClinicId = isUuid(params?.clinicId) ? params?.clinicId : undefined;
+      let resolvedOrgId = isUuid(params?.organizationId) ? params?.organizationId : undefined;
+
+      const targetDomain = (params?.customDomain || '').trim().toLowerCase();
+      if (!resolvedClinicId && targetDomain) {
+        const bareDomain = targetDomain.replace(/^www\./, '');
+        const domainCandidates = Array.from(
+          new Set([targetDomain, bareDomain, `www.${bareDomain}`])
+        );
+        const { data: domRow } = await supabase
+          .from('clinic_domains')
+          .select('clinic_id, organization_id')
+          .in('domain', domainCandidates)
+          .limit(1)
+          .maybeSingle();
+        if (domRow?.clinic_id) resolvedClinicId = String(domRow.clinic_id);
+        if (domRow?.organization_id) resolvedOrgId = String(domRow.organization_id);
+      }
+
+      if (!resolvedOrgId && params?.slug) {
+        const { data: orgRow } = await supabase
+          .from('organizations')
+          .select('id')
+          .eq('slug', params.slug.trim().toLowerCase())
+          .limit(1)
+          .maybeSingle();
+        if (orgRow?.id) resolvedOrgId = String(orgRow.id);
+      }
+
+      let clinicRow: Record<string, unknown> | null = null;
+      if (resolvedClinicId) {
+        const { data } = await supabase
+          .from('clinics')
+          .select('*')
+          .eq('id', resolvedClinicId)
+          .limit(1)
+          .maybeSingle();
+        if (data) clinicRow = data as Record<string, unknown>;
+      }
+
+      if (!clinicRow && resolvedOrgId) {
+        const { data } = await supabase
+          .from('clinics')
+          .select('*')
+          .eq('organization_id', resolvedOrgId)
+          .limit(1)
+          .maybeSingle();
+        if (data) clinicRow = data as Record<string, unknown>;
+      }
+
+      if (!clinicRow) {
+        const { data } = await supabase
+          .from('clinics')
+          .select('*')
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (data) clinicRow = data as Record<string, unknown>;
+      }
+
+      if (!clinicRow) {
+        return { clinic: localClinic, source: 'local' };
+      }
+
+      const mapped: Clinic = {
+        ...localClinic,
+        id: String(clinicRow.id || localClinic.id),
+        organizationId: String(clinicRow.organization_id || localClinic.organizationId),
+        legalName: clinicRow.legal_name ? String(clinicRow.legal_name) : localClinic.legalName,
+        tradeName: clinicRow.trade_name ? String(clinicRow.trade_name) : localClinic.tradeName,
+        documentNumber: clinicRow.document_number
+          ? String(clinicRow.document_number)
+          : localClinic.documentNumber,
+        municipalRegistration:
+          clinicRow.municipal_registration != null
+            ? String(clinicRow.municipal_registration)
+            : localClinic.municipalRegistration,
+        email: clinicRow.email ? String(clinicRow.email) : localClinic.email,
+        phone: clinicRow.phone ? String(clinicRow.phone) : localClinic.phone,
+        whatsapp: clinicRow.whatsapp != null ? String(clinicRow.whatsapp) : localClinic.whatsapp,
+        logoUrl: clinicRow.logo_url ? String(clinicRow.logo_url) : localClinic.logoUrl,
+        primaryColor: clinicRow.primary_color
+          ? String(clinicRow.primary_color)
+          : localClinic.primaryColor,
+        institutionalBio:
+          clinicRow.institutional_bio != null
+            ? String(clinicRow.institutional_bio)
+            : localClinic.institutionalBio,
+        n8nWebhookDisponibilidade: clinicRow.n8n_webhook_disponibilidade
+          ? String(clinicRow.n8n_webhook_disponibilidade)
+          : localClinic.n8nWebhookDisponibilidade,
+        n8nWebhookAgendamento: clinicRow.n8n_webhook_agendamento
+          ? String(clinicRow.n8n_webhook_agendamento)
+          : localClinic.n8nWebhookAgendamento,
+        megaapiInstanceUrl: clinicRow.megaapi_instance_url
+          ? String(clinicRow.megaapi_instance_url)
+          : localClinic.megaapiInstanceUrl,
+        megaapiToken: clinicRow.megaapi_token
+          ? String(clinicRow.megaapi_token)
+          : localClinic.megaapiToken,
+        createdAt: clinicRow.created_at ? String(clinicRow.created_at) : localClinic.createdAt,
+      };
+
+      setStored(STORAGE_KEYS.CLINIC, mapped);
+      return { clinic: mapped, source: 'cloud' };
+    } catch (err) {
+      console.warn('Aviso ao carregar dados da clínica na nuvem:', err);
+      return { clinic: localClinic, source: 'local' };
+    }
+  },
+  saveClinicToCloud: async (
+    updates: Partial<Clinic>
+  ): Promise<{ success: boolean; clinic: Clinic; syncedCloud: boolean; error?: string }> => {
+    const merged = StorageService.updateClinic(updates);
+
+    StorageService.addAuditLog({
+      action: 'Atualizou Configurações da Clínica',
+      entity: 'Clínica',
+      entityId: merged.id,
+      details: `Configurações atualizadas para ${merged.tradeName}`,
+    });
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { success: true, clinic: merged, syncedCloud: false };
+    }
+
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    try {
+      let targetClinicId = isUuid(merged.id) ? merged.id : undefined;
+      let targetOrgId = isUuid(merged.organizationId) ? merged.organizationId : undefined;
+
+      if (!targetOrgId) {
+        const orgSlug = (StorageService.getOrganization().slug || 'dr-newton-mureb')
+          .trim()
+          .toLowerCase();
+        const { data: orgRow } = await supabase
+          .from('organizations')
+          .select('id')
+          .eq('slug', orgSlug)
+          .limit(1)
+          .maybeSingle();
+        if (orgRow?.id) {
+          targetOrgId = String(orgRow.id);
+        } else {
+          const { data: firstOrg } = await supabase
+            .from('organizations')
+            .select('id')
+            .limit(1)
+            .maybeSingle();
+          if (firstOrg?.id) targetOrgId = String(firstOrg.id);
+        }
+      }
+
+      if (!targetClinicId && targetOrgId) {
+        const { data: clinicRow } = await supabase
+          .from('clinics')
+          .select('id')
+          .eq('organization_id', targetOrgId)
+          .limit(1)
+          .maybeSingle();
+        if (clinicRow?.id) targetClinicId = String(clinicRow.id);
+      }
+
+      if (!targetClinicId) {
+        const { data: firstClinic } = await supabase
+          .from('clinics')
+          .select('id, organization_id')
+          .limit(1)
+          .maybeSingle();
+        if (firstClinic?.id) {
+          targetClinicId = String(firstClinic.id);
+          if (!targetOrgId && firstClinic.organization_id) {
+            targetOrgId = String(firstClinic.organization_id);
+          }
+        }
+      }
+
+      if (!targetClinicId) {
+        return { success: true, clinic: merged, syncedCloud: false };
+      }
+
+      const basePayload: Record<string, unknown> = {
+        legal_name: merged.legalName,
+        trade_name: merged.tradeName,
+        document_number: merged.documentNumber,
+        municipal_registration: merged.municipalRegistration || null,
+        email: merged.email,
+        phone: merged.phone,
+        whatsapp: merged.whatsapp || null,
+        primary_color: merged.primaryColor || '#1E2024',
+        institutional_bio: merged.institutionalBio || null,
+        updated_at: new Date().toISOString(),
+      };
+
+      const extendedPayload: Record<string, unknown> = {
+        ...basePayload,
+        megaapi_instance_url: merged.megaapiInstanceUrl?.trim() || null,
+        megaapi_token: merged.megaapiToken?.trim() || null,
+        n8n_webhook_disponibilidade: merged.n8nWebhookDisponibilidade?.trim() || null,
+        n8n_webhook_agendamento: merged.n8nWebhookAgendamento?.trim() || null,
+      };
+
+      const { data: updatedExtended, error: extErr } = await supabase
+        .from('clinics')
+        .update(extendedPayload)
+        .eq('id', targetClinicId)
+        .select('id, organization_id')
+        .maybeSingle();
+
+      if (extErr) {
+        // Retry base fields if optional integration columns are not migrated yet
+        const { error: baseErr } = await supabase
+          .from('clinics')
+          .update(basePayload)
+          .eq('id', targetClinicId);
+
+        if (baseErr) {
+          return { success: true, clinic: merged, syncedCloud: false, error: baseErr.message };
+        }
+        return {
+          success: true,
+          clinic: merged,
+          syncedCloud: true,
+          error: extErr.message,
+        };
+      }
+
+      if (updatedExtended?.id) {
+        const syncedClinic: Clinic = {
+          ...merged,
+          id: String(updatedExtended.id),
+          organizationId: String(updatedExtended.organization_id || targetOrgId || merged.organizationId),
+        };
+        setStored(STORAGE_KEYS.CLINIC, syncedClinic);
+        return { success: true, clinic: syncedClinic, syncedCloud: true };
+      }
+
+      return { success: true, clinic: merged, syncedCloud: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn('Aviso ao sincronizar clínica na nuvem:', msg);
+      return { success: true, clinic: merged, syncedCloud: false, error: msg };
+    }
   },
 
   // Branches
@@ -999,6 +1266,196 @@ export const StorageService = {
 
     return fullMsg;
   },
+  sendMessageToCloud: async (
+    msg: Omit<MessageLog, 'id' | 'sentAt'>
+  ): Promise<{ message: MessageLog; syncedCloud: boolean; error?: string }> => {
+    const localMsg = StorageService.sendMessage(msg);
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { message: localMsg, syncedCloud: false };
+    }
+
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    try {
+      let supaOrgId = isUuid(msg.organizationId) ? msg.organizationId : undefined;
+      if (!supaOrgId) {
+        const orgSlug = (StorageService.getOrganization().slug || 'dr-newton-mureb')
+          .trim()
+          .toLowerCase();
+        const { data: orgRow } = await supabase
+          .from('organizations')
+          .select('id')
+          .eq('slug', orgSlug)
+          .limit(1)
+          .maybeSingle();
+        if (orgRow?.id) {
+          supaOrgId = String(orgRow.id);
+        } else {
+          const { data: firstOrg } = await supabase
+            .from('organizations')
+            .select('id')
+            .limit(1)
+            .maybeSingle();
+          if (firstOrg?.id) supaOrgId = String(firstOrg.id);
+        }
+      }
+
+      if (!supaOrgId) {
+        return { message: localMsg, syncedCloud: false };
+      }
+
+      let supaBranchId: string | null = isUuid(msg.branchId) ? msg.branchId! : null;
+      if (!supaBranchId) {
+        const { data: brRow } = await supabase
+          .from('branches')
+          .select('id')
+          .eq('organization_id', supaOrgId)
+          .limit(1)
+          .maybeSingle();
+        if (brRow?.id) supaBranchId = String(brRow.id);
+      }
+
+      let supaPatientId: string | null = isUuid(msg.patientId) ? msg.patientId! : null;
+      if (!supaPatientId && msg.patientId) {
+        const localPatient = StorageService.getPatients().find((p) => p.id === msg.patientId);
+        if (localPatient?.documentCpf) {
+          const cleanCpf = localPatient.documentCpf.replace(/\D/g, '');
+          const { data: patRow } = await supabase
+            .from('patients')
+            .select('id')
+            .eq('organization_id', supaOrgId)
+            .or(`document_cpf.eq.${localPatient.documentCpf},document_cpf.eq.${cleanCpf}`)
+            .limit(1)
+            .maybeSingle();
+          if (patRow?.id) supaPatientId = String(patRow.id);
+        }
+      }
+
+      const supaAppointmentId: string | null = isUuid(msg.appointmentId)
+        ? msg.appointmentId!
+        : null;
+
+      const { data: insertedRow, error: insertErr } = await supabase
+        .from('messages')
+        .insert({
+          organization_id: supaOrgId,
+          branch_id: supaBranchId,
+          patient_id: supaPatientId,
+          appointment_id: supaAppointmentId,
+          channel: msg.channel || 'whatsapp',
+          recipient_phone: msg.recipientPhone,
+          direction: msg.direction || 'outbound',
+          content: msg.content,
+          status: msg.status || 'sent',
+          sent_at: localMsg.sentAt,
+        })
+        .select('id, sent_at')
+        .maybeSingle();
+
+      if (insertErr) {
+        console.warn('Aviso ao salvar mensagem em public.messages:', insertErr.message);
+        return { message: localMsg, syncedCloud: false, error: insertErr.message };
+      }
+
+      if (insertedRow?.id) {
+        const syncedMsg: MessageLog = {
+          ...localMsg,
+          id: String(insertedRow.id),
+          sentAt: insertedRow.sent_at ? String(insertedRow.sent_at) : localMsg.sentAt,
+        };
+        const currentList = StorageService.getMessages().map((item) =>
+          item.id === localMsg.id ? syncedMsg : item
+        );
+        setStored(STORAGE_KEYS.MESSAGES, currentList);
+        return { message: syncedMsg, syncedCloud: true };
+      }
+
+      return { message: localMsg, syncedCloud: true };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.warn('Aviso ao persistir mensagem no Supabase:', errMsg);
+      return { message: localMsg, syncedCloud: false, error: errMsg };
+    }
+  },
+  fetchMessagesFromCloud: async (): Promise<MessageLog[]> => {
+    const localList = StorageService.getMessages();
+    const supabase = getSupabase();
+    if (!supabase) return localList;
+
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*, patients(full_name)')
+        .order('sent_at', { ascending: false })
+        .limit(100);
+
+      if (error || !data) {
+        return localList;
+      }
+
+      const localPatients = StorageService.getPatients();
+      const cloudMapped: MessageLog[] = (data as Array<Record<string, unknown>>).map((row) => {
+        const joinedPat = row.patients as { full_name?: string } | null | undefined;
+        const patientId = row.patient_id ? String(row.patient_id) : undefined;
+        const recipientPhone = String(row.recipient_phone || '');
+        const cleanRecipient = recipientPhone.replace(/\D/g, '');
+        const matchedLocalPatient =
+          localPatients.find((p) => p.id === patientId) ||
+          localPatients.find((p) => {
+            const pDigits = (p.whatsapp || p.phone).replace(/\D/g, '');
+            return pDigits && cleanRecipient.endsWith(pDigits.slice(-8));
+          });
+
+        const rawStatus = String(row.status || 'delivered');
+        const status: MessageLog['status'] =
+          rawStatus === 'sent' || rawStatus === 'delivered' || rawStatus === 'read' || rawStatus === 'failed'
+            ? rawStatus
+            : 'delivered';
+
+        return {
+          id: String(row.id),
+          organizationId: String(row.organization_id || 'org_mureb_01'),
+          branchId: row.branch_id ? String(row.branch_id) : undefined,
+          patientId,
+          appointmentId: row.appointment_id ? String(row.appointment_id) : undefined,
+          patientName: joinedPat?.full_name || matchedLocalPatient?.fullName || 'Paciente',
+          recipientPhone,
+          channel: (String(row.channel || 'whatsapp') as MessageLog['channel']),
+          direction: (String(row.direction || 'outbound') as MessageLog['direction']),
+          content: String(row.content || ''),
+          status,
+          sentAt: String(row.sent_at || row.created_at || new Date().toISOString()),
+        };
+      });
+
+      const unsyncedLocal = localList.filter(
+        (local) =>
+          !isUuid(local.id) &&
+          !cloudMapped.some(
+            (cloud) =>
+              cloud.content === local.content &&
+              Math.abs(Date.parse(cloud.sentAt) - Date.parse(local.sentAt)) < 60000
+          )
+      );
+
+      const merged = [...unsyncedLocal, ...cloudMapped].sort(
+        (a, b) => Date.parse(b.sentAt) - Date.parse(a.sentAt)
+      );
+      setStored(STORAGE_KEYS.MESSAGES, merged);
+      return merged;
+    } catch {
+      return localList;
+    }
+  },
 
   // Financial Transactions
   getFinancial: (branchFilterId?: string): FinancialTransaction[] => {
@@ -1037,12 +1494,19 @@ export const StorageService = {
   fetchWebsiteFromCloud: async (params?: {
     customDomain?: string;
     slug?: string;
-  }): Promise<{ website: WebsiteConfig; source: 'cloud' | 'local' }> => {
+    organizationId?: string;
+  }): Promise<{ website: WebsiteConfig; clinic?: Clinic; source: 'cloud' | 'local' }> => {
     const localSite = StorageService.getWebsite();
+    const localClinic = StorageService.getClinic();
     const supabase = getSupabase();
     if (!supabase) {
-      return { website: localSite, source: 'local' };
+      return { website: localSite, clinic: localClinic, source: 'local' };
     }
+
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
 
     const mapRow = (row: Record<string, unknown>): WebsiteConfig => {
       const validPalettes: ColorPalette[] = [
@@ -1063,18 +1527,23 @@ export const StorageService = {
         clinicId: String(row.clinic_id || localSite.clinicId),
         slug: String(row.slug || localSite.slug),
         customDomain: row.custom_domain ? String(row.custom_domain) : localSite.customDomain,
-        title: String(row.title || localSite.title),
-        tagline: row.tagline != null ? String(row.tagline) : localSite.tagline,
+        title: row.title ? String(row.title) : localSite.title,
+        tagline: row.tagline != null && String(row.tagline).trim() !== '' ? String(row.tagline) : localSite.tagline,
         paletteName,
         heroHeadline:
-          row.hero_headline != null ? String(row.hero_headline) : localSite.heroHeadline,
+          row.hero_headline != null && String(row.hero_headline).trim() !== ''
+            ? String(row.hero_headline)
+            : localSite.heroHeadline,
         heroSubheadline:
-          row.hero_subheadline != null
+          row.hero_subheadline != null && String(row.hero_subheadline).trim() !== ''
             ? String(row.hero_subheadline)
             : localSite.heroSubheadline,
-        aboutText: row.about_text != null ? String(row.about_text) : localSite.aboutText,
+        aboutText:
+          row.about_text != null && String(row.about_text).trim() !== ''
+            ? String(row.about_text)
+            : localSite.aboutText,
         medicalApproach:
-          row.medical_approach != null
+          row.medical_approach != null && String(row.medical_approach).trim() !== ''
             ? String(row.medical_approach)
             : localSite.medicalApproach,
         onlineBookingEnabled:
@@ -1082,13 +1551,17 @@ export const StorageService = {
             ? row.online_booking_enabled
             : localSite.onlineBookingEnabled,
         contactPhone:
-          row.contact_phone != null ? String(row.contact_phone) : localSite.contactPhone,
+          row.contact_phone != null && String(row.contact_phone).trim() !== ''
+            ? String(row.contact_phone)
+            : localSite.contactPhone,
         contactWhatsapp:
-          row.contact_whatsapp != null
+          row.contact_whatsapp != null && String(row.contact_whatsapp).trim() !== ''
             ? String(row.contact_whatsapp)
             : localSite.contactWhatsapp,
         contactEmail:
-          row.contact_email != null ? String(row.contact_email) : localSite.contactEmail,
+          row.contact_email != null && String(row.contact_email).trim() !== ''
+            ? String(row.contact_email)
+            : localSite.contactEmail,
         isPublished:
           typeof row.is_published === 'boolean' ? row.is_published : localSite.isPublished,
       };
@@ -1100,7 +1573,9 @@ export const StorageService = {
         .trim()
         .toLowerCase();
       const targetSlug = (params?.slug || localSite.slug || '').trim().toLowerCase();
+      const targetOrgId = isUuid(params?.organizationId) ? params?.organizationId : undefined;
 
+      // 1. Direct lookup on public.websites by custom_domain
       if (targetDomain) {
         const bareDomain = targetDomain.replace(/^www\./, '');
         const domainCandidates = Array.from(
@@ -1115,8 +1590,39 @@ export const StorageService = {
         if (domRow) {
           row = domRow as Record<string, unknown>;
         }
+
+        // 2. Fallback via public.clinic_domains -> clinic_id / organization_id -> public.websites
+        if (!row) {
+          const { data: clinicDomRow } = await supabase
+            .from('clinic_domains')
+            .select('clinic_id, organization_id')
+            .in('domain', domainCandidates)
+            .limit(1)
+            .maybeSingle();
+
+          if (clinicDomRow?.clinic_id) {
+            const { data: siteByClinic } = await supabase
+              .from('websites')
+              .select('*')
+              .eq('clinic_id', clinicDomRow.clinic_id)
+              .limit(1)
+              .maybeSingle();
+            if (siteByClinic) row = siteByClinic as Record<string, unknown>;
+          }
+
+          if (!row && clinicDomRow?.organization_id) {
+            const { data: siteByOrg } = await supabase
+              .from('websites')
+              .select('*')
+              .eq('organization_id', clinicDomRow.organization_id)
+              .limit(1)
+              .maybeSingle();
+            if (siteByOrg) row = siteByOrg as Record<string, unknown>;
+          }
+        }
       }
 
+      // 3. Lookup by slug
       if (!row && targetSlug) {
         const { data: slugRow } = await supabase
           .from('websites')
@@ -1129,6 +1635,20 @@ export const StorageService = {
         }
       }
 
+      // 4. Lookup by organization_id
+      if (!row && targetOrgId) {
+        const { data: orgSiteRow } = await supabase
+          .from('websites')
+          .select('*')
+          .eq('organization_id', targetOrgId)
+          .limit(1)
+          .maybeSingle();
+        if (orgSiteRow) {
+          row = orgSiteRow as Record<string, unknown>;
+        }
+      }
+
+      // 5. Latest published website fallback
       if (!row) {
         const { data: anyRow } = await supabase
           .from('websites')
@@ -1141,19 +1661,32 @@ export const StorageService = {
         }
       }
 
+      const clinicLookup = await StorageService.fetchClinicFromCloud({
+        clinicId: row?.clinic_id ? String(row.clinic_id) : undefined,
+        organizationId: row?.organization_id
+          ? String(row.organization_id)
+          : targetOrgId,
+        customDomain: targetDomain,
+        slug: targetSlug,
+      });
+
       if (row) {
         const mapped = mapRow(row);
         setStored(STORAGE_KEYS.WEBSITE, mapped);
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('medsync-website-updated', { detail: mapped }));
         }
-        return { website: mapped, source: 'cloud' };
+        return { website: mapped, clinic: clinicLookup.clinic, source: 'cloud' };
       }
 
-      return { website: localSite, source: 'local' };
+      return {
+        website: localSite,
+        clinic: clinicLookup.clinic,
+        source: clinicLookup.source,
+      };
     } catch (err) {
       console.warn('Aviso ao carregar configurações do site institucional:', err);
-      return { website: localSite, source: 'local' };
+      return { website: localSite, clinic: localClinic, source: 'local' };
     }
   },
   saveWebsiteToCloud: async (
@@ -2064,6 +2597,47 @@ export const StorageService = {
     const localRes = StorageService.saveAppointment(appointmentObj);
     if (!localRes.success) {
       return { success: false, message: localRes.message };
+    }
+
+    if (input.sendToN8n && !input.existingAppointmentId && appointmentObj.patientPhone) {
+      const startDt = new Date(input.startTime);
+      const formattedDate = startDt.toLocaleDateString('pt-BR');
+      const formattedHour =
+        input.horaFormatada ||
+        startDt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      const branchLabel = targetBranch
+        ? `${targetBranch.name} (${targetBranch.city}/${targetBranch.state})`
+        : 'nossa clínica';
+      const confirmationText = `Olá, ${appointmentObj.patientName}! Confirmamos seu agendamento (${appointmentObj.serviceName}) com ${appointmentObj.professionalName} para o dia ${formattedDate} às ${formattedHour} em ${branchLabel}.`;
+
+      if (clinic.megaapiInstanceUrl?.trim() && clinic.megaapiToken?.trim()) {
+        try {
+          const { sendWhatsAppMessage } = await import('./megaApiService');
+          await sendWhatsAppMessage(appointmentObj.patientPhone, confirmationText, clinic, {
+            organizationId: appointmentObj.organizationId,
+            branchId: appointmentObj.branchId,
+            patientId: appointmentObj.patientId,
+            patientName: appointmentObj.patientName,
+            appointmentId: appointmentObj.id,
+            recordAttemptOnFailure: true,
+          });
+        } catch (megaErr) {
+          console.warn('Aviso ao disparar WhatsApp de confirmação:', megaErr);
+        }
+      } else {
+        await StorageService.sendMessageToCloud({
+          organizationId: appointmentObj.organizationId,
+          branchId: appointmentObj.branchId,
+          patientId: appointmentObj.patientId,
+          appointmentId: appointmentObj.id,
+          patientName: appointmentObj.patientName,
+          recipientPhone: appointmentObj.patientPhone,
+          channel: 'whatsapp',
+          direction: 'outbound',
+          content: confirmationText,
+          status: 'delivered',
+        });
+      }
     }
 
     return { success: true, appointment: appointmentObj };
