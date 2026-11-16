@@ -5,6 +5,7 @@
 
 ALTER TABLE public.clinics
   ADD COLUMN IF NOT EXISTS megaapi_instance_url TEXT,
+  ADD COLUMN IF NOT EXISTS megaapi_instance_key TEXT,
   ADD COLUMN IF NOT EXISTS megaapi_token TEXT,
   ADD COLUMN IF NOT EXISTS n8n_webhook_disponibilidade TEXT,
   ADD COLUMN IF NOT EXISTS n8n_webhook_agendamento TEXT;

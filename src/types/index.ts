@@ -99,6 +99,7 @@ export interface Clinic {
   n8nWebhookDisponibilidade?: string;
   n8nWebhookAgendamento?: string;
   megaapiInstanceUrl?: string;
+  megaapiInstanceKey?: string;
   megaapiToken?: string;
   createdAt: string;
 }

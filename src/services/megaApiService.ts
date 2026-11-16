@@ -4,6 +4,10 @@ import { StorageService } from './storage';
 export interface MegaapiClinicConfig {
   megaapi_instance_url?: string;
   megaapiInstanceUrl?: string;
+  megaapi_instance_key?: string;
+  megaapiInstanceKey?: string;
+  instance_key?: string;
+  instanceKey?: string;
   megaapi_token?: string;
   megaapiToken?: string;
   access_token?: string;
@@ -54,6 +58,7 @@ export interface MegaapiConnectionResult {
   qrCode?: string;
   phoneNumber?: string;
   instanceName?: string;
+  instanceKey?: string;
   message: string;
 }
 
@@ -70,6 +75,24 @@ export function formatMegaapiPhone(rawPhone: string): string {
 }
 
 /**
+ * Formats a JID or raw WhatsApp digits (ex: 5522999089122:15@s.whatsapp.net) into a clean readable phone number.
+ */
+export function extractCleanWhatsAppNumber(rawJid?: string): string | undefined {
+  if (!rawJid) return undefined;
+  const beforeAt = String(rawJid).split('@')[0];
+  const beforeColon = beforeAt.split(':')[0];
+  const digits = beforeColon.replace(/\D/g, '');
+  if (!digits) return undefined;
+  if (digits.startsWith('55') && digits.length === 13) {
+    return `+${digits.slice(0, 2)} (${digits.slice(2, 4)}) ${digits.slice(4, 9)}-${digits.slice(9)}`;
+  }
+  if (digits.startsWith('55') && digits.length === 12) {
+    return `+${digits.slice(0, 2)} (${digits.slice(2, 4)}) ${digits.slice(4, 8)}-${digits.slice(8)}`;
+  }
+  return digits;
+}
+
+/**
  * Normalizes the configured Megaapi URL: trims spaces, ensures https://, removes trailing slashes.
  */
 export function normalizeMegaapiBaseUrl(rawUrl?: string): string {
@@ -81,10 +104,49 @@ export function normalizeMegaapiBaseUrl(rawUrl?: string): string {
   return `https://${cleaned}`;
 }
 
+function parseUrlSafe(url: string): URL | null {
+  try {
+    return new URL(url);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extracts an instance key from a Megaapi URL path if the user pasted a full instance URL.
+ */
+function extractInstanceKeyFromUrl(instanceUrl: string): string {
+  const parsed = parseUrlSafe(instanceUrl);
+  if (!parsed) return '';
+  const pathname = parsed.pathname.replace(/\/+$/, '');
+  if (!pathname) return '';
+
+  const patterns = [
+    /\/rest\/(?:v\d+\/)?instance\/(?:connectionState|status|qrcode_base64)\/([^/]+)$/i,
+    /\/rest\/(?:v\d+\/)?instance\/([^/]+)$/i,
+    /\/rest\/(?:v\d+\/)?sendMessage\/([^/]+)\/text$/i,
+    /\/v2\/instances\/([^/]+)(?:\/(?:status|messages\/text))?$/i,
+  ];
+
+  for (const regex of patterns) {
+    const match = pathname.match(regex);
+    if (
+      match?.[1] &&
+      !['status', 'instance', 'instances', 'connectionstate'].includes(match[1].toLowerCase())
+    ) {
+      return decodeURIComponent(match[1]);
+    }
+  }
+
+  return '';
+}
+
 export function resolveMegaapiCredentials(clinicConfig?: MegaapiClinicConfig | Partial<Clinic>): {
   instanceUrl: string;
+  instanceKey: string;
   token: string;
   isConfigured: boolean;
+  hasInstanceKey: boolean;
 } {
   const storedClinic = StorageService.getClinic();
   const cfg = (clinicConfig || storedClinic) as MegaapiClinicConfig & Partial<Clinic>;
@@ -95,6 +157,17 @@ export function resolveMegaapiCredentials(clinicConfig?: MegaapiClinicConfig | P
     storedClinic.megaapiInstanceUrl ||
     '';
 
+  const instanceUrl = normalizeMegaapiBaseUrl(rawUrl);
+
+  const rawKey =
+    cfg.megaapiInstanceKey ||
+    cfg.megaapi_instance_key ||
+    cfg.instanceKey ||
+    cfg.instance_key ||
+    storedClinic.megaapiInstanceKey ||
+    extractInstanceKeyFromUrl(instanceUrl) ||
+    '';
+
   const rawToken =
     cfg.megaapiToken ||
     cfg.megaapi_token ||
@@ -102,22 +175,16 @@ export function resolveMegaapiCredentials(clinicConfig?: MegaapiClinicConfig | P
     storedClinic.megaapiToken ||
     '';
 
-  const instanceUrl = normalizeMegaapiBaseUrl(rawUrl);
+  const instanceKey = rawKey.trim();
   const token = rawToken.trim();
 
   return {
     instanceUrl,
+    instanceKey,
     token,
     isConfigured: Boolean(instanceUrl && token),
+    hasInstanceKey: Boolean(instanceKey),
   };
-}
-
-function parseUrlSafe(url: string): URL | null {
-  try {
-    return new URL(url);
-  } catch {
-    return null;
-  }
 }
 
 function isLikelyCorsOrNetworkError(err: unknown): boolean {
@@ -132,83 +199,126 @@ function isLikelyCorsOrNetworkError(err: unknown): boolean {
   );
 }
 
+function buildMegaapiHeaders(
+  token: string,
+  instanceKey: string,
+  isJsonPost = false
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
+
+  if (instanceKey) {
+    headers.instancekey = instanceKey;
+    headers.key = instanceKey;
+  }
+
+  if (isJsonPost) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  return headers;
+}
+
+function dedupeUrls(urls: string[]): string[] {
+  return Array.from(new Set(urls.filter(Boolean)));
+}
+
 /**
- * Builds candidate status endpoints for Megaapi based on whether the user entered
- * a bare domain (e.g. https://apibusiness1.megaapi.com.br), a versioned prefix (/rest/v1, /api/v1),
- * or a full instance route.
+ * Builds candidate status endpoints for Megaapi using the configured HOST (origin)
+ * combined with the Instance Key (e.g. megabusiness-MH7CY257SQCAASLHMW73HB9GZ64).
  */
-export function buildStatusEndpointCandidates(instanceUrl: string): string[] {
+export function buildStatusEndpointCandidates(
+  instanceUrl: string,
+  instanceKey = ''
+): string[] {
   const normalized = normalizeMegaapiBaseUrl(instanceUrl);
   if (!normalized) return [];
 
   const parsed = parseUrlSafe(normalized);
-  if (!parsed) return [`${normalized}/rest/v1/instance/status`];
+  const origin = parsed?.origin || normalized;
+  const pathname = (parsed?.pathname || '').replace(/\/+$/, '');
+  const cleanKey = instanceKey.trim();
+  const encodedKey = cleanKey ? encodeURIComponent(cleanKey) : '';
 
-  const origin = parsed.origin;
-  const pathname = parsed.pathname.replace(/\/+$/, '');
+  const keyBasedCandidates = encodedKey
+    ? [
+        `${origin}/rest/instance/${encodedKey}`,
+        `${origin}/rest/instance/connectionState/${encodedKey}`,
+        `${origin}/rest/v1/instance/connectionState/${encodedKey}`,
+        `${origin}/rest/v1/instance/${encodedKey}`,
+        `${origin}/rest/v1/instance/status?instanceKey=${encodedKey}`,
+        `${origin}/api/v1/instance/status?instanceKey=${encodedKey}`,
+        `${origin}/v2/instances/${encodedKey}/status`,
+      ]
+    : [];
 
-  // If user entered only the domain (no path), complement automatically with standard Megaapi routes
-  if (!pathname || pathname === '') {
-    return [
+  // If user entered only the domain (e.g. https://apibusiness1.megaapi.com.br)
+  if (!pathname) {
+    return dedupeUrls([
+      ...keyBasedCandidates,
+      `${origin}/rest/instance/status`,
       `${origin}/rest/v1/instance/status`,
       `${origin}/api/v1/instance/status`,
-      `${origin}/rest/instance/status`,
       `${origin}/v2/instances/status`,
-    ];
+    ]);
   }
 
-  // Already a status / connectionState endpoint
+  // Already an explicit status / connectionState endpoint
   if (/\/(status|connectionState)(\/|$)/i.test(pathname)) {
-    return [normalized];
+    return dedupeUrls([normalized, ...keyBasedCandidates]);
   }
 
-  // Versioned prefix only (/rest/v1 or /api/v1)
-  if (/^\/(rest|api)\/v\d+$/i.test(pathname)) {
-    return [`${normalized}/instance/status`, `${normalized}/status`];
+  // Versioned prefix only (/rest, /rest/v1, /api/v1)
+  if (/^\/(rest|api)(\/v\d+)?$/i.test(pathname)) {
+    return dedupeUrls([
+      ...keyBasedCandidates,
+      `${normalized}/instance/status`,
+      `${normalized}/status`,
+    ]);
   }
 
-  // REST sendMessage URL -> map to connectionState
+  // REST sendMessage URL -> map to instance & connectionState
   const restSendMatch = pathname.match(/\/rest\/(?:v\d+\/)?sendMessage\/([^/]+)\/text$/i);
   if (restSendMatch) {
     const prefix = pathname.includes('/rest/v1') ? '/rest/v1' : '/rest';
-    return [
-      `${origin}${prefix}/instance/connectionState/${restSendMatch[1]}`,
-      `${origin}${prefix}/instance/status`,
-    ];
-  }
-
-  // REST instance URL (.../rest/instance/{key} or .../rest/v1/instance/{key})
-  const restInstanceMatch = pathname.match(/^(\/rest(?:\/v\d+)?)\/(?:instance\/)?([^/]+)$/i);
-  if (restInstanceMatch && restInstanceMatch[2].toLowerCase() !== 'instance') {
-    const [, prefix, instanceKey] = restInstanceMatch;
-    return [
-      `${origin}${prefix}/instance/connectionState/${instanceKey}`,
-      `${origin}${prefix}/instance/status/${instanceKey}`,
-      `${normalized}/status`,
-    ];
+    const keyFromPath = encodedKey || encodeURIComponent(restSendMatch[1]);
+    return dedupeUrls([
+      `${origin}${prefix}/instance/${keyFromPath}`,
+      `${origin}${prefix}/instance/connectionState/${keyFromPath}`,
+      ...keyBasedCandidates,
+    ]);
   }
 
   // Megaapi v2 text endpoint (.../messages/text)
   if (/\/messages\/text$/i.test(pathname)) {
-    return [normalized.replace(/\/messages\/text$/i, '/status')];
+    return dedupeUrls([
+      normalized.replace(/\/messages\/text$/i, '/status'),
+      ...keyBasedCandidates,
+    ]);
   }
 
-  return [
+  return dedupeUrls([
+    ...keyBasedCandidates,
     `${normalized}/status`,
     `${origin}/rest/v1/instance/status`,
     `${origin}/api/v1/instance/status`,
-  ];
+  ]);
 }
 
 function buildSendEndpointCandidates(
   instanceUrl: string,
   cleanPhone: string,
-  message: string
+  message: string,
+  instanceKey = ''
 ): Array<{ endpoint: string; body: Record<string, unknown> }> {
   const normalized = normalizeMegaapiBaseUrl(instanceUrl);
   const parsed = parseUrlSafe(normalized);
   const origin = parsed?.origin || normalized;
   const pathname = (parsed?.pathname || '').replace(/\/+$/, '');
+  const cleanKey = instanceKey.trim();
+  const encodedKey = cleanKey ? encodeURIComponent(cleanKey) : '';
 
   const restBody: Record<string, unknown> = {
     messageData: {
@@ -218,14 +328,48 @@ function buildSendEndpointCandidates(
   };
 
   const v2Body: Record<string, unknown> = {
+    ...(cleanKey
+      ? {
+          instanceKey: cleanKey,
+          instance_key: cleanKey,
+          key: cleanKey,
+        }
+      : {}),
     to: cleanPhone,
     number: cleanPhone,
     text: message,
   };
 
+  const keyBasedSendCandidates: Array<{ endpoint: string; body: Record<string, unknown> }> =
+    encodedKey
+      ? [
+          {
+            endpoint: `${origin}/rest/sendMessage/${encodedKey}/text`,
+            body: restBody,
+          },
+          {
+            endpoint: `${origin}/rest/v1/sendMessage/${encodedKey}/text`,
+            body: restBody,
+          },
+          {
+            endpoint: `${origin}/rest/v1/message/text`,
+            body: v2Body,
+          },
+          {
+            endpoint: `${origin}/api/v1/message/text`,
+            body: v2Body,
+          },
+          {
+            endpoint: `${origin}/v2/instances/${encodedKey}/messages/text`,
+            body: v2Body,
+          },
+        ]
+      : [];
+
   // Bare domain (https://apibusiness1.megaapi.com.br)
   if (!pathname) {
     return [
+      ...keyBasedSendCandidates,
       { endpoint: `${origin}/rest/v1/message/text`, body: v2Body },
       { endpoint: `${origin}/api/v1/message/text`, body: v2Body },
       { endpoint: `${origin}/rest/v1/messages/text`, body: v2Body },
@@ -234,12 +378,13 @@ function buildSendEndpointCandidates(
 
   // Explicit REST sendMessage path
   if (/\/rest\/(?:v\d+\/)?sendMessage\/[^/]+\/text$/i.test(pathname)) {
-    return [{ endpoint: normalized, body: restBody }];
+    return [{ endpoint: normalized, body: restBody }, ...keyBasedSendCandidates];
   }
 
-  // Versioned prefix only (/rest/v1 or /api/v1)
-  if (/^\/(rest|api)\/v\d+$/i.test(pathname)) {
+  // Versioned prefix only (/rest, /rest/v1, /api/v1)
+  if (/^\/(rest|api)(\/v\d+)?$/i.test(pathname)) {
     return [
+      ...keyBasedSendCandidates,
       { endpoint: `${normalized}/message/text`, body: v2Body },
       { endpoint: `${normalized}/messages/text`, body: v2Body },
     ];
@@ -248,6 +393,7 @@ function buildSendEndpointCandidates(
   // Status URL passed as instanceUrl -> rewrite to text dispatch
   if (/\/instance\/status$/i.test(pathname)) {
     return [
+      ...keyBasedSendCandidates,
       { endpoint: normalized.replace(/\/instance\/status$/i, '/message/text'), body: v2Body },
       { endpoint: normalized.replace(/\/instance\/status$/i, '/sendMessage/text'), body: restBody },
     ];
@@ -256,27 +402,33 @@ function buildSendEndpointCandidates(
   // REST instance key URL (.../rest/instance/{key})
   const restInstanceMatch = pathname.match(/^(\/rest(?:\/v\d+)?)\/(?:instance\/)?([^/]+)$/i);
   if (restInstanceMatch && restInstanceMatch[2].toLowerCase() !== 'instance') {
-    const [, prefix, instanceKey] = restInstanceMatch;
+    const [, prefix, pathKey] = restInstanceMatch;
+    const effectiveKey = encodedKey || encodeURIComponent(pathKey);
     return [
-      { endpoint: `${origin}${prefix}/sendMessage/${instanceKey}/text`, body: restBody },
+      { endpoint: `${origin}${prefix}/sendMessage/${effectiveKey}/text`, body: restBody },
+      ...keyBasedSendCandidates,
       { endpoint: `${normalized}/messages/text`, body: v2Body },
     ];
   }
 
   // Explicit /messages/text or /message/text
   if (/\/messages?\/text$/i.test(pathname)) {
-    return [{ endpoint: normalized, body: v2Body }];
+    return [{ endpoint: normalized, body: v2Body }, ...keyBasedSendCandidates];
   }
 
   return [
+    ...keyBasedSendCandidates,
     { endpoint: `${normalized}/messages/text`, body: v2Body },
     { endpoint: `${normalized}/message/text`, body: v2Body },
     { endpoint: `${origin}/rest/v1/message/text`, body: v2Body },
   ];
 }
 
-function buildNotFoundGuidanceMessage(testedEndpoint: string): string {
-  return `Servidor Megaapi respondeu 404 em ${testedEndpoint}. Verifique se o caminho da instância no painel da Megaapi inclui o prefixo correto (/rest/v1, /api/v1 ou /rest/instance/...) e o identificador da instância.`;
+function buildNotFoundGuidanceMessage(testedEndpoint: string, hasInstanceKey: boolean): string {
+  if (!hasInstanceKey) {
+    return `Servidor Megaapi respondeu 404 em ${testedEndpoint}. Informe a Instance Key (ex: megabusiness-...) no campo correspondente para identificar a instância no servidor.`;
+  }
+  return `Servidor Megaapi respondeu 404 em ${testedEndpoint}. Verifique o HOST cadastrado (ex: https://apibusiness1.megaapi.com.br) e confirme se a Instance Key e o Token estão ativos no painel da Megaapi.`;
 }
 
 function buildCorsGuidanceMessage(testedEndpoint: string): string {
@@ -285,24 +437,37 @@ function buildCorsGuidanceMessage(testedEndpoint: string): string {
 
 /**
  * Checks whether the clinic's Megaapi WhatsApp instance is connected or requires QR Code scan.
- * Normalizes bare URLs and handles HTTP 404 and browser CORS errors gracefully.
+ * Combines configured HOST with Instance Key and Bearer Token in headers and route candidates.
  */
 export async function checkMegaapiConnectionStatus(
   clinicConfig?: MegaapiClinicConfig | Partial<Clinic>
 ): Promise<MegaapiConnectionResult> {
-  const { instanceUrl, token, isConfigured } = resolveMegaapiCredentials(clinicConfig);
+  const { instanceUrl, instanceKey, token, isConfigured, hasInstanceKey } =
+    resolveMegaapiCredentials(clinicConfig);
 
   if (!isConfigured) {
     return {
       connected: false,
       status: 'UNCONFIGURED',
-      message: 'Informe a URL da instância e o Token de acesso para verificar a conexão.',
+      message: 'Informe a URL (Host), a Instance Key e o Token de acesso para verificar a conexão.',
     };
   }
 
-  const candidates = buildStatusEndpointCandidates(instanceUrl);
+  if (!hasInstanceKey) {
+    return {
+      connected: false,
+      status: 'UNCONFIGURED',
+      message:
+        'Informe a Instance Key da Megaapi (ex: megabusiness-MH7CY257SQCAASLHMW73HB9GZ64) para identificar a instância corretamente.',
+    };
+  }
+
+  const candidates = buildStatusEndpointCandidates(instanceUrl, instanceKey);
+  const headers = buildMegaapiHeaders(token, instanceKey, false);
+
   let lastHttpStatus: number | undefined;
   let lastEndpoint = candidates[0] || instanceUrl;
+  let fallbackDisconnectedResult: MegaapiConnectionResult | null = null;
 
   for (const statusEndpoint of candidates) {
     lastEndpoint = statusEndpoint;
@@ -310,16 +475,12 @@ export async function checkMegaapiConnectionStatus(
     try {
       const response = await fetch(statusEndpoint, {
         method: 'GET',
-        headers: {
-          Accept: 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers,
       });
 
       lastHttpStatus = response.status;
 
       if (response.status === 404) {
-        // Try next normalized candidate if available
         continue;
       }
 
@@ -329,7 +490,8 @@ export async function checkMegaapiConnectionStatus(
           status: 'ERROR',
           httpStatus: response.status,
           testedEndpoint: statusEndpoint,
-          message: `Autenticação recusada pela Megaapi (HTTP ${response.status}). Verifique se o Token (megaapi_token) está correto e ativo.`,
+          instanceKey,
+          message: `Autenticação recusada pela Megaapi (HTTP ${response.status}). Verifique se o Token (megaapi_token) e a Instance Key (megaapi_instance_key) estão corretos.`,
         };
       }
 
@@ -339,6 +501,7 @@ export async function checkMegaapiConnectionStatus(
           status: 'ERROR',
           httpStatus: response.status,
           testedEndpoint: statusEndpoint,
+          instanceKey,
           message: `Servidor Megaapi retornou HTTP ${response.status} em ${statusEndpoint}. Verifique as configurações da instância.`,
         };
       }
@@ -347,13 +510,18 @@ export async function checkMegaapiConnectionStatus(
       const instanceObj = (data.instance as Record<string, unknown> | undefined) || data;
 
       const rawState = String(
-        instanceObj.status ||
-          instanceObj.state ||
+        instanceObj.connection_status ||
           instanceObj.connectionStatus ||
+          instanceObj.status ||
+          instanceObj.state ||
+          data.connection_status ||
+          data.connectionStatus ||
           data.status ||
           data.state ||
           ''
-      ).toUpperCase();
+      )
+        .trim()
+        .toUpperCase();
 
       const qrCode =
         (instanceObj.qrcode as string | undefined) ||
@@ -361,21 +529,36 @@ export async function checkMegaapiConnectionStatus(
         (data.qrcode as string | undefined) ||
         (data.base64 as string | undefined);
 
-      const phoneNumber =
+      const rawPhoneJid =
+        (instanceObj.user as { id?: string } | undefined)?.id ||
+        (data.user as { id?: string } | undefined)?.id ||
         (instanceObj.phone as string | undefined) ||
         (instanceObj.owner as string | undefined) ||
-        (instanceObj.user as { id?: string } | undefined)?.id;
+        (instanceObj.number as string | undefined) ||
+        (instanceObj.wid as string | undefined) ||
+        (data.phone as string | undefined);
+
+      const phoneNumber = extractCleanWhatsAppNumber(rawPhoneJid);
 
       const instanceName =
         (instanceObj.instanceName as string | undefined) ||
         (instanceObj.key as string | undefined) ||
-        (instanceObj.name as string | undefined);
+        (instanceObj.name as string | undefined) ||
+        instanceKey;
+
+      const isExplicitlyDisconnected =
+        ['DISCONNECTED', 'CLOSE', 'CLOSED', 'LOGOUT', 'OFFLINE'].includes(rawState) ||
+        data.error === true;
 
       const isConnected =
-        Boolean(instanceObj.connected) ||
-        Boolean(data.connected) ||
-        rawState === 'CONNECTED' ||
-        rawState === 'OPEN';
+        !isExplicitlyDisconnected &&
+        (instanceObj.connected === true ||
+          instanceObj.phone_connected === true ||
+          data.connected === true ||
+          data.phone_connected === true ||
+          ['CONNECTED', 'OPEN', 'ONLINE', 'AUTHENTICATED'].includes(rawState) ||
+          (Boolean(phoneNumber) &&
+            !['QRCODE', 'PAIRING', 'CONNECTING'].includes(rawState)));
 
       if (isConnected) {
         return {
@@ -385,7 +568,10 @@ export async function checkMegaapiConnectionStatus(
           testedEndpoint: statusEndpoint,
           phoneNumber,
           instanceName,
-          message: 'Instância conectada e pronta para envios em tempo real.',
+          instanceKey,
+          message: phoneNumber
+            ? `Instância conectada ao WhatsApp ${phoneNumber} e pronta para envios em tempo real.`
+            : 'Instância conectada e pronta para envios em tempo real.',
         };
       }
 
@@ -402,18 +588,29 @@ export async function checkMegaapiConnectionStatus(
           testedEndpoint: statusEndpoint,
           qrCode,
           instanceName,
+          instanceKey,
           message: 'Instância aguardando leitura do QR Code do WhatsApp.',
         };
       }
 
-      return {
+      fallbackDisconnectedResult = {
         connected: false,
         status: 'DISCONNECTED',
         httpStatus: response.status,
         testedEndpoint: statusEndpoint,
         instanceName,
-        message: 'Instância desconectada. Reconecte o aparelho via QR Code no painel da Megaapi.',
+        instanceKey,
+        message:
+          (data.message as string | undefined) ||
+          'Instância desconectada. Reconecte o aparelho via QR Code no painel da Megaapi.',
       };
+
+      // If this route returned an error payload (e.g., generic /status without instance match), try remaining candidates
+      if (data.error === true) {
+        continue;
+      }
+
+      return fallbackDisconnectedResult;
     } catch (err) {
       if (isLikelyCorsOrNetworkError(err)) {
         return {
@@ -421,6 +618,7 @@ export async function checkMegaapiConnectionStatus(
           status: 'CORS_BLOCKED',
           isCorsBlocked: true,
           testedEndpoint: statusEndpoint,
+          instanceKey,
           message: buildCorsGuidanceMessage(statusEndpoint),
         };
       }
@@ -430,9 +628,14 @@ export async function checkMegaapiConnectionStatus(
         connected: false,
         status: 'ERROR',
         testedEndpoint: statusEndpoint,
+        instanceKey,
         message: `Falha ao conectar ao servidor Megaapi: ${errMsg}`,
       };
     }
+  }
+
+  if (fallbackDisconnectedResult) {
+    return fallbackDisconnectedResult;
   }
 
   // All normalized status endpoints returned 404
@@ -441,7 +644,8 @@ export async function checkMegaapiConnectionStatus(
     status: 'NOT_FOUND',
     httpStatus: lastHttpStatus || 404,
     testedEndpoint: lastEndpoint,
-    message: buildNotFoundGuidanceMessage(lastEndpoint),
+    instanceKey,
+    message: buildNotFoundGuidanceMessage(lastEndpoint, hasInstanceKey),
   };
 }
 
@@ -503,7 +707,7 @@ export async function simulateWhatsAppMessage(
 
 /**
  * Sends a WhatsApp text message through the clinic's Megaapi instance and logs it to public.messages.
- * Supports simulation mode and clear 404/CORS error guidance.
+ * Combines HOST, Instance Key, and Bearer Token in headers and Megaapi REST/v1/v2 routes.
  */
 export async function sendWhatsAppMessage(
   phone: string,
@@ -533,19 +737,30 @@ export async function sendWhatsAppMessage(
     };
   }
 
-  const { instanceUrl, token, isConfigured } = resolveMegaapiCredentials(clinicConfig);
-  if (!isConfigured) {
+  const { instanceUrl, instanceKey, token, isConfigured, hasInstanceKey } =
+    resolveMegaapiCredentials(clinicConfig);
+
+  if (!isConfigured || !hasInstanceKey) {
     if (context?.fallbackToSimulation) {
       return simulateWhatsAppMessage(phone, trimmedMessage, context);
     }
     return {
       success: false,
       cleanPhone,
-      error: 'Credenciais da API de WhatsApp não configuradas para esta clínica.',
+      error: !isConfigured
+        ? 'Credenciais da API de WhatsApp não configuradas para esta clínica.'
+        : 'Instance Key da Megaapi não informada. Preencha o campo megaapi_instance_key nas configurações.',
     };
   }
 
-  const candidates = buildSendEndpointCandidates(instanceUrl, cleanPhone, trimmedMessage);
+  const candidates = buildSendEndpointCandidates(
+    instanceUrl,
+    cleanPhone,
+    trimmedMessage,
+    instanceKey
+  );
+  const headers = buildMegaapiHeaders(token, instanceKey, true);
+
   let lastStatusCode: number | undefined;
   let lastEndpoint = candidates[0]?.endpoint || instanceUrl;
 
@@ -555,18 +770,13 @@ export async function sendWhatsAppMessage(
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers,
         body: JSON.stringify(body),
       });
 
       lastStatusCode = response.status;
 
       if (response.status === 404) {
-        // Try next candidate route
         continue;
       }
 
@@ -575,7 +785,7 @@ export async function sendWhatsAppMessage(
       if (!response.ok) {
         const apiErr =
           response.status === 401 || response.status === 403
-            ? `Token Megaapi inválido ou sem autorização (HTTP ${response.status}).`
+            ? `Token ou Instance Key Megaapi inválido (HTTP ${response.status}).`
             : (responseJson.message as string | undefined) ||
               (responseJson.error as string | undefined) ||
               `Erro HTTP ${response.status} ao enviar mensagem.`;
@@ -667,6 +877,6 @@ export async function sendWhatsAppMessage(
     statusCode: lastStatusCode || 404,
     isNotFoundError: true,
     testedEndpoint: lastEndpoint,
-    error: buildNotFoundGuidanceMessage(lastEndpoint),
+    error: buildNotFoundGuidanceMessage(lastEndpoint, hasInstanceKey),
   };
 }

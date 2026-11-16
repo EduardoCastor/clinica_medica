@@ -16,6 +16,7 @@ import {
   KeyRound,
   Link2,
   FlaskConical,
+  Hash,
 } from 'lucide-react';
 import { MessageTemplate, MessageLog } from '../../types';
 import { StorageService } from '../../services/storage';
@@ -50,6 +51,7 @@ export const CommunicationModule: React.FC = () => {
 
   // Megaapi Settings & Status State
   const [megaapiInstanceUrl, setMegaapiInstanceUrl] = useState(clinic.megaapiInstanceUrl || '');
+  const [megaapiInstanceKey, setMegaapiInstanceKey] = useState(clinic.megaapiInstanceKey || '');
   const [megaapiToken, setMegaapiToken] = useState(clinic.megaapiToken || '');
   const [isSavingConfig, setIsSavingConfig] = useState(false);
   const [configFeedback, setConfigFeedback] = useState<{
@@ -58,7 +60,7 @@ export const CommunicationModule: React.FC = () => {
   } | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<MegaapiConnectionResult>(() => {
     const creds = resolveMegaapiCredentials(clinic);
-    return creds.isConfigured
+    return creds.isConfigured && creds.hasInstanceKey
       ? {
           connected: false,
           status: 'DISCONNECTED',
@@ -67,7 +69,7 @@ export const CommunicationModule: React.FC = () => {
       : {
           connected: false,
           status: 'UNCONFIGURED',
-          message: 'Configure a URL da instância e o Token na aba Configuração WhatsApp.',
+          message: 'Configure o Host, a Instance Key e o Token na aba Configuração Megaapi.',
         };
   });
   const [isCheckingStatus, setIsCheckingStatus] = useState(false);
@@ -99,13 +101,16 @@ export const CommunicationModule: React.FC = () => {
     if (cloudClinic.megaapiInstanceUrl !== undefined) {
       setMegaapiInstanceUrl(cloudClinic.megaapiInstanceUrl || '');
     }
+    if (cloudClinic.megaapiInstanceKey !== undefined) {
+      setMegaapiInstanceKey(cloudClinic.megaapiInstanceKey || '');
+    }
     if (cloudClinic.megaapiToken !== undefined) {
       setMegaapiToken(cloudClinic.megaapiToken || '');
     }
     setIsRefreshingMessages(false);
 
     const creds = resolveMegaapiCredentials(cloudClinic);
-    if (creds.isConfigured) {
+    if (creds.isConfigured && creds.hasInstanceKey) {
       const statusRes = await checkMegaapiConnectionStatus(cloudClinic);
       setConnectionStatus(statusRes);
     }
@@ -115,10 +120,15 @@ export const CommunicationModule: React.FC = () => {
     void loadMessagesAndClinic();
   }, [loadMessagesAndClinic]);
 
-  const handleCheckConnection = async (customUrl?: string, customTok?: string) => {
+  const handleCheckConnection = async (
+    customUrl?: string,
+    customTok?: string,
+    customKey?: string
+  ) => {
     setIsCheckingStatus(true);
     const result = await checkMegaapiConnectionStatus({
       megaapiInstanceUrl: customUrl !== undefined ? customUrl : megaapiInstanceUrl,
+      megaapiInstanceKey: customKey !== undefined ? customKey : megaapiInstanceKey,
       megaapiToken: customTok !== undefined ? customTok : megaapiToken,
     });
     setConnectionStatus(result);
@@ -187,13 +197,14 @@ export const CommunicationModule: React.FC = () => {
 
     const creds = resolveMegaapiCredentials({
       megaapiInstanceUrl,
+      megaapiInstanceKey,
       megaapiToken,
     });
 
-    if (!creds.isConfigured) {
+    if (!creds.isConfigured || !creds.hasInstanceKey) {
       setDispatchFeedback({
         type: 'error',
-        text: 'Configure a URL da instância Megaapi e o Token na aba "Configuração Megaapi" ou ative o Modo de Simulação / Teste.',
+        text: 'Configure a URL (Host), a Instance Key e o Token na aba "Configuração Megaapi" ou ative o Modo de Simulação / Teste.',
         canSimulateFallback: true,
       });
       return;
@@ -208,6 +219,7 @@ export const CommunicationModule: React.FC = () => {
       effectiveMessageText,
       {
         megaapiInstanceUrl,
+        megaapiInstanceKey,
         megaapiToken,
       },
       {
@@ -244,16 +256,20 @@ export const CommunicationModule: React.FC = () => {
     setConfigFeedback(null);
 
     const trimmedUrl = normalizeMegaapiBaseUrl(megaapiInstanceUrl);
+    const trimmedKey = megaapiInstanceKey.trim();
     const trimmedToken = megaapiToken.trim();
     setMegaapiInstanceUrl(trimmedUrl);
+    setMegaapiInstanceKey(trimmedKey);
 
     updateClinic({
       megaapiInstanceUrl: trimmedUrl,
+      megaapiInstanceKey: trimmedKey,
       megaapiToken: trimmedToken,
     });
 
     const saveRes = await StorageService.saveClinicToCloud({
       megaapiInstanceUrl: trimmedUrl,
+      megaapiInstanceKey: trimmedKey,
       megaapiToken: trimmedToken,
     });
 
@@ -267,17 +283,17 @@ export const CommunicationModule: React.FC = () => {
     } else {
       setConfigFeedback({
         type: 'success',
-        text: 'Credenciais Megaapi salvas e sincronizadas com sucesso!',
+        text: 'Credenciais Megaapi (Host, Instance Key e Token) salvas e sincronizadas com sucesso!',
       });
     }
 
-    if (trimmedUrl && trimmedToken) {
-      await handleCheckConnection(trimmedUrl, trimmedToken);
+    if (trimmedUrl && trimmedKey && trimmedToken) {
+      await handleCheckConnection(trimmedUrl, trimmedToken, trimmedKey);
     } else {
       setConnectionStatus({
         connected: false,
         status: 'UNCONFIGURED',
-        message: 'Informe a URL da instância e o Token para ativar o envio.',
+        message: 'Informe a URL (Host), a Instance Key e o Token para ativar o envio.',
       });
     }
   };
@@ -285,9 +301,12 @@ export const CommunicationModule: React.FC = () => {
   const renderStatusBadge = () => {
     if (connectionStatus.status === 'CONNECTED') {
       return (
-        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
-          <Wifi className="w-3.5 h-3.5" />
-          <span>Megaapi Conectado</span>
+        <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
+          <Wifi className="w-3.5 h-3.5 text-emerald-600" />
+          <span>
+            CONNECTED
+            {connectionStatus.phoneNumber ? ` • ${connectionStatus.phoneNumber}` : ''}
+          </span>
         </span>
       );
     }
@@ -813,7 +832,7 @@ export const CommunicationModule: React.FC = () => {
                 }`}
               >
                 <div className="space-y-1.5">
-                  <div className="font-bold flex items-center gap-2">
+                  <div className="font-bold flex flex-wrap items-center gap-2">
                     {connectionStatus.connected ? (
                       <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                     ) : connectionStatus.status === 'QRCODE_REQUIRED' ? (
@@ -821,17 +840,30 @@ export const CommunicationModule: React.FC = () => {
                     ) : (
                       <AlertCircle className="w-4 h-4" />
                     )}
-                    <span>Status da Instância: {connectionStatus.status}</span>
+                    <span>Status da Instância:</span>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[11px] font-extrabold tracking-wide ${
+                        connectionStatus.connected
+                          ? 'bg-emerald-600 text-white'
+                          : connectionStatus.status === 'UNCONFIGURED'
+                            ? 'bg-slate-200 text-slate-700'
+                            : 'bg-white/80 border border-current'
+                      }`}
+                    >
+                      {connectionStatus.status}
+                    </span>
                   </div>
                   <p className="text-[11px] leading-relaxed">{connectionStatus.message}</p>
-                  {connectionStatus.testedEndpoint && (
-                    <p className="text-[10px] font-mono opacity-80">
-                      Endpoint testado: {connectionStatus.testedEndpoint}
-                    </p>
-                  )}
                   {connectionStatus.phoneNumber && (
-                    <p className="text-[11px] font-mono">
-                      Número conectado: {connectionStatus.phoneNumber}
+                    <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-emerald-200 text-emerald-800 text-[11px] font-semibold">
+                      <Smartphone className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>WhatsApp conectado:</span>
+                      <span className="font-mono font-bold">{connectionStatus.phoneNumber}</span>
+                    </div>
+                  )}
+                  {connectionStatus.testedEndpoint && (
+                    <p className="text-[10px] font-mono opacity-80 break-all">
+                      Endpoint verificado: {connectionStatus.testedEndpoint}
                     </p>
                   )}
                   {(connectionStatus.status === 'NOT_FOUND' ||
@@ -879,34 +911,51 @@ export const CommunicationModule: React.FC = () => {
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1 flex items-center gap-1.5">
                     <Link2 className="w-3.5 h-3.5 text-sky-600" />
-                    <span>URL da Instância Megaapi (megaapi_instance_url)</span>
+                    <span>Host / URL da API Megaapi (megaapi_instance_url)</span>
                   </label>
                   <input
                     type="url"
                     required
                     value={megaapiInstanceUrl}
                     onChange={(e) => setMegaapiInstanceUrl(e.target.value)}
-                    placeholder="https://apibusiness1.megaapi.com.br/rest/v1/instance/sua-instancia"
+                    placeholder="https://apibusiness1.megaapi.com.br"
                     className="w-full px-3 py-2.5 font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
                   />
                   <span className="text-[11px] text-slate-500 mt-1 block">
-                    Aceita URL completa (ex: <code className="font-mono">/rest/v1/...</code>, <code className="font-mono">/api/v1/...</code>) ou domínio base (ex: <code className="font-mono">https://apibusiness1.megaapi.com.br</code>, normalizado automaticamente).
+                    Informe o host do servidor Megaapi (ex: <code className="font-mono">https://apibusiness1.megaapi.com.br</code>). Ele será combinado automaticamente com a Instance Key.
                   </span>
                 </div>
 
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1 flex items-center gap-1.5">
-                    <KeyRound className="w-3.5 h-3.5 text-sky-600" />
-                    <span>Token de Acesso Megaapi (megaapi_token)</span>
-                  </label>
-                  <input
-                    type="password"
-                    required
-                    value={megaapiToken}
-                    onChange={(e) => setMegaapiToken(e.target.value)}
-                    placeholder="Seu token Bearer da instância Megaapi"
-                    className="w-full px-3 py-2.5 font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
-                  />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1 flex items-center gap-1.5">
+                      <Hash className="w-3.5 h-3.5 text-sky-600" />
+                      <span>Instance Key (megaapi_instance_key)</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={megaapiInstanceKey}
+                      onChange={(e) => setMegaapiInstanceKey(e.target.value)}
+                      placeholder="megabusiness-MH7CY257SQCAASLHMW73HB9GZ64"
+                      className="w-full px-3 py-2.5 font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1 flex items-center gap-1.5">
+                      <KeyRound className="w-3.5 h-3.5 text-sky-600" />
+                      <span>Token de Acesso Megaapi (megaapi_token)</span>
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      value={megaapiToken}
+                      onChange={(e) => setMegaapiToken(e.target.value)}
+                      placeholder="Seu token Bearer da instância Megaapi"
+                      className="w-full px-3 py-2.5 font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
+                    />
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-end gap-3 pt-2">

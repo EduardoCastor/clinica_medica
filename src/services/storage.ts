@@ -678,6 +678,9 @@ export const StorageService = {
         megaapiInstanceUrl: clinicRow.megaapi_instance_url
           ? String(clinicRow.megaapi_instance_url)
           : localClinic.megaapiInstanceUrl,
+        megaapiInstanceKey: clinicRow.megaapi_instance_key
+          ? String(clinicRow.megaapi_instance_key)
+          : localClinic.megaapiInstanceKey,
         megaapiToken: clinicRow.megaapi_token
           ? String(clinicRow.megaapi_token)
           : localClinic.megaapiToken,
@@ -780,12 +783,17 @@ export const StorageService = {
         updated_at: new Date().toISOString(),
       };
 
-      const extendedPayload: Record<string, unknown> = {
+      const integrationWithoutKeyPayload: Record<string, unknown> = {
         ...basePayload,
         megaapi_instance_url: merged.megaapiInstanceUrl?.trim() || null,
         megaapi_token: merged.megaapiToken?.trim() || null,
         n8n_webhook_disponibilidade: merged.n8nWebhookDisponibilidade?.trim() || null,
         n8n_webhook_agendamento: merged.n8nWebhookAgendamento?.trim() || null,
+      };
+
+      const extendedPayload: Record<string, unknown> = {
+        ...integrationWithoutKeyPayload,
+        megaapi_instance_key: merged.megaapiInstanceKey?.trim() || null,
       };
 
       const { data: updatedExtended, error: extErr } = await supabase
@@ -796,6 +804,21 @@ export const StorageService = {
         .maybeSingle();
 
       if (extErr) {
+        // Retry without megaapi_instance_key first if that column wasn't migrated yet
+        const { error: partialExtErr } = await supabase
+          .from('clinics')
+          .update(integrationWithoutKeyPayload)
+          .eq('id', targetClinicId);
+
+        if (!partialExtErr) {
+          return {
+            success: true,
+            clinic: merged,
+            syncedCloud: true,
+            error: extErr.message,
+          };
+        }
+
         // Retry base fields if optional integration columns are not migrated yet
         const { error: baseErr } = await supabase
           .from('clinics')

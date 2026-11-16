@@ -301,7 +301,7 @@ export async function submitBookingToN8nAndSupabase(
   const confirmationMessage = `Olá, ${savedPatient.fullName}! Seu agendamento (${input.tipoAtendimento}) com ${newAppointment.professionalName} foi confirmado para ${input.data.split('-').reverse().join('/')} às ${input.horaFormatada} em ${input.unidade}.`;
 
   const megaapiCreds = resolveMegaapiCredentials(clinic);
-  if (megaapiCreds.isConfigured) {
+  if (megaapiCreds.isConfigured && megaapiCreds.hasInstanceKey) {
     await sendWhatsAppMessage(input.celularFormatted, confirmationMessage, clinic, {
       organizationId,
       branchId: targetBranch?.id || 'branch_cf_centro',

@@ -55,6 +55,7 @@ export const ClinicSettings: React.FC = () => {
     clinic.n8nWebhookAgendamento || DEFAULT_N8N_WEBHOOK_AGENDAMENTO
   );
   const [megaapiInstanceUrl, setMegaapiInstanceUrl] = useState(clinic.megaapiInstanceUrl || '');
+  const [megaapiInstanceKey, setMegaapiInstanceKey] = useState(clinic.megaapiInstanceKey || '');
   const [megaapiToken, setMegaapiToken] = useState(clinic.megaapiToken || '');
   const [megaapiStatus, setMegaapiStatus] = useState<MegaapiConnectionResult | null>(null);
   const [isTestingMegaapi, setIsTestingMegaapi] = useState(false);
@@ -91,6 +92,7 @@ export const ClinicSettings: React.FC = () => {
       n8nWebhookDisponibilidade: n8nWebhookDisponibilidade.trim() || DEFAULT_N8N_WEBHOOK_DISPONIBILIDADE,
       n8nWebhookAgendamento: n8nWebhookAgendamento.trim() || DEFAULT_N8N_WEBHOOK_AGENDAMENTO,
       megaapiInstanceUrl: normalizeMegaapiBaseUrl(megaapiInstanceUrl),
+      megaapiInstanceKey: megaapiInstanceKey.trim(),
       megaapiToken: megaapiToken.trim(),
     };
     updateClinic(payload);
@@ -103,6 +105,7 @@ export const ClinicSettings: React.FC = () => {
     setIsTestingMegaapi(true);
     const res = await checkMegaapiConnectionStatus({
       megaapiInstanceUrl,
+      megaapiInstanceKey,
       megaapiToken,
     });
     setMegaapiStatus(res);
@@ -299,15 +302,29 @@ export const ClinicSettings: React.FC = () => {
 
             {megaapiStatus && (
               <div
-                className={`p-3 rounded-xl border text-xs space-y-1 ${
+                className={`p-3 rounded-xl border text-xs space-y-1.5 ${
                   megaapiStatus.connected
-                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
                     : 'bg-amber-50 border-amber-200 text-amber-900'
                 }`}
               >
-                <p>
-                  <strong>Status ({megaapiStatus.status}):</strong> {megaapiStatus.message}
-                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`px-2 py-0.5 rounded text-[11px] font-extrabold tracking-wide ${
+                      megaapiStatus.connected
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-amber-200 text-amber-950'
+                    }`}
+                  >
+                    {megaapiStatus.status}
+                  </span>
+                  <span>{megaapiStatus.message}</span>
+                </div>
+                {megaapiStatus.phoneNumber && (
+                  <p className="text-[11px] font-mono font-bold text-emerald-800">
+                    WhatsApp conectado: {megaapiStatus.phoneNumber}
+                  </p>
+                )}
                 {megaapiStatus.testedEndpoint && (
                   <p className="text-[11px] font-mono opacity-80 break-all">
                     Endpoint verificado: {megaapiStatus.testedEndpoint}
@@ -316,16 +333,29 @@ export const ClinicSettings: React.FC = () => {
               </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  URL da Instância Megaapi
+                  Host / URL da API Megaapi
                 </label>
                 <input
                   type="url"
                   value={megaapiInstanceUrl}
                   onChange={(e) => setMegaapiInstanceUrl(e.target.value)}
-                  placeholder="https://apibusiness1.megaapi.com.br/rest/v1/instance/sua-instancia"
+                  placeholder="https://apibusiness1.megaapi.com.br"
+                  className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Instance Key (megaapi_instance_key)
+                </label>
+                <input
+                  type="text"
+                  value={megaapiInstanceKey}
+                  onChange={(e) => setMegaapiInstanceKey(e.target.value)}
+                  placeholder="megabusiness-MH7CY257SQCAASLHMW73HB9GZ64"
                   className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
                 />
               </div>
