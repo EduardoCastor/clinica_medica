@@ -109,6 +109,14 @@ export const INITIAL_CLINIC: Clinic = {
   institutionalBio: CLINIC_OFFICIAL_DATA.bio,
   n8nWebhookDisponibilidade: 'https://n8n.srv1352561.hstgr.cloud/webhook/agendadisp',
   n8nWebhookAgendamento: 'https://n8n.srv1352561.hstgr.cloud/webhook/agendaclinica',
+  n8nWebhookMegaapiInbound: 'https://n8n.srv1352561.hstgr.cloud/webhook/megaapi-whatsapp-inbound',
+  automationTriggers: {
+    immediateConfirmation: true,
+    confirmation48h: true,
+    reminder24h: true,
+    autoReplyConfirm: true,
+    postCare: true,
+  },
   createdAt: '2024-07-15T10:00:00.000Z',
 };
 
@@ -865,21 +873,34 @@ export const INITIAL_TEMPLATES: MessageTemplate[] = [
   {
     id: 'tpl_conf_48h',
     organizationId: 'org_mureb_01',
-    name: 'Confirmação de Consulta (48h Antes)',
+    name: 'Confirmação de Agendamento 48h',
     category: 'confirmation_48h',
     channel: 'whatsapp',
-    content: 'Olá, {{nome_paciente}}! Aqui é da {{nome_clinica}}. Lembramos da sua consulta com {{nome_profissional}} agendada para {{data_consulta}} às {{horario_consulta}} na {{endereco_filial}}.\n\nPor favor, responda com:\n1 para CONFIRMAR\n2 para REAGENDAR',
+    content:
+      'Olá, {{nome_paciente}}! 👋 Aqui é da *{{nome_clinica}}*.\n\nLembramos da sua consulta com *{{nome_profissional}}* agendada para:\n📅 Data: *{{data_consulta}}*\n⏰ Horário: *{{horario_consulta}}*\n📍 Local: {{endereco_filial}}\n\nPor favor, responda com:\n*1* para ✅ CONFIRMAR\n*2* para 🔄 REAGENDAR',
     variables: ['nome_paciente', 'nome_clinica', 'nome_profissional', 'data_consulta', 'horario_consulta', 'endereco_filial'],
     isActive: true,
   },
   {
     id: 'tpl_rem_24h',
     organizationId: 'org_mureb_01',
-    name: 'Lembrete de Consulta (24h Antes)',
+    name: 'Lembrete de Véspera (24h Antes)',
     category: 'reminder_24h',
     channel: 'whatsapp',
-    content: 'Olá, {{nome_paciente}}! Sua consulta com {{nome_profissional}} é amanhã, {{data_consulta}}, às {{horario_consulta}}. Estamos esperando você na {{endereco_filial}}. Traga seus exames anteriores!',
+    content:
+      'Olá, {{nome_paciente}}! 🩺 Sua consulta com *{{nome_profissional}}* é amanhã, dia *{{data_consulta}}*, às *{{horario_consulta}}*.\n\n📍 Endereço: {{endereco_filial}}\n\nPor favor, chegue com 10 minutos de antecedência e traga seus exames recentes! 📄✨',
     variables: ['nome_paciente', 'nome_profissional', 'data_consulta', 'horario_consulta', 'endereco_filial'],
+    isActive: true,
+  },
+  {
+    id: 'tpl_auto_reply_confirm',
+    organizationId: 'org_mureb_01',
+    name: 'Resposta Automática de Confirmação',
+    category: 'confirmation_reply',
+    channel: 'whatsapp',
+    content:
+      '✅ Presença confirmada com sucesso, {{nome_paciente}}!\n\nA equipe da *{{nome_clinica}}* e {{nome_profissional}} aguardam você no dia *{{data_consulta}}* às *{{horario_consulta}}*.\n📍 {{endereco_filial}}\n\nQualquer dúvida, estamos à disposição por aqui! 💚',
+    variables: ['nome_paciente', 'nome_clinica', 'nome_profissional', 'data_consulta', 'horario_consulta', 'endereco_filial'],
     isActive: true,
   },
   {
@@ -888,10 +909,11 @@ export const INITIAL_TEMPLATES: MessageTemplate[] = [
     name: 'Assessoria & Acompanhamento Pós-Consulta',
     category: 'post_care',
     channel: 'whatsapp',
-    content: 'Olá, {{nome_paciente}}! Esperamos que sua experiência hoje na {{nome_clinica}} tenha sido acolhedora e esclarecedora. Nossa assessoria 24/7 pelo WhatsApp (22) 99908-9122 segue à sua disposição para o acompanhamento semanal!',
+    content:
+      'Olá, {{nome_paciente}}! 💚 Esperamos que sua experiência hoje na *{{nome_clinica}}* tenha sido acolhedora e esclarecedora.\n\nNossa assessoria pelo WhatsApp segue à sua disposição para acompanhar sua evolução e tirar dúvidas sobre orientações e exames! 🌟',
     variables: ['nome_paciente', 'nome_clinica'],
     isActive: true,
-  }
+  },
 ];
 
 export const INITIAL_MESSAGES: MessageLog[] = [

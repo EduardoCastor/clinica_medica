@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   MessageSquare,
   Send,
@@ -17,8 +17,16 @@ import {
   Link2,
   FlaskConical,
   Hash,
+  Plus,
+  Copy,
+  Check,
+  Smile,
+  Webhook,
+  Code2,
+  FileEdit,
+  Sparkles,
 } from 'lucide-react';
-import { MessageTemplate, MessageLog } from '../../types';
+import { MessageTemplate, MessageLog, AutomationTriggerSettings } from '../../types';
 import { StorageService } from '../../services/storage';
 import { useTenant } from '../../contexts/TenantContext';
 import {
@@ -30,10 +38,65 @@ import {
   MegaapiConnectionResult,
 } from '../../services/megaApiService';
 
+const TEMPLATE_VARIABLES = [
+  { tag: '{{nome_paciente}}', label: 'Paciente' },
+  { tag: '{{nome_clinica}}', label: 'Clínica' },
+  { tag: '{{nome_profissional}}', label: 'Profissional' },
+  { tag: '{{data_consulta}}', label: 'Data' },
+  { tag: '{{horario_consulta}}', label: 'Horário' },
+  { tag: '{{endereco_filial}}', label: 'Endereço' },
+];
+
+const WHATSAPP_EMOJIS = ['👋', '✅', '📅', '⏰', '📍', '🩺', '📄', '💊', '💚', '✨', '🔄', '🙏'];
+
+const CATEGORY_LABELS: Record<MessageTemplate['category'], string> = {
+  confirmation_48h: 'Confirmação 48h',
+  reminder_24h: 'Lembrete de Véspera (24h)',
+  day_reminder: 'Lembrete do Dia',
+  confirmation_reply: 'Resposta Automática',
+  post_care: 'Pós-Atendimento',
+  birthday: 'Aniversário',
+  custom: 'Personalizado',
+};
+
+const DEFAULT_AUTOMATION_TRIGGERS: AutomationTriggerSettings = {
+  immediateConfirmation: true,
+  confirmation48h: true,
+  reminder24h: true,
+  autoReplyConfirm: true,
+  postCare: true,
+};
+
+const DEFAULT_INBOUND_N8N_WEBHOOK =
+  'https://n8n.srv1352561.hstgr.cloud/webhook/megaapi-whatsapp-inbound';
+
+function renderFormattedWhatsAppText(text: string): React.ReactNode {
+  const lines = text.split('\n');
+  return lines.map((line, lineIdx) => {
+    const parts = line.split(/(\*[^*]+\*)/g);
+    return (
+      <React.Fragment key={lineIdx}>
+        {parts.map((part, partIdx) =>
+          part.startsWith('*') && part.endsWith('*') && part.length > 2 ? (
+            <strong key={partIdx} className="font-semibold text-slate-900">
+              {part.slice(1, -1)}
+            </strong>
+          ) : (
+            <React.Fragment key={partIdx}>{part}</React.Fragment>
+          )
+        )}
+        {lineIdx < lines.length - 1 && <br />}
+      </React.Fragment>
+    );
+  });
+}
+
 export const CommunicationModule: React.FC = () => {
   const { activeBranchId, branches, clinic, organization, updateClinic } = useTenant();
   const [messages, setMessages] = useState<MessageLog[]>(() => StorageService.getMessages());
-  const [templates] = useState<MessageTemplate[]>(() => StorageService.getTemplates());
+  const [templates, setTemplates] = useState<MessageTemplate[]>(() =>
+    StorageService.getTemplates()
+  );
   const patients = StorageService.getPatients(activeBranchId);
   const professionals = StorageService.getProfessionals();
 
@@ -48,6 +111,35 @@ export const CommunicationModule: React.FC = () => {
     text: string;
     canSimulateFallback?: boolean;
   } | null>(null);
+
+  // Template Editor State
+  const templateTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [editingTemplateId, setEditingTemplateId] = useState<string>(templates[0]?.id || '');
+  const [tplName, setTplName] = useState<string>(templates[0]?.name || '');
+  const [tplCategory, setTplCategory] = useState<MessageTemplate['category']>(
+    templates[0]?.category || 'confirmation_48h'
+  );
+  const [tplContent, setTplContent] = useState<string>(templates[0]?.content || '');
+  const [tplIsActive, setTplIsActive] = useState<boolean>(templates[0]?.isActive ?? true);
+  const [isSavingTemplate, setIsSavingTemplate] = useState(false);
+  const [templateFeedback, setTemplateFeedback] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+
+  // n8n Automations & Webhook State
+  const [n8nInboundWebhook, setN8nInboundWebhook] = useState<string>(
+    clinic.n8nWebhookMegaapiInbound || DEFAULT_INBOUND_N8N_WEBHOOK
+  );
+  const [automationTriggers, setAutomationTriggers] = useState<AutomationTriggerSettings>(
+    clinic.automationTriggers || DEFAULT_AUTOMATION_TRIGGERS
+  );
+  const [isSavingAutomations, setIsSavingAutomations] = useState(false);
+  const [automationsFeedback, setAutomationsFeedback] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [selectedJsonExample, setSelectedJsonExample] = useState<'inbound_confirm' | 'outbound_trigger'>(
+    'inbound_confirm'
+  );
 
   // Megaapi Settings & Status State
   const [megaapiInstanceUrl, setMegaapiInstanceUrl] = useState(clinic.megaapiInstanceUrl || '');
@@ -86,18 +178,44 @@ export const CommunicationModule: React.FC = () => {
     (b) => b.id === (selectedPatient?.originBranchId || branches[0]?.id)
   );
 
+  const selectTemplateForEditing = useCallback((tpl: MessageTemplate) => {
+    setEditingTemplateId(tpl.id);
+    setTplName(tpl.name);
+    setTplCategory(tpl.category);
+    setTplContent(tpl.content);
+    setTplIsActive(tpl.isActive);
+    setTemplateFeedback(null);
+  }, []);
+
   const loadMessagesAndClinic = useCallback(async () => {
     setIsRefreshingMessages(true);
-    const [{ clinic: cloudClinic }, cloudMessages] = await Promise.all([
+    const [{ clinic: cloudClinic }, cloudMessages, cloudTemplates] = await Promise.all([
       StorageService.fetchClinicFromCloud({
         clinicId: clinic.id,
         organizationId: organization.id,
         slug: organization.slug,
       }),
       StorageService.fetchMessagesFromCloud(),
+      StorageService.fetchTemplatesFromCloud(),
     ]);
 
     setMessages(cloudMessages);
+    setTemplates(cloudTemplates);
+
+    if (cloudTemplates.length > 0) {
+      setEditingTemplateId((currId) => {
+        const match = cloudTemplates.find((t) => t.id === currId) || cloudTemplates[0];
+        if (match) {
+          setTplName(match.name);
+          setTplCategory(match.category);
+          setTplContent(match.content);
+          setTplIsActive(match.isActive);
+          return match.id;
+        }
+        return currId;
+      });
+    }
+
     if (cloudClinic.megaapiInstanceUrl !== undefined) {
       setMegaapiInstanceUrl(cloudClinic.megaapiInstanceUrl || '');
     }
@@ -106,6 +224,12 @@ export const CommunicationModule: React.FC = () => {
     }
     if (cloudClinic.megaapiToken !== undefined) {
       setMegaapiToken(cloudClinic.megaapiToken || '');
+    }
+    if (cloudClinic.n8nWebhookMegaapiInbound) {
+      setN8nInboundWebhook(cloudClinic.n8nWebhookMegaapiInbound);
+    }
+    if (cloudClinic.automationTriggers) {
+      setAutomationTriggers(cloudClinic.automationTriggers);
     }
     setIsRefreshingMessages(false);
 
@@ -137,18 +261,130 @@ export const CommunicationModule: React.FC = () => {
 
   // Compute preview with dynamic variables
   const generatePreview = (templateContent: string) => {
-    if (!selectedPatient) return templateContent;
+    const samplePatientName = selectedPatient?.fullName || 'Camila Albuquerque';
+    const sampleBranchAddress = activeBranch
+      ? `${activeBranch.street || 'Av. Júlia Kubitschek'}, ${activeBranch.number || '16'} - ${activeBranch.neighborhood || 'Centro'}`
+      : 'Av. Júlia Kubitschek, 16 - Centro, Cabo Frio';
+
     let text = templateContent;
-    text = text.replace(/{{nome_paciente}}/g, selectedPatient.fullName);
+    text = text.replace(/{{nome_paciente}}/g, samplePatientName);
     text = text.replace(/{{nome_clinica}}/g, clinic.tradeName.split('-')[0].trim());
     text = text.replace(/{{nome_profissional}}/g, professionals[0]?.fullName || 'Dr. Newton Mureb');
     text = text.replace(/{{data_consulta}}/g, new Date().toLocaleDateString('pt-BR'));
     text = text.replace(/{{horario_consulta}}/g, '14:30');
-    text = text.replace(
-      /{{endereco_filial}}/g,
-      `${activeBranch?.street || ''}, ${activeBranch?.number || ''} - ${activeBranch?.neighborhood || ''}`
-    );
+    text = text.replace(/{{endereco_filial}}/g, sampleBranchAddress);
     return text;
+  };
+
+  const handleInsertSnippetAtCursor = (snippet: string) => {
+    const textarea = templateTextareaRef.current;
+    if (!textarea) {
+      setTplContent((prev) => `${prev}${snippet}`);
+      return;
+    }
+
+    const start = textarea.selectionStart ?? tplContent.length;
+    const end = textarea.selectionEnd ?? tplContent.length;
+    const nextValue = tplContent.slice(0, start) + snippet + tplContent.slice(end);
+    setTplContent(nextValue);
+
+    requestAnimationFrame(() => {
+      textarea.focus();
+      const nextPos = start + snippet.length;
+      textarea.setSelectionRange(nextPos, nextPos);
+    });
+  };
+
+  const handleCreateNewTemplate = () => {
+    const newId = `tpl_custom_${Date.now()}`;
+    setEditingTemplateId(newId);
+    setTplName('Novo Modelo WhatsApp');
+    setTplCategory('custom');
+    setTplContent(
+      'Olá, {{nome_paciente}}! 👋\n\nEscreva aqui sua mensagem personalizada da *{{nome_clinica}}*.'
+    );
+    setTplIsActive(true);
+    setTemplateFeedback(null);
+  };
+
+  const handleSaveTemplate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tplName.trim() || !tplContent.trim()) {
+      setTemplateFeedback({
+        type: 'error',
+        text: 'Informe o nome e o corpo da mensagem antes de salvar.',
+      });
+      return;
+    }
+
+    setIsSavingTemplate(true);
+    setTemplateFeedback(null);
+
+    const payload: MessageTemplate = {
+      id: editingTemplateId || `tpl_custom_${Date.now()}`,
+      organizationId: organization.id || clinic.organizationId,
+      name: tplName.trim(),
+      category: tplCategory,
+      channel: 'whatsapp',
+      content: tplContent,
+      variables: [],
+      isActive: tplIsActive,
+    };
+
+    const res = await StorageService.saveTemplateToCloud(payload);
+    const updatedTemplates = StorageService.getTemplates();
+    setTemplates(updatedTemplates);
+    setEditingTemplateId(res.template.id);
+    setSelectedTemplateId(res.template.id);
+    setIsSavingTemplate(false);
+
+    setTemplateFeedback({
+      type: 'success',
+      text: res.syncedCloud
+        ? `Modelo "${res.template.name}" salvo em public.message_templates no Supabase e atualizado no cache local!`
+        : `Modelo "${res.template.name}" salvo no cache local com sucesso.`,
+    });
+  };
+
+  const handleCopyText = async (key: string, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey((curr) => (curr === key ? null : curr)), 2000);
+    } catch {
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(null), 2000);
+    }
+  };
+
+  const handleToggleTrigger = (field: keyof AutomationTriggerSettings) => {
+    setAutomationTriggers((prev) => ({
+      ...prev,
+      [field]: !prev[field],
+    }));
+    setAutomationsFeedback(null);
+  };
+
+  const handleSaveAutomations = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setIsSavingAutomations(true);
+    setAutomationsFeedback(null);
+
+    const cleanedWebhook = n8nInboundWebhook.trim() || DEFAULT_INBOUND_N8N_WEBHOOK;
+    setN8nInboundWebhook(cleanedWebhook);
+
+    updateClinic({
+      n8nWebhookMegaapiInbound: cleanedWebhook,
+      automationTriggers,
+    });
+
+    await StorageService.saveClinicToCloud({
+      n8nWebhookMegaapiInbound: cleanedWebhook,
+      automationTriggers,
+    });
+
+    setIsSavingAutomations(false);
+    setAutomationsFeedback('Gatilhos automáticos e webhook n8n salvos e sincronizados com sucesso!');
   };
 
   const effectiveMessageText = customText.trim()
@@ -395,7 +631,7 @@ export const CommunicationModule: React.FC = () => {
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Gatilhos Automáticos
+            Gatilhos Automáticos (n8n)
           </button>
           <button
             type="button"
@@ -690,106 +926,564 @@ export const CommunicationModule: React.FC = () => {
             </div>
           )}
 
-          {/* TAB 2: Templates List */}
+          {/* TAB 2: Rich Visual Message Templates Editor */}
           {activeTab === 'templates' && (
             <div className="space-y-4">
-              <div className="p-4 bg-sky-50 rounded-xl border border-sky-200 text-xs text-sky-800 space-y-1">
-                <span className="font-bold block">Variáveis Dinâmicas Disponíveis:</span>
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  {[
-                    '{{nome_paciente}}',
-                    '{{nome_clinica}}',
-                    '{{nome_profissional}}',
-                    '{{data_consulta}}',
-                    '{{horario_consulta}}',
-                    '{{endereco_filial}}',
-                  ].map((v) => (
-                    <code
-                      key={v}
-                      className="bg-white text-sky-800 px-2 py-0.5 rounded font-mono text-[10px] border border-sky-300"
-                    >
-                      {v}
-                    </code>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 gap-4">
-                {templates.map((tpl) => (
-                  <div
-                    key={tpl.id}
-                    className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-3"
-                  >
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-xs font-bold text-slate-900">{tpl.name}</h4>
-                      <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-                        Canal: {tpl.channel}
-                      </span>
-                    </div>
-                    <pre className="text-xs text-slate-700 bg-slate-50 p-3 rounded-xl border border-slate-200 whitespace-pre-line font-sans leading-relaxed">
-                      {tpl.content}
-                    </pre>
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 space-y-5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <FileEdit className="w-4 h-4 text-sky-600" />
+                      <span>Editor Visual de Modelos de Mensagens</span>
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Personalize mensagens com variáveis dinâmicas, quebras de linha e emojis, com sincronização em <code className="font-mono">public.message_templates</code>.
+                    </p>
                   </div>
-                ))}
+                  <button
+                    type="button"
+                    onClick={handleCreateNewTemplate}
+                    className="px-3.5 py-2 text-xs font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-xl transition inline-flex items-center gap-1.5 shrink-0"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Novo Modelo</span>
+                  </button>
+                </div>
+
+                {/* Template Selector Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {templates.map((tpl) => {
+                    const isSelected = tpl.id === editingTemplateId;
+                    return (
+                      <button
+                        key={tpl.id}
+                        type="button"
+                        onClick={() => selectTemplateForEditing(tpl)}
+                        className={`text-left p-3.5 rounded-xl border transition space-y-1.5 ${
+                          isSelected
+                            ? 'bg-sky-50/70 border-sky-400 ring-2 ring-sky-100'
+                            : 'bg-slate-50/60 border-slate-200 hover:border-slate-300 hover:bg-white'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-bold text-slate-900 truncate">
+                            {tpl.name}
+                          </span>
+                          <span
+                            className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${
+                              tpl.isActive
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : 'bg-slate-200 text-slate-600'
+                            }`}
+                          >
+                            {tpl.isActive ? 'Ativo' : 'Pausado'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-[10px] text-slate-500">
+                          <span>{CATEGORY_LABELS[tpl.category] || tpl.category}</span>
+                          <span className="font-mono uppercase">{tpl.channel}</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {templateFeedback && (
+                  <div
+                    className={`p-3 rounded-xl border text-xs flex items-center gap-2 ${
+                      templateFeedback.type === 'success'
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                        : 'bg-rose-50 border-rose-200 text-rose-800'
+                    }`}
+                  >
+                    {templateFeedback.type === 'success' ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                    )}
+                    <span>{templateFeedback.text}</span>
+                  </div>
+                )}
+
+                {/* Editor + Real-time WhatsApp Preview */}
+                <form onSubmit={handleSaveTemplate} className="grid grid-cols-1 xl:grid-cols-12 gap-5 pt-1">
+                  <div className="xl:col-span-7 space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Nome do Modelo
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={tplName}
+                          onChange={(e) => setTplName(e.target.value)}
+                          placeholder="Ex: Confirmação de Agendamento 48h"
+                          className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Categoria do Gatilho
+                        </label>
+                        <select
+                          value={tplCategory}
+                          onChange={(e) =>
+                            setTplCategory(e.target.value as MessageTemplate['category'])
+                          }
+                          className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        >
+                          <option value="confirmation_48h">Confirmação 48h Antes</option>
+                          <option value="reminder_24h">Lembrete de Véspera (24h)</option>
+                          <option value="day_reminder">Lembrete no Dia</option>
+                          <option value="confirmation_reply">
+                            Resposta Automática de Confirmação
+                          </option>
+                          <option value="post_care">Pós-Atendimento</option>
+                          <option value="birthday">Aniversário</option>
+                          <option value="custom">Personalizado</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Dynamic Variables Bar */}
+                    <div className="p-3 bg-sky-50/80 rounded-xl border border-sky-200 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-sky-900 flex items-center gap-1.5">
+                          <Sparkles className="w-3.5 h-3.5 text-sky-600" />
+                          <span>Variáveis Dinâmicas (clique para inserir no cursor)</span>
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {TEMPLATE_VARIABLES.map((v) => (
+                          <button
+                            key={v.tag}
+                            type="button"
+                            onClick={() => handleInsertSnippetAtCursor(v.tag)}
+                            className="px-2 py-1 text-[11px] font-mono bg-white hover:bg-sky-600 hover:text-white text-sky-800 border border-sky-300 rounded-lg transition shadow-2xs"
+                            title={`Inserir ${v.tag} (${v.label})`}
+                          >
+                            + {v.tag}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Emoji Quick Toolbar */}
+                    <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 flex flex-wrap items-center gap-1.5">
+                      <span className="text-[11px] font-semibold text-slate-600 inline-flex items-center gap-1 mr-1">
+                        <Smile className="w-3.5 h-3.5 text-amber-500" />
+                        <span>Emojis:</span>
+                      </span>
+                      {WHATSAPP_EMOJIS.map((emoji) => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          onClick={() => handleInsertSnippetAtCursor(emoji)}
+                          className="w-7 h-7 flex items-center justify-center rounded-lg bg-white hover:bg-slate-200 border border-slate-200 text-sm transition"
+                          title={`Inserir ${emoji}`}
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[11px] font-semibold text-slate-700">
+                          Corpo da Mensagem (suporta *negrito*, quebras de linha e emojis)
+                        </label>
+                        <span className="text-[10px] text-slate-400">
+                          {tplContent.length} caracteres
+                        </span>
+                      </div>
+                      <textarea
+                        ref={templateTextareaRef}
+                        rows={8}
+                        required
+                        value={tplContent}
+                        onChange={(e) => setTplContent(e.target.value)}
+                        placeholder="Digite a mensagem com variáveis {{nome_paciente}} e emojis..."
+                        className="w-full px-3 py-2.5 text-xs border border-slate-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-sky-500 leading-relaxed font-sans"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                      <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={tplIsActive}
+                          onChange={(e) => setTplIsActive(e.target.checked)}
+                          className="w-4 h-4 text-sky-600 rounded"
+                        />
+                        <span>Modelo ativo para disparos automáticos</span>
+                      </label>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedTemplateId(editingTemplateId);
+                            setCustomText(tplContent ? generatePreview(tplContent) : '');
+                          }}
+                          className="px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition"
+                        >
+                          Usar no Disparador
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={isSavingTemplate}
+                          className="px-4 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 disabled:opacity-60 rounded-xl shadow-xs transition inline-flex items-center gap-1.5"
+                        >
+                          {isSavingTemplate ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Save className="w-3.5 h-3.5" />
+                          )}
+                          <span>{isSavingTemplate ? 'Salvando...' : 'Salvar Modelo'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Live WhatsApp Chat Window Preview */}
+                  <div className="xl:col-span-5 flex flex-col">
+                    <span className="text-[11px] font-semibold text-slate-700 mb-1.5 block">
+                      Preview em Tempo Real (WhatsApp)
+                    </span>
+                    <div className="rounded-2xl overflow-hidden border border-slate-300 shadow-xs flex-1 flex flex-col min-h-[340px] bg-[#EFEAE2]">
+                      {/* WhatsApp Chat Header */}
+                      <div className="bg-[#075E54] text-white px-3.5 py-2.5 flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-full bg-emerald-500/30 border border-white/30 flex items-center justify-center text-xs font-bold shrink-0">
+                          {clinic.tradeName.substring(0, 2).toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold truncate">
+                            {clinic.tradeName.split('-')[0].trim()}
+                          </p>
+                          <p className="text-[10px] text-emerald-100 truncate">
+                            WhatsApp Business • online
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Chat Body */}
+                      <div className="p-4 flex-1 flex flex-col justify-end space-y-2">
+                        <div className="mx-auto px-2.5 py-0.5 rounded-full bg-white/80 text-[10px] text-slate-500 font-medium shadow-2xs">
+                          Hoje
+                        </div>
+
+                        <div className="bg-[#D9FDD3] text-slate-800 rounded-xl rounded-tr-none p-3 shadow-xs max-w-[92%] ml-auto text-[11px] leading-relaxed border border-[#c6ecc0]">
+                          <div className="break-words">
+                            {renderFormattedWhatsAppText(generatePreview(tplContent))}
+                          </div>
+                          <div className="mt-1.5 flex items-center justify-end gap-1 text-[9px] text-slate-500">
+                            <span>
+                              {new Date().toLocaleTimeString('pt-BR', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </span>
+                            <CheckCheck className="w-3 h-3 text-sky-500" />
+                          </div>
+                        </div>
+
+                        {tplCategory === 'confirmation_48h' && (
+                          <div className="bg-white text-slate-800 rounded-xl rounded-tl-none px-3 py-2 shadow-xs max-w-[75%] mr-auto text-[11px] border border-slate-200">
+                            <span>1</span>
+                            <span className="block text-[9px] text-slate-400 text-right mt-0.5">
+                              Paciente (resposta exemplo)
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </form>
               </div>
             </div>
           )}
 
-          {/* TAB 3: Automations Settings */}
+          {/* TAB 3: n8n Automations & Webhooks Panel */}
           {activeTab === 'automations' && (
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 space-y-5">
-              <h3 className="text-sm font-bold text-slate-900">
-                Configuração de Disparos Automáticos
-              </h3>
-
-              <div className="space-y-4 text-xs">
-                <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between">
+            <div className="space-y-4">
+              {/* Webhook Listener Card */}
+              <form
+                onSubmit={handleSaveAutomations}
+                className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 space-y-5"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
                   <div>
-                    <strong className="block text-slate-900">
-                      Confirmação Imediata de Agendamento
-                    </strong>
-                    <span className="text-slate-500 text-[11px]">
-                      Dispara automaticamente mensagem de confirmação via Megaapi ao criar um novo agendamento.
-                    </span>
+                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <Webhook className="w-4 h-4 text-sky-600" />
+                      <span>Gatilhos Automáticos (n8n Webhooks)</span>
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Configure o webhook do n8n que escuta mensagens recebidas na Megaapi e controle os disparos por categoria.
+                    </p>
                   </div>
-                  <input type="checkbox" defaultChecked className="w-4 h-4 text-sky-600 rounded" />
+                  <button
+                    type="submit"
+                    disabled={isSavingAutomations}
+                    className="px-4 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 disabled:opacity-60 rounded-xl shadow-xs transition inline-flex items-center gap-1.5 shrink-0"
+                  >
+                    {isSavingAutomations ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Save className="w-3.5 h-3.5" />
+                    )}
+                    <span>{isSavingAutomations ? 'Salvando...' : 'Salvar Gatilhos'}</span>
+                  </button>
                 </div>
 
-                <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between">
-                  <div>
-                    <strong className="block text-slate-900">
-                      Lembrete & Confirmação com 48 Horas de Antecedência
-                    </strong>
-                    <span className="text-slate-500 text-[11px]">
-                      Disparado 2 dias antes para confirmar presença ou liberar vaga para lista de espera.
-                    </span>
+                {automationsFeedback && (
+                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>{automationsFeedback}</span>
                   </div>
-                  <input type="checkbox" defaultChecked className="w-4 h-4 text-sky-600 rounded" />
+                )}
+
+                {/* Inbound Megaapi -> n8n Webhook URL */}
+                <div className="p-4 bg-sky-50/70 rounded-xl border border-sky-200 space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="text-xs font-bold text-sky-950 flex items-center gap-1.5">
+                      <Link2 className="w-3.5 h-3.5 text-sky-600" />
+                      <span>Webhook n8n para Escuta de Mensagens Megaapi (Inbound)</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyText('inbound_url', n8nInboundWebhook)}
+                      className="px-2.5 py-1 text-[11px] font-semibold text-sky-800 bg-white hover:bg-sky-100 border border-sky-300 rounded-lg transition inline-flex items-center gap-1"
+                    >
+                      {copiedKey === 'inbound_url' ? (
+                        <Check className="w-3 h-3 text-emerald-600" />
+                      ) : (
+                        <Copy className="w-3 h-3" />
+                      )}
+                      <span>{copiedKey === 'inbound_url' ? 'Link Copiado!' : 'Copiar Link'}</span>
+                    </button>
+                  </div>
+                  <input
+                    type="url"
+                    value={n8nInboundWebhook}
+                    onChange={(e) => setN8nInboundWebhook(e.target.value)}
+                    placeholder={DEFAULT_INBOUND_N8N_WEBHOOK}
+                    className="w-full px-3 py-2 text-xs font-mono bg-white border border-sky-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  />
+                  <p className="text-[11px] text-sky-900/80 leading-relaxed">
+                    Cadastre este endereço no painel da Megaapi em <strong>Webhook URL</strong> (evento <code className="font-mono">messages.upsert</code>) para que o fluxo n8n receba respostas como <code className="font-mono">"1"</code> e confirme a consulta automaticamente no Supabase.
+                  </p>
                 </div>
 
-                <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between">
+                {/* Trigger Category Switches */}
+                <div className="space-y-3 text-xs">
+                  <h4 className="text-xs font-bold text-slate-800">
+                    Disparos Automáticos por Categoria
+                  </h4>
+
+                  {[
+                    {
+                      key: 'immediateConfirmation' as const,
+                      title: 'Confirmação Imediata de Agendamento',
+                      desc: 'Dispara automaticamente via Megaapi ao criar uma nova consulta pela agenda ou portal online.',
+                    },
+                    {
+                      key: 'confirmation48h' as const,
+                      title: 'Lembrete & Confirmação com 48 Horas de Antecedência',
+                      desc: 'Envia o modelo "Confirmação de Agendamento 48h" solicitando resposta 1 (Confirmar) ou 2 (Reagendar).',
+                    },
+                    {
+                      key: 'reminder24h' as const,
+                      title: 'Lembrete de Véspera (24 Horas Antes)',
+                      desc: 'Envia orientações de preparo, endereço da unidade e solicitação de exames prévios.',
+                    },
+                    {
+                      key: 'autoReplyConfirm' as const,
+                      title: 'Resposta Automática de Confirmação (n8n + Megaapi)',
+                      desc: 'Quando o paciente responde "1", o n8n atualiza o status no Supabase para confirmed e envia a confirmação.',
+                    },
+                    {
+                      key: 'postCare' as const,
+                      title: 'Assessoria & Acompanhamento Pós-Consulta',
+                      desc: 'Mensagem acolhedora após o atendimento para acompanhamento semanal e canal aberto no WhatsApp.',
+                    },
+                  ].map((item) => {
+                    const enabled = automationTriggers[item.key];
+                    return (
+                      <div
+                        key={item.key}
+                        className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between gap-4"
+                      >
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <strong className="text-slate-900">{item.title}</strong>
+                            <span
+                              className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                enabled
+                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                  : 'bg-slate-200 text-slate-600'
+                              }`}
+                            >
+                              {enabled ? 'Ativo' : 'Desativado'}
+                            </span>
+                          </div>
+                          <span className="text-slate-500 text-[11px] block mt-0.5">
+                            {item.desc}
+                          </span>
+                        </div>
+
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={enabled}
+                          onClick={() => handleToggleTrigger(item.key)}
+                          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                            enabled ? 'bg-emerald-600' : 'bg-slate-300'
+                          }`}
+                        >
+                          <span
+                            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-xs transition ${
+                              enabled ? 'translate-x-5' : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </form>
+
+              {/* JSON Payload Examples Card */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <strong className="block text-slate-900">
-                      Lembrete com 24 Horas de Antecedência
-                    </strong>
-                    <span className="text-slate-500 text-[11px]">
-                      Envia instruções de jejum ou envio prévio de exames laboratoriais.
-                    </span>
+                    <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                      <Code2 className="w-4 h-4 text-sky-600" />
+                      <span>Exemplos de Payload JSON dos Gatilhos Suportados</span>
+                    </h4>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Copie o contrato JSON para configurar rapidamente os nós Webhook / HTTP Request no n8n.
+                    </p>
                   </div>
-                  <input type="checkbox" defaultChecked className="w-4 h-4 text-sky-600 rounded" />
+
+                  <div className="inline-flex p-1 bg-slate-100 rounded-xl border border-slate-200 text-[11px] font-semibold">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedJsonExample('inbound_confirm')}
+                      className={`px-2.5 py-1 rounded-lg transition ${
+                        selectedJsonExample === 'inbound_confirm'
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600'
+                      }`}
+                    >
+                      Resposta &quot;1&quot; → Confirmar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedJsonExample('outbound_trigger')}
+                      className={`px-2.5 py-1 rounded-lg transition ${
+                        selectedJsonExample === 'outbound_trigger'
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600'
+                      }`}
+                    >
+                      Disparo 48h / 24h
+                    </button>
+                  </div>
                 </div>
 
-                <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between">
-                  <div>
-                    <strong className="block text-slate-900">
-                      Mensagem de Pós-Atendimento e Acolhimento
-                    </strong>
-                    <span className="text-slate-500 text-[11px]">
-                      Pesquisa de satisfação e canal aberto para dúvidas sobre receitas e orientações.
-                    </span>
-                  </div>
-                  <input type="checkbox" defaultChecked className="w-4 h-4 text-sky-600 rounded" />
-                </div>
+                {(() => {
+                  const inboundJson = JSON.stringify(
+                    {
+                      evento: 'megaapi.messages.upsert',
+                      webhook_url: n8nInboundWebhook,
+                      instance_key:
+                        clinic.megaapiInstanceKey || 'megabusiness-MH7CY257SQCAASLHMW73HB9GZ64',
+                      mensagem_recebida: {
+                        telefone: '5522981445566',
+                        texto: '1',
+                        fromMe: false,
+                      },
+                      acao_n8n_supabase: {
+                        tabela: 'public.appointments',
+                        operacao: 'UPDATE',
+                        filtro: {
+                          organization_id: organization.id,
+                          status_atual: 'scheduled',
+                        },
+                        novo_payload: {
+                          status: 'confirmed',
+                        },
+                      },
+                      resposta_automatica_megaapi: {
+                        categoria_template: 'confirmation_reply',
+                        status: 'confirmed',
+                        mensagem_enviada: generatePreview(
+                          templates.find((t) => t.category === 'confirmation_reply')?.content ||
+                            '✅ Presença confirmada com sucesso, {{nome_paciente}}!'
+                        ),
+                      },
+                    },
+                    null,
+                    2
+                  );
+
+                  const outboundJson = JSON.stringify(
+                    {
+                      evento: 'medsync.automation.dispatch',
+                      organization_id: organization.id,
+                      clinic_name: clinic.tradeName,
+                      category: 'confirmation_48h',
+                      triggers_enabled: automationTriggers,
+                      recipient: {
+                        patient_name: selectedPatient?.fullName || 'Camila Albuquerque',
+                        phone: (
+                          selectedPatient?.whatsapp ||
+                          selectedPatient?.phone ||
+                          '5522981445566'
+                        ).replace(/\D/g, ''),
+                      },
+                      megaapi: {
+                        host: clinic.megaapiInstanceUrl || 'https://apibusiness1.megaapi.com.br',
+                        instance_key:
+                          clinic.megaapiInstanceKey ||
+                          'megabusiness-MH7CY257SQCAASLHMW73HB9GZ64',
+                      },
+                      message_rendered: generatePreview(
+                        templates.find((t) => t.category === 'confirmation_48h')?.content ||
+                          tplContent
+                      ),
+                    },
+                    null,
+                    2
+                  );
+
+                  const activeJson =
+                    selectedJsonExample === 'inbound_confirm' ? inboundJson : outboundJson;
+
+                  return (
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => void handleCopyText('json_payload', activeJson)}
+                        className="absolute top-3 right-3 px-3 py-1.5 text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-white border border-slate-600 rounded-lg transition inline-flex items-center gap-1.5"
+                      >
+                        {copiedKey === 'json_payload' ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          {copiedKey === 'json_payload' ? 'JSON Copiado!' : 'Copiar JSON'}
+                        </span>
+                      </button>
+                      <pre className="p-4 pt-12 sm:pt-4 sm:pr-32 rounded-xl bg-slate-900 text-emerald-300 text-[11px] font-mono overflow-x-auto leading-relaxed">
+                        {activeJson}
+                      </pre>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           )}

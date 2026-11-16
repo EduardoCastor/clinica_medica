@@ -675,6 +675,22 @@ export const StorageService = {
         n8nWebhookAgendamento: clinicRow.n8n_webhook_agendamento
           ? String(clinicRow.n8n_webhook_agendamento)
           : localClinic.n8nWebhookAgendamento,
+        n8nWebhookMegaapiInbound: clinicRow.n8n_webhook_megaapi_inbound
+          ? String(clinicRow.n8n_webhook_megaapi_inbound)
+          : localClinic.n8nWebhookMegaapiInbound || INITIAL_CLINIC.n8nWebhookMegaapiInbound,
+        automationTriggers:
+          clinicRow.automation_triggers && typeof clinicRow.automation_triggers === 'object'
+            ? {
+                ...(INITIAL_CLINIC.automationTriggers || {
+                  immediateConfirmation: true,
+                  confirmation48h: true,
+                  reminder24h: true,
+                  autoReplyConfirm: true,
+                  postCare: true,
+                }),
+                ...(clinicRow.automation_triggers as Partial<Clinic['automationTriggers']>),
+              }
+            : localClinic.automationTriggers || INITIAL_CLINIC.automationTriggers,
         megaapiInstanceUrl: clinicRow.megaapi_instance_url
           ? String(clinicRow.megaapi_instance_url)
           : localClinic.megaapiInstanceUrl,
@@ -791,9 +807,15 @@ export const StorageService = {
         n8n_webhook_agendamento: merged.n8nWebhookAgendamento?.trim() || null,
       };
 
-      const extendedPayload: Record<string, unknown> = {
+      const integrationWithKeyPayload: Record<string, unknown> = {
         ...integrationWithoutKeyPayload,
         megaapi_instance_key: merged.megaapiInstanceKey?.trim() || null,
+      };
+
+      const extendedPayload: Record<string, unknown> = {
+        ...integrationWithKeyPayload,
+        n8n_webhook_megaapi_inbound: merged.n8nWebhookMegaapiInbound?.trim() || null,
+        automation_triggers: merged.automationTriggers || INITIAL_CLINIC.automationTriggers,
       };
 
       const { data: updatedExtended, error: extErr } = await supabase
@@ -804,7 +826,22 @@ export const StorageService = {
         .maybeSingle();
 
       if (extErr) {
-        // Retry without megaapi_instance_key first if that column wasn't migrated yet
+        // Retry without inbound/triggers columns if 20261116020000 isn't migrated yet
+        const { error: withKeyErr } = await supabase
+          .from('clinics')
+          .update(integrationWithKeyPayload)
+          .eq('id', targetClinicId);
+
+        if (!withKeyErr) {
+          return {
+            success: true,
+            clinic: merged,
+            syncedCloud: true,
+            error: extErr.message,
+          };
+        }
+
+        // Retry without megaapi_instance_key if that column wasn't migrated yet
         const { error: partialExtErr } = await supabase
           .from('clinics')
           .update(integrationWithoutKeyPayload)
@@ -1258,16 +1295,238 @@ export const StorageService = {
   },
 
   // Message Templates & Logs
-  getTemplates: (): MessageTemplate[] => getStored<MessageTemplate[]>(STORAGE_KEYS.TEMPLATES, INITIAL_TEMPLATES),
+  getTemplates: (): MessageTemplate[] => {
+    const stored = getStored<MessageTemplate[]>(STORAGE_KEYS.TEMPLATES, INITIAL_TEMPLATES);
+    if (!Array.isArray(stored) || stored.length === 0) {
+      return INITIAL_TEMPLATES;
+    }
+    const existingIds = new Set(stored.map((t) => t.id));
+    const existingCategories = new Set(stored.map((t) => t.category));
+    const missingDefaults = INITIAL_TEMPLATES.filter(
+      (def) => !existingIds.has(def.id) && !existingCategories.has(def.category)
+    );
+    if (missingDefaults.length > 0) {
+      const merged = [...stored, ...missingDefaults];
+      setStored(STORAGE_KEYS.TEMPLATES, merged);
+      return merged;
+    }
+    return stored;
+  },
   saveTemplate: (template: MessageTemplate): void => {
+    const extractedVars = Array.from(
+      new Set(
+        Array.from(template.content.matchAll(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g)).map(
+          (m) => m[1]
+        )
+      )
+    );
+    const normalized: MessageTemplate = {
+      ...template,
+      variables: extractedVars.length > 0 ? extractedVars : template.variables || [],
+    };
     const list = StorageService.getTemplates();
-    const index = list.findIndex(t => t.id === template.id);
+    const index = list.findIndex((t) => t.id === normalized.id);
     if (index >= 0) {
-      list[index] = template;
+      list[index] = normalized;
     } else {
-      list.push(template);
+      list.unshift(normalized);
     }
     setStored(STORAGE_KEYS.TEMPLATES, list);
+  },
+  fetchTemplatesFromCloud: async (): Promise<MessageTemplate[]> => {
+    const localTemplates = StorageService.getTemplates();
+    const supabase = getSupabase();
+    if (!supabase) return localTemplates;
+
+    try {
+      const orgSlug = (StorageService.getOrganization().slug || 'dr-newton-mureb')
+        .trim()
+        .toLowerCase();
+      let supaOrgId: string | undefined;
+      const { data: orgRow } = await supabase
+        .from('organizations')
+        .select('id')
+        .eq('slug', orgSlug)
+        .limit(1)
+        .maybeSingle();
+      if (orgRow?.id) {
+        supaOrgId = String(orgRow.id);
+      } else {
+        const { data: firstOrg } = await supabase
+          .from('organizations')
+          .select('id')
+          .limit(1)
+          .maybeSingle();
+        if (firstOrg?.id) supaOrgId = String(firstOrg.id);
+      }
+
+      if (!supaOrgId) return localTemplates;
+
+      const { data, error } = await supabase
+        .from('message_templates')
+        .select('*')
+        .eq('organization_id', supaOrgId)
+        .order('created_at', { ascending: true });
+
+      if (error || !data || data.length === 0) {
+        return localTemplates;
+      }
+
+      const mapped: MessageTemplate[] = data.map((row: Record<string, unknown>) => ({
+        id: String(row.id),
+        organizationId: String(row.organization_id || supaOrgId),
+        name: String(row.name || 'Modelo sem título'),
+        category: (row.category as MessageTemplate['category']) || 'custom',
+        channel: (row.channel as MessageTemplate['channel']) || 'whatsapp',
+        content: String(row.content || ''),
+        variables: Array.isArray(row.variables)
+          ? (row.variables as string[])
+          : ['nome_paciente', 'nome_clinica', 'nome_profissional', 'data_consulta', 'horario_consulta', 'endereco_filial'],
+        isActive: row.is_active !== false,
+        createdAt: row.created_at ? String(row.created_at) : undefined,
+      }));
+
+      setStored(STORAGE_KEYS.TEMPLATES, mapped);
+      return mapped;
+    } catch (err) {
+      console.warn('Aviso ao buscar modelos de mensagens na nuvem:', err);
+      return localTemplates;
+    }
+  },
+  saveTemplateToCloud: async (
+    template: MessageTemplate
+  ): Promise<{ template: MessageTemplate; syncedCloud: boolean; error?: string }> => {
+    const extractedVars = Array.from(
+      new Set(
+        Array.from(template.content.matchAll(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g)).map(
+          (m) => m[1]
+        )
+      )
+    );
+    const prepared: MessageTemplate = {
+      ...template,
+      variables: extractedVars.length > 0 ? extractedVars : template.variables || [],
+    };
+
+    StorageService.saveTemplate(prepared);
+    StorageService.addAuditLog({
+      action: 'Salvou Modelo de Mensagem',
+      entity: 'Comunicação',
+      entityId: prepared.id,
+      details: `Modelo "${prepared.name}" (${prepared.category})`,
+    });
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { template: prepared, syncedCloud: false };
+    }
+
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    try {
+      let supaOrgId = isUuid(prepared.organizationId) ? prepared.organizationId : undefined;
+      if (!supaOrgId) {
+        const orgSlug = (StorageService.getOrganization().slug || 'dr-newton-mureb')
+          .trim()
+          .toLowerCase();
+        const { data: orgRow } = await supabase
+          .from('organizations')
+          .select('id')
+          .eq('slug', orgSlug)
+          .limit(1)
+          .maybeSingle();
+        if (orgRow?.id) {
+          supaOrgId = String(orgRow.id);
+        } else {
+          const { data: firstOrg } = await supabase
+            .from('organizations')
+            .select('id')
+            .limit(1)
+            .maybeSingle();
+          if (firstOrg?.id) supaOrgId = String(firstOrg.id);
+        }
+      }
+
+      if (!supaOrgId) {
+        return { template: prepared, syncedCloud: false };
+      }
+
+      const payload = {
+        organization_id: supaOrgId,
+        name: prepared.name.trim(),
+        category: prepared.category || 'custom',
+        channel: prepared.channel || 'whatsapp',
+        content: prepared.content,
+        variables: prepared.variables,
+        is_active: prepared.isActive !== false,
+      };
+
+      let targetUuid: string | undefined = isUuid(prepared.id) ? prepared.id : undefined;
+
+      if (!targetUuid) {
+        const { data: existingMatch } = await supabase
+          .from('message_templates')
+          .select('id')
+          .eq('organization_id', supaOrgId)
+          .eq('name', payload.name)
+          .limit(1)
+          .maybeSingle();
+        if (existingMatch?.id) {
+          targetUuid = String(existingMatch.id);
+        }
+      }
+
+      if (targetUuid) {
+        const { data: updatedRow, error: updateErr } = await supabase
+          .from('message_templates')
+          .update(payload)
+          .eq('id', targetUuid)
+          .select('*')
+          .maybeSingle();
+
+        if (updateErr) {
+          return { template: prepared, syncedCloud: false, error: updateErr.message };
+        }
+
+        const synced: MessageTemplate = {
+          ...prepared,
+          id: updatedRow?.id ? String(updatedRow.id) : targetUuid,
+          organizationId: supaOrgId,
+        };
+        const updatedList = StorageService.getTemplates().map((t) =>
+          t.id === prepared.id || t.id === synced.id ? synced : t
+        );
+        setStored(STORAGE_KEYS.TEMPLATES, updatedList);
+        return { template: synced, syncedCloud: true };
+      }
+
+      const { data: insertedRow, error: insertErr } = await supabase
+        .from('message_templates')
+        .insert(payload)
+        .select('*')
+        .maybeSingle();
+
+      if (insertErr) {
+        return { template: prepared, syncedCloud: false, error: insertErr.message };
+      }
+
+      const synced: MessageTemplate = {
+        ...prepared,
+        id: insertedRow?.id ? String(insertedRow.id) : prepared.id,
+        organizationId: supaOrgId,
+      };
+      const updatedList = StorageService.getTemplates().map((t) =>
+        t.id === prepared.id ? synced : t
+      );
+      setStored(STORAGE_KEYS.TEMPLATES, updatedList);
+      return { template: synced, syncedCloud: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erro ao salvar modelo na nuvem.';
+      return { template: prepared, syncedCloud: false, error: msg };
+    }
   },
   getMessages: (): MessageLog[] => getStored<MessageLog[]>(STORAGE_KEYS.MESSAGES, INITIAL_MESSAGES),
   sendMessage: (msg: Omit<MessageLog, 'id' | 'sentAt'>): MessageLog => {

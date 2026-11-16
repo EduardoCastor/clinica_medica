@@ -98,10 +98,20 @@ export interface Clinic {
   institutionalBio: string;
   n8nWebhookDisponibilidade?: string;
   n8nWebhookAgendamento?: string;
+  n8nWebhookMegaapiInbound?: string;
+  automationTriggers?: AutomationTriggerSettings;
   megaapiInstanceUrl?: string;
   megaapiInstanceKey?: string;
   megaapiToken?: string;
   createdAt: string;
+}
+
+export interface AutomationTriggerSettings {
+  immediateConfirmation: boolean;
+  confirmation48h: boolean;
+  reminder24h: boolean;
+  autoReplyConfirm: boolean;
+  postCare: boolean;
 }
 
 export interface Room {
@@ -455,11 +465,19 @@ export interface MessageTemplate {
   id: string;
   organizationId: string;
   name: string;
-  category: 'confirmation_48h' | 'reminder_24h' | 'day_reminder' | 'post_care' | 'birthday' | 'custom';
+  category:
+    | 'confirmation_48h'
+    | 'reminder_24h'
+    | 'day_reminder'
+    | 'confirmation_reply'
+    | 'post_care'
+    | 'birthday'
+    | 'custom';
   channel: 'whatsapp' | 'email' | 'sms';
   content: string;
   variables: string[];
   isActive: boolean;
+  createdAt?: string;
 }
 
 export interface MessageLog {
