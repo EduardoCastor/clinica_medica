@@ -478,6 +478,7 @@ export interface MessageTemplate {
   variables: string[];
   isActive: boolean;
   createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface MessageLog {
