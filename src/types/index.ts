@@ -466,11 +466,14 @@ export interface MessageTemplate {
   organizationId: string;
   name: string;
   category:
+    | 'immediate_confirmation'
     | 'confirmation_48h'
     | 'reminder_24h'
     | 'day_reminder'
+    | 'soon_reminder'
     | 'confirmation_reply'
     | 'post_care'
+    | 'follow_up'
     | 'birthday'
     | 'custom';
   channel: 'whatsapp' | 'email' | 'sms';
@@ -479,6 +482,130 @@ export interface MessageTemplate {
   isActive: boolean;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export type AutomationTriggerStatus = 'active' | 'paused' | 'draft' | 'inactive';
+
+export type AutomationTriggerCategory =
+  | 'appointment_confirmation'
+  | 'reminder'
+  | 'auto_reply'
+  | 'post_care'
+  | 'birthday'
+  | 'custom';
+
+export type AutomationEventType =
+  | 'appointment_created'
+  | 'appointment_confirmed'
+  | 'appointment_upcoming'
+  | 'appointment_soon'
+  | 'appointment_completed'
+  | 'appointment_cancelled'
+  | 'appointment_no_show'
+  | 'post_care'
+  | 'patient_birthday'
+  | 'custom';
+
+export type AutomationIntervalUnit = 'minutes' | 'hours' | 'days' | 'weeks';
+
+export type AutomationLeadTimeUnit = 'minutes' | 'hours' | 'days';
+
+export type AutomationScheduleMode = 'relative' | 'fixed_time';
+
+export type AutomationWeekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+
+export type AutomationOutsideWindowPolicy = 'next_allowed_window' | 'skip';
+
+export type AutomationExecutionStatus =
+  | 'pending'
+  | 'processing'
+  | 'sent'
+  | 'delivered'
+  | 'failed'
+  | 'cancelled'
+  | 'skipped';
+
+export interface AutomationSmartRules {
+  requireValidPhone: boolean;
+  skipCancelledAppointments: boolean;
+  stopOnAppointmentCancel: boolean;
+  stopOnAppointmentConfirm: boolean;
+  respectAppointmentStatus: boolean;
+  respectOriginBranch: boolean;
+  respectOrganizationIsolation: boolean;
+  minIntervalMinutesPerPatient: number;
+  dailyLimitPerPatient: number;
+  retryOnFailure: boolean;
+  maxRetries: number;
+  preventDuplicates: boolean;
+  autoReplyKeyword?: string;
+}
+
+export interface AutomationStepDefinition {
+  stepNumber: number;
+  offsetMinutes: number;
+  label: string;
+}
+
+export interface WhatsAppAutomationTrigger {
+  id: string;
+  organizationId: string;
+  clinicId?: string;
+  branchId?: string | null; // null ou undefined = todas as filiais
+  triggerCode?: string;
+  name: string;
+  description: string;
+  category: AutomationTriggerCategory;
+  eventType: AutomationEventType;
+  templateId: string;
+  templateName?: string;
+  templateCategory?: MessageTemplate['category'];
+  status: AutomationTriggerStatus;
+  totalSends: number;
+  intervalValue: number;
+  intervalUnit: AutomationIntervalUnit;
+  maxDurationDays: number;
+  scheduleMode: AutomationScheduleMode;
+  leadTimeValue: number;
+  leadTimeUnit: AutomationLeadTimeUnit;
+  preferredSendTime: string; // HH:mm
+  allowedDays: AutomationWeekday[];
+  windowStart: string; // HH:mm
+  windowEnd: string; // HH:mm
+  timezone: string; // America/Sao_Paulo
+  outsideWindowPolicy: AutomationOutsideWindowPolicy;
+  smartRules: AutomationSmartRules;
+  stepSchedule?: AutomationStepDefinition[];
+  nextRunEstimate?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AutomationExecutionRecord {
+  id: string;
+  organizationId: string;
+  branchId?: string | null;
+  branchName?: string;
+  triggerId: string;
+  triggerName?: string;
+  patientId?: string | null;
+  patientName: string;
+  patientPhone: string;
+  appointmentId?: string | null;
+  appointmentLabel?: string;
+  stepNumber: number;
+  totalSteps?: number;
+  scheduledFor: string;
+  executedAt?: string;
+  status: AutomationExecutionStatus;
+  renderedMessage?: string;
+  externalMessageId?: string;
+  attemptCount: number;
+  maxAttempts: number;
+  errorMessage?: string;
+  idempotencyKey: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface MessageLog {

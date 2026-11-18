@@ -21,8 +21,6 @@ import {
   Copy,
   Check,
   Smile,
-  Webhook,
-  Code2,
   FileEdit,
   Sparkles,
 } from 'lucide-react';
@@ -37,6 +35,7 @@ import {
   normalizeMegaapiBaseUrl,
   MegaapiConnectionResult,
 } from '../../services/megaApiService';
+import { WhatsAppAutomationManager } from './WhatsAppAutomationManager';
 
 const TEMPLATE_VARIABLES = [
   { tag: '{{nome_paciente}}', label: 'Paciente' },
@@ -50,11 +49,14 @@ const TEMPLATE_VARIABLES = [
 const WHATSAPP_EMOJIS = ['👋', '✅', '📅', '⏰', '📍', '🩺', '📄', '💊', '💚', '✨', '🔄', '🙏'];
 
 const CATEGORY_LABELS: Record<MessageTemplate['category'], string> = {
+  immediate_confirmation: 'Confirmação Imediata',
   confirmation_48h: 'Confirmação 48h',
   reminder_24h: 'Lembrete de Véspera (24h)',
   day_reminder: 'Lembrete do Dia',
+  soon_reminder: 'Lembrete Próximo do Horário',
   confirmation_reply: 'Resposta Automática',
-  post_care: 'Pós-Atendimento',
+  post_care: 'Orientações Pós-Atendimento',
+  follow_up: 'Acompanhamento Pós-Consulta',
   birthday: 'Aniversário',
   custom: 'Personalizado',
 };
@@ -128,18 +130,12 @@ export const CommunicationModule: React.FC = () => {
     text: string;
   } | null>(null);
 
-  // n8n Automations & Webhook State
+  // Inbound auto-reply webhook state
   const [n8nInboundWebhook, setN8nInboundWebhook] = useState<string>(
     clinic.n8nWebhookMegaapiInbound || DEFAULT_INBOUND_N8N_WEBHOOK
   );
   const [automationTriggers, setAutomationTriggers] = useState<AutomationTriggerSettings>(
     clinic.automationTriggers || DEFAULT_AUTOMATION_TRIGGERS
-  );
-  const [isSavingAutomations, setIsSavingAutomations] = useState(false);
-  const [automationsFeedback, setAutomationsFeedback] = useState<string | null>(null);
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [selectedJsonExample, setSelectedJsonExample] = useState<'inbound_confirm' | 'outbound_trigger'>(
-    'inbound_confirm'
   );
 
   // Megaapi Settings & Status State
@@ -363,31 +359,8 @@ export const CommunicationModule: React.FC = () => {
     }
   };
 
-  const handleCopyText = async (key: string, value: string) => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopiedKey(key);
-      setTimeout(() => setCopiedKey((curr) => (curr === key ? null : curr)), 2000);
-    } catch {
-      setCopiedKey(key);
-      setTimeout(() => setCopiedKey(null), 2000);
-    }
-  };
-
-  const handleToggleTrigger = (field: keyof AutomationTriggerSettings) => {
-    setAutomationTriggers((prev) => ({
-      ...prev,
-      [field]: !prev[field],
-    }));
-    setAutomationsFeedback(null);
-  };
-
-  const handleSaveAutomations = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    setIsSavingAutomations(true);
-    setAutomationsFeedback(null);
-
-    const cleanedWebhook = n8nInboundWebhook.trim() || DEFAULT_INBOUND_N8N_WEBHOOK;
+  const handleSaveInboundWebhook = async (webhookUrl: string) => {
+    const cleanedWebhook = webhookUrl.trim() || DEFAULT_INBOUND_N8N_WEBHOOK;
     setN8nInboundWebhook(cleanedWebhook);
 
     updateClinic({
@@ -399,9 +372,14 @@ export const CommunicationModule: React.FC = () => {
       n8nWebhookMegaapiInbound: cleanedWebhook,
       automationTriggers,
     });
+  };
 
-    setIsSavingAutomations(false);
-    setAutomationsFeedback('Gatilhos automáticos e webhook n8n salvos e sincronizados com sucesso!');
+  const handleOpenTemplateInEditor = (templateId: string) => {
+    const target = templates.find((t) => t.id === templateId);
+    if (target) {
+      selectTemplateForEditing(target);
+    }
+    setActiveTab('templates');
   };
 
   const effectiveMessageText = customText.trim()
@@ -648,7 +626,7 @@ export const CommunicationModule: React.FC = () => {
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Gatilhos Automáticos (n8n)
+            Automações WhatsApp
           </button>
           <button
             type="button"
@@ -665,7 +643,21 @@ export const CommunicationModule: React.FC = () => {
         </div>
       </div>
 
-      {/* Main Grid: Dispatcher & Tab Content */}
+      {/* Main Layout */}
+      {activeTab === 'automations' ? (
+        <WhatsAppAutomationManager
+          clinic={clinic}
+          organization={organization}
+          branches={branches}
+          templates={templates}
+          connectionStatus={connectionStatus}
+          n8nInboundWebhook={n8nInboundWebhook}
+          onSaveInboundWebhook={handleSaveInboundWebhook}
+          renderPreview={generatePreview}
+          onOpenTemplateEditor={handleOpenTemplateInEditor}
+          onOpenMegaapiConfig={() => setActiveTab('config')}
+        />
+      ) : (
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Column: WhatsApp Dispatcher */}
         <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 space-y-4">
@@ -1253,289 +1245,6 @@ export const CommunicationModule: React.FC = () => {
             </div>
           )}
 
-          {/* TAB 3: n8n Automations & Webhooks Panel */}
-          {activeTab === 'automations' && (
-            <div className="space-y-4">
-              {/* Webhook Listener Card */}
-              <form
-                onSubmit={handleSaveAutomations}
-                className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 space-y-5"
-              >
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                      <Webhook className="w-4 h-4 text-sky-600" />
-                      <span>Gatilhos Automáticos (n8n Webhooks)</span>
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Configure o webhook do n8n que escuta mensagens recebidas na Megaapi e controle os disparos por categoria.
-                    </p>
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={isSavingAutomations}
-                    className="px-4 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 disabled:opacity-60 rounded-xl shadow-xs transition inline-flex items-center gap-1.5 shrink-0"
-                  >
-                    {isSavingAutomations ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Save className="w-3.5 h-3.5" />
-                    )}
-                    <span>{isSavingAutomations ? 'Salvando...' : 'Salvar Gatilhos'}</span>
-                  </button>
-                </div>
-
-                {automationsFeedback && (
-                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <span>{automationsFeedback}</span>
-                  </div>
-                )}
-
-                {/* Inbound Megaapi -> n8n Webhook URL */}
-                <div className="p-4 bg-sky-50/70 rounded-xl border border-sky-200 space-y-2.5">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <label className="text-xs font-bold text-sky-950 flex items-center gap-1.5">
-                      <Link2 className="w-3.5 h-3.5 text-sky-600" />
-                      <span>Webhook n8n para Escuta de Mensagens Megaapi (Inbound)</span>
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => void handleCopyText('inbound_url', n8nInboundWebhook)}
-                      className="px-2.5 py-1 text-[11px] font-semibold text-sky-800 bg-white hover:bg-sky-100 border border-sky-300 rounded-lg transition inline-flex items-center gap-1"
-                    >
-                      {copiedKey === 'inbound_url' ? (
-                        <Check className="w-3 h-3 text-emerald-600" />
-                      ) : (
-                        <Copy className="w-3 h-3" />
-                      )}
-                      <span>{copiedKey === 'inbound_url' ? 'Link Copiado!' : 'Copiar Link'}</span>
-                    </button>
-                  </div>
-                  <input
-                    type="url"
-                    value={n8nInboundWebhook}
-                    onChange={(e) => setN8nInboundWebhook(e.target.value)}
-                    placeholder={DEFAULT_INBOUND_N8N_WEBHOOK}
-                    className="w-full px-3 py-2 text-xs font-mono bg-white border border-sky-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
-                  />
-                  <p className="text-[11px] text-sky-900/80 leading-relaxed">
-                    Cadastre este endereço no painel da Megaapi em <strong>Webhook URL</strong> (evento <code className="font-mono">messages.upsert</code>) para que o fluxo n8n receba respostas como <code className="font-mono">"1"</code> e confirme a consulta automaticamente no Supabase.
-                  </p>
-                </div>
-
-                {/* Trigger Category Switches */}
-                <div className="space-y-3 text-xs">
-                  <h4 className="text-xs font-bold text-slate-800">
-                    Disparos Automáticos por Categoria
-                  </h4>
-
-                  {[
-                    {
-                      key: 'immediateConfirmation' as const,
-                      title: 'Confirmação Imediata de Agendamento',
-                      desc: 'Dispara automaticamente via Megaapi ao criar uma nova consulta pela agenda ou portal online.',
-                    },
-                    {
-                      key: 'confirmation48h' as const,
-                      title: 'Lembrete & Confirmação com 48 Horas de Antecedência',
-                      desc: 'Envia o modelo "Confirmação de Agendamento 48h" solicitando resposta 1 (Confirmar) ou 2 (Reagendar).',
-                    },
-                    {
-                      key: 'reminder24h' as const,
-                      title: 'Lembrete de Véspera (24 Horas Antes)',
-                      desc: 'Envia orientações de preparo, endereço da unidade e solicitação de exames prévios.',
-                    },
-                    {
-                      key: 'autoReplyConfirm' as const,
-                      title: 'Resposta Automática de Confirmação (n8n + Megaapi)',
-                      desc: 'Quando o paciente responde "1", o n8n atualiza o status no Supabase para confirmed e envia a confirmação.',
-                    },
-                    {
-                      key: 'postCare' as const,
-                      title: 'Assessoria & Acompanhamento Pós-Consulta',
-                      desc: 'Mensagem acolhedora após o atendimento para acompanhamento semanal e canal aberto no WhatsApp.',
-                    },
-                  ].map((item) => {
-                    const enabled = automationTriggers[item.key];
-                    return (
-                      <div
-                        key={item.key}
-                        className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between gap-4"
-                      >
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <strong className="text-slate-900">{item.title}</strong>
-                            <span
-                              className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                                enabled
-                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                  : 'bg-slate-200 text-slate-600'
-                              }`}
-                            >
-                              {enabled ? 'Ativo' : 'Desativado'}
-                            </span>
-                          </div>
-                          <span className="text-slate-500 text-[11px] block mt-0.5">
-                            {item.desc}
-                          </span>
-                        </div>
-
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={enabled}
-                          onClick={() => handleToggleTrigger(item.key)}
-                          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-                            enabled ? 'bg-emerald-600' : 'bg-slate-300'
-                          }`}
-                        >
-                          <span
-                            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-xs transition ${
-                              enabled ? 'translate-x-5' : 'translate-x-0'
-                            }`}
-                          />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </form>
-
-              {/* JSON Payload Examples Card */}
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                      <Code2 className="w-4 h-4 text-sky-600" />
-                      <span>Exemplos de Payload JSON dos Gatilhos Suportados</span>
-                    </h4>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      Copie o contrato JSON para configurar rapidamente os nós Webhook / HTTP Request no n8n.
-                    </p>
-                  </div>
-
-                  <div className="inline-flex p-1 bg-slate-100 rounded-xl border border-slate-200 text-[11px] font-semibold">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedJsonExample('inbound_confirm')}
-                      className={`px-2.5 py-1 rounded-lg transition ${
-                        selectedJsonExample === 'inbound_confirm'
-                          ? 'bg-white text-slate-900 shadow-xs'
-                          : 'text-slate-600'
-                      }`}
-                    >
-                      Resposta &quot;1&quot; → Confirmar
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedJsonExample('outbound_trigger')}
-                      className={`px-2.5 py-1 rounded-lg transition ${
-                        selectedJsonExample === 'outbound_trigger'
-                          ? 'bg-white text-slate-900 shadow-xs'
-                          : 'text-slate-600'
-                      }`}
-                    >
-                      Disparo 48h / 24h
-                    </button>
-                  </div>
-                </div>
-
-                {(() => {
-                  const inboundJson = JSON.stringify(
-                    {
-                      evento: 'megaapi.messages.upsert',
-                      webhook_url: n8nInboundWebhook,
-                      instance_key:
-                        clinic.megaapiInstanceKey || 'megabusiness-MH7CY257SQCAASLHMW73HB9GZ64',
-                      mensagem_recebida: {
-                        telefone: '5522981445566',
-                        texto: '1',
-                        fromMe: false,
-                      },
-                      acao_n8n_supabase: {
-                        tabela: 'public.appointments',
-                        operacao: 'UPDATE',
-                        filtro: {
-                          organization_id: organization.id,
-                          status_atual: 'scheduled',
-                        },
-                        novo_payload: {
-                          status: 'confirmed',
-                        },
-                      },
-                      resposta_automatica_megaapi: {
-                        categoria_template: 'confirmation_reply',
-                        status: 'confirmed',
-                        mensagem_enviada: generatePreview(
-                          templates.find((t) => t.category === 'confirmation_reply')?.content ||
-                            '✅ Presença confirmada com sucesso, {{nome_paciente}}!'
-                        ),
-                      },
-                    },
-                    null,
-                    2
-                  );
-
-                  const outboundJson = JSON.stringify(
-                    {
-                      evento: 'medsync.automation.dispatch',
-                      organization_id: organization.id,
-                      clinic_name: clinic.tradeName,
-                      category: 'confirmation_48h',
-                      triggers_enabled: automationTriggers,
-                      recipient: {
-                        patient_name: selectedPatient?.fullName || 'Camila Albuquerque',
-                        phone: (
-                          selectedPatient?.whatsapp ||
-                          selectedPatient?.phone ||
-                          '5522981445566'
-                        ).replace(/\D/g, ''),
-                      },
-                      megaapi: {
-                        host: clinic.megaapiInstanceUrl || 'https://apibusiness1.megaapi.com.br',
-                        instance_key:
-                          clinic.megaapiInstanceKey ||
-                          'megabusiness-MH7CY257SQCAASLHMW73HB9GZ64',
-                      },
-                      message_rendered: generatePreview(
-                        templates.find((t) => t.category === 'confirmation_48h')?.content ||
-                          tplContent
-                      ),
-                    },
-                    null,
-                    2
-                  );
-
-                  const activeJson =
-                    selectedJsonExample === 'inbound_confirm' ? inboundJson : outboundJson;
-
-                  return (
-                    <div className="relative">
-                      <button
-                        type="button"
-                        onClick={() => void handleCopyText('json_payload', activeJson)}
-                        className="absolute top-3 right-3 px-3 py-1.5 text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-white border border-slate-600 rounded-lg transition inline-flex items-center gap-1.5"
-                      >
-                        {copiedKey === 'json_payload' ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        ) : (
-                          <Copy className="w-3.5 h-3.5" />
-                        )}
-                        <span>
-                          {copiedKey === 'json_payload' ? 'JSON Copiado!' : 'Copiar JSON'}
-                        </span>
-                      </button>
-                      <pre className="p-4 pt-12 sm:pt-4 sm:pr-32 rounded-xl bg-slate-900 text-emerald-300 text-[11px] font-mono overflow-x-auto leading-relaxed">
-                        {activeJson}
-                      </pre>
-                    </div>
-                  );
-                })()}
-              </div>
-            </div>
-          )}
-
           {/* TAB 4: Megaapi Credentials & Connection Status */}
           {activeTab === 'config' && (
             <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 space-y-5">
@@ -1719,6 +1428,7 @@ export const CommunicationModule: React.FC = () => {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 };

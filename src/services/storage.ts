@@ -25,7 +25,11 @@ import {
   LabOrder,
   ExamResult,
   MedicalRecordAddendum,
-  SaasPlan
+  SaasPlan,
+  WhatsAppAutomationTrigger,
+  AutomationExecutionRecord,
+  AutomationTriggerStatus,
+  AutomationTriggerSettings,
 } from '../types';
 
 import {
@@ -51,7 +55,9 @@ import {
   INITIAL_PRESCRIPTIONS,
   INITIAL_CERTIFICATES,
   INITIAL_LAB_ORDERS,
-  INITIAL_EXAM_RESULTS
+  INITIAL_EXAM_RESULTS,
+  INITIAL_AUTOMATION_TRIGGERS,
+  INITIAL_AUTOMATION_EXECUTIONS
 } from './mockData';
 import { getSupabase } from './supabaseClient';
 
@@ -76,6 +82,8 @@ const STORAGE_KEYS = {
   EXAM_RESULTS: 'medsync_exam_results',
   TEMPLATES: 'medsync_templates',
   MESSAGES: 'medsync_messages',
+  AUTOMATION_TRIGGERS: 'medsync_whatsapp_triggers',
+  AUTOMATION_EXECUTIONS: 'medsync_whatsapp_executions',
   FINANCIAL: 'medsync_financial',
   WEBSITE: 'medsync_website',
   AUDIT_LOGS: 'medsync_audit',
@@ -210,6 +218,14 @@ export function runDataMigrationIfNeeded(): void {
     localStorage.setItem(STORAGE_KEYS.LAB_ORDERS, JSON.stringify(INITIAL_LAB_ORDERS));
     localStorage.setItem(STORAGE_KEYS.EXAM_RESULTS, JSON.stringify(INITIAL_EXAM_RESULTS));
     localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify(INITIAL_MESSAGES));
+    localStorage.setItem(
+      STORAGE_KEYS.AUTOMATION_TRIGGERS,
+      JSON.stringify(INITIAL_AUTOMATION_TRIGGERS)
+    );
+    localStorage.setItem(
+      STORAGE_KEYS.AUTOMATION_EXECUTIONS,
+      JSON.stringify(INITIAL_AUTOMATION_EXECUTIONS)
+    );
     localStorage.setItem(STORAGE_KEYS.FINANCIAL, JSON.stringify(INITIAL_FINANCIAL));
     localStorage.setItem(STORAGE_KEYS.AUDIT_LOGS, JSON.stringify(INITIAL_AUDIT_LOGS));
 
@@ -1862,6 +1878,781 @@ export const StorageService = {
       return merged;
     } catch {
       return localList;
+    }
+  },
+
+  // =========================================================================
+  // Gerenciador Inteligente de Automações WhatsApp (Gatilhos & Execuções)
+  // =========================================================================
+
+  getAutomationTriggers: (): WhatsAppAutomationTrigger[] => {
+    runDataMigrationIfNeeded();
+    const legacyClinic = getStored<Clinic>(STORAGE_KEYS.CLINIC, INITIAL_CLINIC);
+    const legacyFlags = legacyClinic.automationTriggers;
+
+    const mapLegacySeed = (def: WhatsAppAutomationTrigger): WhatsAppAutomationTrigger => {
+      if (!legacyFlags) return def;
+      let status = def.status;
+      if (def.triggerCode === 'immediate_confirmation') {
+        status = legacyFlags.immediateConfirmation ? 'active' : 'paused';
+      } else if (def.triggerCode === 'confirmation_48h') {
+        status = legacyFlags.confirmation48h ? 'active' : 'paused';
+      } else if (def.triggerCode === 'reminder_24h') {
+        status = legacyFlags.reminder24h ? 'active' : 'paused';
+      } else if (def.triggerCode === 'auto_reply_confirm') {
+        status = legacyFlags.autoReplyConfirm ? 'active' : 'paused';
+      } else if (def.triggerCode === 'post_care') {
+        status = legacyFlags.postCare ? 'active' : 'paused';
+      }
+      return { ...def, status };
+    };
+
+    let stored: WhatsAppAutomationTrigger[] = [];
+    if (typeof window !== 'undefined') {
+      const raw = localStorage.getItem(STORAGE_KEYS.AUTOMATION_TRIGGERS);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) stored = parsed as WhatsAppAutomationTrigger[];
+        } catch {
+          stored = [];
+        }
+      }
+    }
+
+    if (stored.length === 0) {
+      const seeded = INITIAL_AUTOMATION_TRIGGERS.map(mapLegacySeed);
+      setStored(STORAGE_KEYS.AUTOMATION_TRIGGERS, seeded);
+      return seeded;
+    }
+
+    // Ensure all 10 baseline triggerCodes exist at least once without creating duplicates
+    const existingCodes = new Set(
+      stored.map((t) => t.triggerCode).filter((c): c is string => Boolean(c))
+    );
+    const existingIds = new Set(stored.map((t) => t.id));
+    const missingSeeds = INITIAL_AUTOMATION_TRIGGERS.filter(
+      (def) =>
+        !existingIds.has(def.id) && (!def.triggerCode || !existingCodes.has(def.triggerCode))
+    ).map(mapLegacySeed);
+
+    if (missingSeeds.length > 0) {
+      const merged = [...stored, ...missingSeeds];
+      setStored(STORAGE_KEYS.AUTOMATION_TRIGGERS, merged);
+      return merged;
+    }
+
+    return stored;
+  },
+
+  saveAutomationTriggerLocal: (trigger: WhatsAppAutomationTrigger): WhatsAppAutomationTrigger => {
+    const list = StorageService.getAutomationTriggers();
+    const nowIso = new Date().toISOString();
+    const prepared: WhatsAppAutomationTrigger = {
+      ...trigger,
+      updatedAt: nowIso,
+      createdAt: trigger.createdAt || nowIso,
+    };
+
+    const idx = list.findIndex((t) => t.id === prepared.id);
+    if (idx >= 0) {
+      list[idx] = prepared;
+    } else {
+      list.unshift(prepared);
+    }
+    setStored(STORAGE_KEYS.AUTOMATION_TRIGGERS, list);
+
+    // Keep legacy Clinic.automationTriggers flags synced for backward compatibility
+    if (prepared.triggerCode) {
+      const clinic = StorageService.getClinic();
+      const currentFlags: AutomationTriggerSettings = clinic.automationTriggers || {
+        immediateConfirmation: true,
+        confirmation48h: true,
+        reminder24h: true,
+        autoReplyConfirm: true,
+        postCare: true,
+      };
+      const isEnabled = prepared.status === 'active';
+      const nextFlags: AutomationTriggerSettings = { ...currentFlags };
+      let changed = false;
+      if (prepared.triggerCode === 'immediate_confirmation') {
+        nextFlags.immediateConfirmation = isEnabled;
+        changed = true;
+      } else if (prepared.triggerCode === 'confirmation_48h') {
+        nextFlags.confirmation48h = isEnabled;
+        changed = true;
+      } else if (prepared.triggerCode === 'reminder_24h') {
+        nextFlags.reminder24h = isEnabled;
+        changed = true;
+      } else if (prepared.triggerCode === 'auto_reply_confirm') {
+        nextFlags.autoReplyConfirm = isEnabled;
+        changed = true;
+      } else if (prepared.triggerCode === 'post_care') {
+        nextFlags.postCare = isEnabled;
+        changed = true;
+      }
+      if (changed) {
+        StorageService.updateClinic({ automationTriggers: nextFlags });
+      }
+    }
+
+    return prepared;
+  },
+
+  fetchAutomationTriggersFromCloud: async (tenantHints?: {
+    organizationId?: string;
+    clinicId?: string;
+    slug?: string;
+  }): Promise<{
+    triggers: WhatsAppAutomationTrigger[];
+    source: 'cloud' | 'local';
+    error?: string;
+  }> => {
+    const localTriggers = StorageService.getAutomationTriggers();
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { triggers: localTriggers, source: 'local' };
+    }
+
+    const isUuid = (val?: string | null) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    try {
+      let supaOrgId = isUuid(tenantHints?.organizationId)
+        ? tenantHints?.organizationId
+        : undefined;
+
+      if (!supaOrgId) {
+        const orgSlug = (
+          tenantHints?.slug ||
+          StorageService.getOrganization().slug ||
+          'dr-newton-mureb'
+        )
+          .trim()
+          .toLowerCase();
+        const { data: orgRow } = await supabase
+          .from('organizations')
+          .select('id')
+          .eq('slug', orgSlug)
+          .limit(1)
+          .maybeSingle();
+        if (orgRow?.id) {
+          supaOrgId = String(orgRow.id);
+        } else {
+          const { data: firstOrg } = await supabase
+            .from('organizations')
+            .select('id')
+            .limit(1)
+            .maybeSingle();
+          if (firstOrg?.id) supaOrgId = String(firstOrg.id);
+        }
+      }
+
+      if (!supaOrgId) {
+        return { triggers: localTriggers, source: 'local' };
+      }
+
+      const templates = StorageService.getTemplates();
+      const mapRow = (row: Record<string, unknown>): WhatsAppAutomationTrigger => {
+        const tplId = row.template_id ? String(row.template_id) : '';
+        const tplCat = row.template_category
+          ? (String(row.template_category) as MessageTemplate['category'])
+          : undefined;
+        const matchedTpl =
+          templates.find((t) => t.id === tplId) ||
+          (tplCat ? templates.find((t) => t.category === tplCat) : undefined);
+
+        return {
+          id: String(row.id),
+          organizationId: String(row.organization_id || supaOrgId),
+          clinicId: row.clinic_id ? String(row.clinic_id) : undefined,
+          branchId: row.branch_id ? String(row.branch_id) : null,
+          triggerCode: row.trigger_code ? String(row.trigger_code) : undefined,
+          name: String(row.name || 'Gatilho sem nome'),
+          description: String(row.description || ''),
+          category: (row.category as WhatsAppAutomationTrigger['category']) || 'custom',
+          eventType: (row.event_type as WhatsAppAutomationTrigger['eventType']) || 'custom',
+          templateId: matchedTpl?.id || tplId,
+          templateName: matchedTpl?.name,
+          templateCategory: tplCat || matchedTpl?.category,
+          status: (row.status as AutomationTriggerStatus) || 'active',
+          totalSends: Number(row.total_sends || 1),
+          intervalValue: Number(row.interval_value ?? 24),
+          intervalUnit: (row.interval_unit as WhatsAppAutomationTrigger['intervalUnit']) || 'hours',
+          maxDurationDays: Number(row.max_duration_days ?? 7),
+          scheduleMode: (row.schedule_mode as WhatsAppAutomationTrigger['scheduleMode']) || 'relative',
+          leadTimeValue: Number(row.lead_time_value ?? 0),
+          leadTimeUnit: (row.lead_time_unit as WhatsAppAutomationTrigger['leadTimeUnit']) || 'hours',
+          preferredSendTime: String(row.preferred_send_time || '09:00'),
+          allowedDays: Array.isArray(row.allowed_days)
+            ? (row.allowed_days as WhatsAppAutomationTrigger['allowedDays'])
+            : ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'],
+          windowStart: String(row.window_start || '08:00'),
+          windowEnd: String(row.window_end || '20:00'),
+          timezone: String(row.timezone || 'America/Sao_Paulo'),
+          outsideWindowPolicy:
+            (row.outside_window_policy as WhatsAppAutomationTrigger['outsideWindowPolicy']) ||
+            'next_allowed_window',
+          smartRules:
+            row.smart_rules && typeof row.smart_rules === 'object'
+              ? {
+                  requireValidPhone: true,
+                  skipCancelledAppointments: true,
+                  stopOnAppointmentCancel: true,
+                  stopOnAppointmentConfirm: false,
+                  respectAppointmentStatus: true,
+                  respectOriginBranch: true,
+                  respectOrganizationIsolation: true,
+                  minIntervalMinutesPerPatient: 120,
+                  dailyLimitPerPatient: 3,
+                  retryOnFailure: true,
+                  maxRetries: 3,
+                  preventDuplicates: true,
+                  ...(row.smart_rules as Partial<WhatsAppAutomationTrigger['smartRules']>),
+                }
+              : INITIAL_AUTOMATION_TRIGGERS[0].smartRules,
+          stepSchedule: Array.isArray(row.step_schedule)
+            ? (row.step_schedule as WhatsAppAutomationTrigger['stepSchedule'])
+            : [],
+          createdAt: String(row.created_at || new Date().toISOString()),
+          updatedAt: String(row.updated_at || new Date().toISOString()),
+        };
+      };
+
+      const { data, error } = await supabase
+        .from('whatsapp_automation_triggers')
+        .select('*')
+        .eq('organization_id', supaOrgId)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        return { triggers: localTriggers, source: 'local', error: error.message };
+      }
+
+      if (data && data.length > 0) {
+        const mapped = (data as Array<Record<string, unknown>>).map(mapRow);
+        setStored(STORAGE_KEYS.AUTOMATION_TRIGGERS, mapped);
+        return { triggers: mapped, source: 'cloud' };
+      }
+
+      // First cloud sync for this org: resolve template UUIDs + clinic UUID and seed initial triggers
+      const { data: cloudTemplates } = await supabase
+        .from('message_templates')
+        .select('id, category, name')
+        .eq('organization_id', supaOrgId);
+      const { data: clinicRow } = await supabase
+        .from('clinics')
+        .select('id')
+        .eq('organization_id', supaOrgId)
+        .limit(1)
+        .maybeSingle();
+
+      const cloudTplList = (cloudTemplates || []) as Array<{
+        id: string;
+        category?: string;
+        name?: string;
+      }>;
+
+      const seedRows = localTriggers.map((trig) => {
+        const matchedCloudTpl =
+          cloudTplList.find((ct) => ct.id === trig.templateId) ||
+          cloudTplList.find((ct) => ct.category === trig.templateCategory) ||
+          cloudTplList.find((ct) => ct.name === trig.templateName);
+
+        return {
+          organization_id: supaOrgId,
+          clinic_id: clinicRow?.id || null,
+          branch_id: isUuid(trig.branchId) ? trig.branchId : null,
+          trigger_code: trig.triggerCode || null,
+          name: trig.name,
+          description: trig.description || null,
+          category: trig.category,
+          event_type: trig.eventType,
+          template_id: matchedCloudTpl?.id || null,
+          template_category: trig.templateCategory || null,
+          status: trig.status,
+          total_sends: trig.totalSends,
+          interval_value: trig.intervalValue,
+          interval_unit: trig.intervalUnit,
+          max_duration_days: trig.maxDurationDays,
+          schedule_mode: trig.scheduleMode,
+          lead_time_value: trig.leadTimeValue,
+          lead_time_unit: trig.leadTimeUnit,
+          preferred_send_time: trig.preferredSendTime,
+          allowed_days: trig.allowedDays,
+          window_start: trig.windowStart,
+          window_end: trig.windowEnd,
+          timezone: trig.timezone || 'America/Sao_Paulo',
+          outside_window_policy: trig.outsideWindowPolicy,
+          smart_rules: trig.smartRules,
+          step_schedule: trig.stepSchedule || [],
+        };
+      });
+
+      const { data: insertedRows, error: seedErr } = await supabase
+        .from('whatsapp_automation_triggers')
+        .insert(seedRows)
+        .select('*');
+
+      if (!seedErr && insertedRows && insertedRows.length > 0) {
+        const mappedSeed = (insertedRows as Array<Record<string, unknown>>).map(mapRow);
+        setStored(STORAGE_KEYS.AUTOMATION_TRIGGERS, mappedSeed);
+        return { triggers: mappedSeed, source: 'cloud' };
+      }
+
+      return {
+        triggers: localTriggers,
+        source: 'local',
+        error: seedErr?.message,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { triggers: localTriggers, source: 'local', error: msg };
+    }
+  },
+
+  saveAutomationTriggerToCloud: async (
+    trigger: WhatsAppAutomationTrigger,
+    tenantHints?: { organizationId?: string; clinicId?: string; slug?: string }
+  ): Promise<{ trigger: WhatsAppAutomationTrigger; syncedCloud: boolean; error?: string }> => {
+    const savedLocal = StorageService.saveAutomationTriggerLocal(trigger);
+    StorageService.addAuditLog({
+      action: 'Salvou Gatilho de Automação WhatsApp',
+      entity: 'Comunicação',
+      entityId: savedLocal.id,
+      details: `Gatilho "${savedLocal.name}" (${savedLocal.status})`,
+    });
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { trigger: savedLocal, syncedCloud: false };
+    }
+
+    const isUuid = (val?: string | null) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    const generateUuid = (): string => {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+      }
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = (Math.random() * 16) | 0;
+        const v = c === 'x' ? r : (r & 0x3) | 0x8;
+        return v.toString(16);
+      });
+    };
+
+    try {
+      let supaOrgId = isUuid(tenantHints?.organizationId)
+        ? tenantHints?.organizationId
+        : isUuid(savedLocal.organizationId)
+          ? savedLocal.organizationId
+          : undefined;
+
+      if (!supaOrgId) {
+        const orgSlug = (
+          tenantHints?.slug ||
+          StorageService.getOrganization().slug ||
+          'dr-newton-mureb'
+        )
+          .trim()
+          .toLowerCase();
+        const { data: orgRow } = await supabase
+          .from('organizations')
+          .select('id')
+          .eq('slug', orgSlug)
+          .limit(1)
+          .maybeSingle();
+        if (orgRow?.id) {
+          supaOrgId = String(orgRow.id);
+        } else {
+          const { data: firstOrg } = await supabase
+            .from('organizations')
+            .select('id')
+            .limit(1)
+            .maybeSingle();
+          if (firstOrg?.id) supaOrgId = String(firstOrg.id);
+        }
+      }
+
+      if (!supaOrgId) {
+        return { trigger: savedLocal, syncedCloud: false };
+      }
+
+      let supaClinicId: string | null = isUuid(tenantHints?.clinicId)
+        ? tenantHints!.clinicId!
+        : isUuid(savedLocal.clinicId)
+          ? savedLocal.clinicId!
+          : null;
+      if (!supaClinicId) {
+        const { data: cRow } = await supabase
+          .from('clinics')
+          .select('id')
+          .eq('organization_id', supaOrgId)
+          .limit(1)
+          .maybeSingle();
+        if (cRow?.id) supaClinicId = String(cRow.id);
+      }
+
+      let supaTemplateId: string | null = isUuid(savedLocal.templateId)
+        ? savedLocal.templateId
+        : null;
+      if (!supaTemplateId) {
+        const { data: tRows } = await supabase
+          .from('message_templates')
+          .select('id, category, name')
+          .eq('organization_id', supaOrgId);
+        const listT = (tRows || []) as Array<{ id: string; category?: string; name?: string }>;
+        const matchT =
+          listT.find((t) => t.name === savedLocal.templateName) ||
+          (savedLocal.templateCategory
+            ? listT.find((t) => t.category === savedLocal.templateCategory)
+            : undefined);
+        if (matchT?.id) supaTemplateId = matchT.id;
+      }
+
+      let targetUuid = isUuid(savedLocal.id) ? savedLocal.id : undefined;
+      if (!targetUuid && savedLocal.triggerCode) {
+        const { data: existingByCode } = await supabase
+          .from('whatsapp_automation_triggers')
+          .select('id')
+          .eq('organization_id', supaOrgId)
+          .eq('trigger_code', savedLocal.triggerCode)
+          .limit(1)
+          .maybeSingle();
+        if (existingByCode?.id) targetUuid = String(existingByCode.id);
+      }
+      if (!targetUuid) targetUuid = generateUuid();
+
+      const upsertPayload = {
+        id: targetUuid,
+        organization_id: supaOrgId,
+        clinic_id: supaClinicId,
+        branch_id: isUuid(savedLocal.branchId) ? savedLocal.branchId : null,
+        trigger_code: savedLocal.triggerCode || null,
+        name: savedLocal.name.trim(),
+        description: savedLocal.description || null,
+        category: savedLocal.category,
+        event_type: savedLocal.eventType,
+        template_id: supaTemplateId,
+        template_category: savedLocal.templateCategory || null,
+        status: savedLocal.status,
+        total_sends: savedLocal.totalSends,
+        interval_value: savedLocal.intervalValue,
+        interval_unit: savedLocal.intervalUnit,
+        max_duration_days: savedLocal.maxDurationDays,
+        schedule_mode: savedLocal.scheduleMode,
+        lead_time_value: savedLocal.leadTimeValue,
+        lead_time_unit: savedLocal.leadTimeUnit,
+        preferred_send_time: savedLocal.preferredSendTime,
+        allowed_days: savedLocal.allowedDays,
+        window_start: savedLocal.windowStart,
+        window_end: savedLocal.windowEnd,
+        timezone: savedLocal.timezone || 'America/Sao_Paulo',
+        outside_window_policy: savedLocal.outsideWindowPolicy,
+        smart_rules: savedLocal.smartRules,
+        step_schedule: savedLocal.stepSchedule || [],
+        updated_at: savedLocal.updatedAt,
+      };
+
+      const { data: upsertedRow, error: upsertErr } = await supabase
+        .from('whatsapp_automation_triggers')
+        .upsert(upsertPayload, { onConflict: 'id' })
+        .select('*')
+        .maybeSingle();
+
+      if (upsertErr) {
+        return { trigger: savedLocal, syncedCloud: false, error: upsertErr.message };
+      }
+
+      const synced: WhatsAppAutomationTrigger = {
+        ...savedLocal,
+        id: upsertedRow?.id ? String(upsertedRow.id) : targetUuid,
+        organizationId: upsertedRow?.organization_id
+          ? String(upsertedRow.organization_id)
+          : supaOrgId,
+        clinicId: supaClinicId || savedLocal.clinicId,
+      };
+
+      const updatedList = StorageService.getAutomationTriggers().map((item) =>
+        item.id === savedLocal.id || item.id === synced.id ? synced : item
+      );
+      setStored(STORAGE_KEYS.AUTOMATION_TRIGGERS, updatedList);
+      return { trigger: synced, syncedCloud: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { trigger: savedLocal, syncedCloud: false, error: msg };
+    }
+  },
+
+  toggleAutomationTriggerStatusInCloud: async (
+    triggerId: string,
+    nextStatus: AutomationTriggerStatus,
+    tenantHints?: { organizationId?: string; clinicId?: string; slug?: string }
+  ): Promise<{ trigger?: WhatsAppAutomationTrigger; syncedCloud: boolean; error?: string }> => {
+    const existing = StorageService.getAutomationTriggers().find((t) => t.id === triggerId);
+    if (!existing) return { syncedCloud: false, error: 'Gatilho não encontrado.' };
+    const updated: WhatsAppAutomationTrigger = {
+      ...existing,
+      status: nextStatus,
+      updatedAt: new Date().toISOString(),
+    };
+    return StorageService.saveAutomationTriggerToCloud(updated, tenantHints);
+  },
+
+  duplicateAutomationTriggerToCloud: async (
+    triggerId: string,
+    tenantHints?: { organizationId?: string; clinicId?: string; slug?: string }
+  ): Promise<{ trigger?: WhatsAppAutomationTrigger; syncedCloud: boolean; error?: string }> => {
+    const existing = StorageService.getAutomationTriggers().find((t) => t.id === triggerId);
+    if (!existing) return { syncedCloud: false, error: 'Gatilho não encontrado.' };
+
+    const newId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `trig_${Date.now()}`;
+    const nowIso = new Date().toISOString();
+
+    const cloned: WhatsAppAutomationTrigger = {
+      ...existing,
+      id: newId,
+      triggerCode: undefined,
+      name: `${existing.name} (Cópia)`,
+      status: 'draft',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    return StorageService.saveAutomationTriggerToCloud(cloned, tenantHints);
+  },
+
+  deleteAutomationTriggerFromCloud: async (
+    triggerId: string
+  ): Promise<{ success: boolean; syncedCloud: boolean; error?: string }> => {
+    const list = StorageService.getAutomationTriggers().filter((t) => t.id !== triggerId);
+    setStored(STORAGE_KEYS.AUTOMATION_TRIGGERS, list);
+    StorageService.addAuditLog({
+      action: 'Excluiu Gatilho de Automação WhatsApp',
+      entity: 'Comunicação',
+      entityId: triggerId,
+      details: `Gatilho removido (${triggerId})`,
+    });
+
+    const supabase = getSupabase();
+    const isUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(triggerId);
+    if (!supabase || !isUuid) {
+      return { success: true, syncedCloud: false };
+    }
+
+    try {
+      const { error } = await supabase
+        .from('whatsapp_automation_triggers')
+        .delete()
+        .eq('id', triggerId);
+      if (error) {
+        return { success: true, syncedCloud: false, error: error.message };
+      }
+      return { success: true, syncedCloud: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { success: true, syncedCloud: false, error: msg };
+    }
+  },
+
+  getAutomationExecutions: (): AutomationExecutionRecord[] => {
+    runDataMigrationIfNeeded();
+    return getStored<AutomationExecutionRecord[]>(
+      STORAGE_KEYS.AUTOMATION_EXECUTIONS,
+      INITIAL_AUTOMATION_EXECUTIONS
+    );
+  },
+
+  fetchAutomationExecutionsFromCloud: async (tenantHints?: {
+    organizationId?: string;
+    slug?: string;
+  }): Promise<{
+    executions: AutomationExecutionRecord[];
+    source: 'cloud' | 'local';
+    error?: string;
+  }> => {
+    const localExecutions = StorageService.getAutomationExecutions();
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { executions: localExecutions, source: 'local' };
+    }
+
+    const isUuid = (val?: string | null) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    try {
+      let supaOrgId = isUuid(tenantHints?.organizationId)
+        ? tenantHints?.organizationId
+        : undefined;
+      if (!supaOrgId) {
+        const orgSlug = (
+          tenantHints?.slug ||
+          StorageService.getOrganization().slug ||
+          'dr-newton-mureb'
+        )
+          .trim()
+          .toLowerCase();
+        const { data: orgRow } = await supabase
+          .from('organizations')
+          .select('id')
+          .eq('slug', orgSlug)
+          .limit(1)
+          .maybeSingle();
+        if (orgRow?.id) {
+          supaOrgId = String(orgRow.id);
+        } else {
+          const { data: firstOrg } = await supabase
+            .from('organizations')
+            .select('id')
+            .limit(1)
+            .maybeSingle();
+          if (firstOrg?.id) supaOrgId = String(firstOrg.id);
+        }
+      }
+
+      if (!supaOrgId) {
+        return { executions: localExecutions, source: 'local' };
+      }
+
+      const { data, error } = await supabase
+        .from('whatsapp_automation_executions')
+        .select('*')
+        .eq('organization_id', supaOrgId)
+        .order('scheduled_for', { ascending: false })
+        .limit(200);
+
+      if (error || !data) {
+        return { executions: localExecutions, source: 'local', error: error?.message };
+      }
+
+      if (data.length === 0) {
+        return { executions: localExecutions, source: 'local' };
+      }
+
+      const triggers = StorageService.getAutomationTriggers();
+      const branches = StorageService.getBranches();
+
+      const mapped: AutomationExecutionRecord[] = (data as Array<Record<string, unknown>>).map(
+        (row) => {
+          const trigId = String(row.trigger_id || '');
+          const matchedTrig = triggers.find((t) => t.id === trigId);
+          const brId = row.branch_id ? String(row.branch_id) : null;
+          const matchedBr = brId ? branches.find((b) => b.id === brId) : undefined;
+
+          return {
+            id: String(row.id),
+            organizationId: String(row.organization_id || supaOrgId),
+            branchId: brId,
+            branchName: matchedBr?.name,
+            triggerId: trigId,
+            triggerName: matchedTrig?.name || 'Automação WhatsApp',
+            patientId: row.patient_id ? String(row.patient_id) : null,
+            patientName: String(row.patient_name || 'Paciente'),
+            patientPhone: String(row.patient_phone || ''),
+            appointmentId: row.appointment_id ? String(row.appointment_id) : null,
+            stepNumber: Number(row.step_number || 1),
+            totalSteps: matchedTrig?.totalSends,
+            scheduledFor: String(row.scheduled_for || new Date().toISOString()),
+            executedAt: row.executed_at ? String(row.executed_at) : undefined,
+            status: (row.status as AutomationExecutionRecord['status']) || 'pending',
+            renderedMessage: row.rendered_message ? String(row.rendered_message) : undefined,
+            externalMessageId: row.external_message_id
+              ? String(row.external_message_id)
+              : undefined,
+            attemptCount: Number(row.attempt_count || 0),
+            maxAttempts: Number(row.max_attempts || 3),
+            errorMessage: row.error_message ? String(row.error_message) : undefined,
+            idempotencyKey: String(row.idempotency_key || row.id),
+            createdAt: String(row.created_at || new Date().toISOString()),
+            updatedAt: String(row.updated_at || new Date().toISOString()),
+          };
+        }
+      );
+
+      setStored(STORAGE_KEYS.AUTOMATION_EXECUTIONS, mapped);
+      return { executions: mapped, source: 'cloud' };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { executions: localExecutions, source: 'local', error: msg };
+    }
+  },
+
+  retryAutomationExecutionInCloud: async (
+    executionId: string
+  ): Promise<{
+    execution?: AutomationExecutionRecord;
+    syncedCloud: boolean;
+    error?: string;
+  }> => {
+    const list = StorageService.getAutomationExecutions();
+    const target = list.find((e) => e.id === executionId);
+    if (!target) {
+      return { syncedCloud: false, error: 'Registro de envio não encontrado.' };
+    }
+    if (target.attemptCount >= target.maxAttempts) {
+      return {
+        execution: target,
+        syncedCloud: false,
+        error: `Limite máximo de ${target.maxAttempts} tentativas atingido para este envio.`,
+      };
+    }
+
+    const nowIso = new Date().toISOString();
+    // Preserves exact idempotencyKey so re-enqueueing NEVER creates duplicate dispatches
+    const updated: AutomationExecutionRecord = {
+      ...target,
+      status: 'pending',
+      scheduledFor: nowIso,
+      errorMessage: undefined,
+      updatedAt: nowIso,
+    };
+
+    const nextList = list.map((item) => (item.id === executionId ? updated : item));
+    setStored(STORAGE_KEYS.AUTOMATION_EXECUTIONS, nextList);
+
+    StorageService.addAuditLog({
+      action: 'Reprocessou Envio de Automação WhatsApp',
+      entity: 'Comunicação',
+      entityId: updated.id,
+      details: `Reprogramado envio para ${updated.patientName} (chave ${updated.idempotencyKey})`,
+    });
+
+    const supabase = getSupabase();
+    const isUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(executionId);
+    if (!supabase || !isUuid) {
+      return { execution: updated, syncedCloud: false };
+    }
+
+    try {
+      const { error } = await supabase
+        .from('whatsapp_automation_executions')
+        .update({
+          status: 'pending',
+          scheduled_for: nowIso,
+          error_message: null,
+          updated_at: nowIso,
+        })
+        .eq('id', executionId)
+        .eq('idempotency_key', target.idempotencyKey);
+
+      if (error) {
+        return { execution: updated, syncedCloud: false, error: error.message };
+      }
+      return { execution: updated, syncedCloud: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { execution: updated, syncedCloud: false, error: msg };
     }
   },
 
