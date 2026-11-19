@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
-import { X, Lock, ShieldCheck, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Lock, ShieldCheck, AlertCircle, Loader2 } from 'lucide-react';
 import { MedicalRecordEntry, MedicalRecordAddendum } from '../../types';
 import { StorageService } from '../../services/storage';
+import { ClinicalCloudService } from '../../services/clinicalCloudService';
 import { useAuth } from '../../contexts/AuthContext';
 
 interface AddendumModalProps {
@@ -20,11 +21,27 @@ export const AddendumModal: React.FC<AddendumModalProps> = ({
   const { currentUser } = useAuth();
   const [note, setNote] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
+  const professionals = StorageService.getProfessionals();
+  const activeProf =
+    professionals.find((p) => p.userProfileId === currentUser.id) ||
+    professionals.find((p) => p.fullName === currentUser.fullName) ||
+    professionals[0];
+  const councilNumber = activeProf?.councilNumber || 'CRM/RJ 52-444985';
+
+  useEffect(() => {
+    if (isOpen) {
+      setErrorMessage('');
+      setIsSaving(false);
+    }
+  }, [isOpen]);
 
   if (!isOpen || !record) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
     setErrorMessage('');
 
     if (!note.trim()) {
@@ -35,23 +52,32 @@ export const AddendumModal: React.FC<AddendumModalProps> = ({
     const newAddendum: MedicalRecordAddendum = {
       id: `add_${Date.now()}`,
       recordId: record.id,
-      authorId: currentUser.id,
+      authorId: activeProf?.id || currentUser.id,
       authorName: currentUser.fullName,
-      authorCouncilNumber: 'CRM/RJ 52-444985',
+      authorCouncilNumber: councilNumber,
       note: note.trim(),
       createdAt: new Date().toISOString(),
       signatureHash: `sha256_addendum_${Math.random().toString(36).substring(2, 10)}`,
     };
 
-    const res = StorageService.addMedicalRecordAddendum(record.id, newAddendum);
-    if (!res.success) {
-      setErrorMessage(res.message || 'Erro ao registrar adendo.');
-      return;
-    }
+    setIsSaving(true);
+    try {
+      const res = await ClinicalCloudService.addMedicalRecordAddendumToCloud(record, newAddendum);
+      if (!res.success) {
+        setErrorMessage(res.message || 'Erro ao registrar adendo no banco de dados.');
+        return;
+      }
 
-    onSuccess();
-    onClose();
-    setNote('');
+      onSuccess();
+      setNote('');
+      onClose();
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error ? err.message : 'Erro inesperado ao registrar adendo.'
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -73,7 +99,12 @@ export const AddendumModal: React.FC<AddendumModalProps> = ({
               </p>
             </div>
           </div>
-          <button onClick={onClose} className="p-1 text-slate-400 hover:text-white rounded-lg">
+          <button
+            type="button"
+            disabled={isSaving}
+            onClick={onClose}
+            className="p-1 text-slate-400 hover:text-white rounded-lg disabled:opacity-50"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -127,23 +158,26 @@ export const AddendumModal: React.FC<AddendumModalProps> = ({
               Assinante: <strong>{currentUser.fullName}</strong>
             </span>
             <span className="text-[11px] font-mono bg-white px-2 py-0.5 rounded border border-emerald-200">
-              CRM/RJ 52-444985
+              {councilNumber}
             </span>
           </div>
 
           <div className="pt-3 flex items-center justify-end gap-3 border-t border-slate-100">
             <button
               type="button"
+              disabled={isSaving}
               onClick={onClose}
-              className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800 transition"
+              className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800 transition disabled:opacity-50"
             >
               Cancelar
             </button>
             <button
               type="submit"
-              className="px-5 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-lg shadow-sm transition"
+              disabled={isSaving}
+              className="px-5 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-lg shadow-sm transition flex items-center gap-1.5 disabled:opacity-60"
             >
-              Gravar Adendo Selado
+              {isSaving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              <span>{isSaving ? 'Gravando...' : 'Gravar Adendo Selado'}</span>
             </button>
           </div>
         </form>

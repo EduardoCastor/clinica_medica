@@ -1,5 +1,6 @@
 import React from 'react';
 import { ShieldCheck, Lock } from 'lucide-react';
+import type { Clinic, Branch } from '../types';
 
 export const CLINIC_OFFICIAL_DATA = {
   legalName: 'NEWTON MUREB CLINICA MEDICA LTDA',
@@ -191,12 +192,16 @@ interface MedicalDocumentHeaderProps {
   badgeTitle: string;
   badgeSubtitle?: string;
   badgeTone?: 'dark' | 'sky' | 'gold';
+  clinic?: Clinic | null;
+  branch?: Branch | null;
 }
 
 export const MedicalDocumentHeader: React.FC<MedicalDocumentHeaderProps> = ({
   badgeTitle,
   badgeSubtitle,
   badgeTone = 'dark',
+  clinic,
+  branch,
 }) => {
   const badgeClasses =
     badgeTone === 'sky'
@@ -205,22 +210,36 @@ export const MedicalDocumentHeader: React.FC<MedicalDocumentHeaderProps> = ({
       ? 'bg-[#23262A] text-[#E5C158] border border-[#D4AF37]/50'
       : 'bg-[#1E2024] text-[#E5C158]';
 
+  const legalName = clinic?.legalName || clinic?.tradeName || CLINIC_OFFICIAL_DATA.legalName;
+  const cnpj = branch?.documentNumber || clinic?.documentNumber || CLINIC_OFFICIAL_DATA.cnpj;
+  const addressText = branch?.street
+    ? [
+        `${branch.street}${branch.number ? `, ${branch.number}` : ''}${branch.complement ? `, ${branch.complement}` : ''}`,
+        branch.neighborhood,
+        branch.city && branch.state ? `${branch.city} - ${branch.state}` : branch.city || branch.state,
+        branch.postalCode ? `CEP: ${branch.postalCode}` : '',
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : `${CLINIC_OFFICIAL_DATA.street}, ${CLINIC_OFFICIAL_DATA.number}, ${CLINIC_OFFICIAL_DATA.complement} · ${CLINIC_OFFICIAL_DATA.neighborhood}, ${CLINIC_OFFICIAL_DATA.city} - ${CLINIC_OFFICIAL_DATA.state} · CEP: ${CLINIC_OFFICIAL_DATA.cep}`;
+  const phone = branch?.phone || clinic?.phone || CLINIC_OFFICIAL_DATA.phone;
+  const whatsapp = branch?.whatsapp || clinic?.whatsapp || CLINIC_OFFICIAL_DATA.whatsapp;
+  const email = branch?.email || clinic?.email || CLINIC_OFFICIAL_DATA.email;
+
   return (
-    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 border-b-2 border-[#23262A] pb-4">
+    <div className="medsync-break-avoid flex flex-col sm:flex-row sm:items-start justify-between gap-4 border-b-2 border-[#23262A] pb-4">
       <div className="flex items-start gap-3.5">
         <ClinicBrandLogo variant="print" layout="horizontal" size="sm" className="shrink-0" />
         <div className="border-l border-slate-200 pl-3.5 space-y-0.5">
           <h1 className="text-xs font-extrabold tracking-tight text-slate-900 uppercase">
-            {CLINIC_OFFICIAL_DATA.legalName}
+            {legalName}
           </h1>
           <p className="text-[11px] font-semibold text-[#9A7B2C]">
-            CNPJ: {CLINIC_OFFICIAL_DATA.cnpj} · {CLINIC_OFFICIAL_DATA.specialty}
+            CNPJ: {cnpj} · {CLINIC_OFFICIAL_DATA.specialty}
           </p>
-          <p className="text-[10px] text-slate-600 leading-snug">
-            {CLINIC_OFFICIAL_DATA.street}, {CLINIC_OFFICIAL_DATA.number}, {CLINIC_OFFICIAL_DATA.complement} · {CLINIC_OFFICIAL_DATA.neighborhood}, {CLINIC_OFFICIAL_DATA.city} - {CLINIC_OFFICIAL_DATA.state} · CEP: {CLINIC_OFFICIAL_DATA.cep}
-          </p>
+          <p className="text-[10px] text-slate-600 leading-snug">{addressText}</p>
           <p className="text-[10px] text-slate-500">
-            Tel: {CLINIC_OFFICIAL_DATA.phone} · WhatsApp: {CLINIC_OFFICIAL_DATA.whatsapp} · E-mail: {CLINIC_OFFICIAL_DATA.email}
+            Tel: {phone} · WhatsApp: {whatsapp} · E-mail: {email}
           </p>
         </div>
       </div>
@@ -246,6 +265,10 @@ interface MedicalDocumentFooterProps {
   signatureHash?: string;
   useLockIcon?: boolean;
   roleSubtitle?: string;
+  professionalName?: string;
+  professionalCouncil?: string;
+  cityState?: string;
+  clinicLegalName?: string;
 }
 
 export const MedicalDocumentFooter: React.FC<MedicalDocumentFooterProps> = ({
@@ -255,12 +278,21 @@ export const MedicalDocumentFooter: React.FC<MedicalDocumentFooterProps> = ({
   signatureHash,
   useLockIcon = false,
   roleSubtitle = 'Médico Responsável',
+  professionalName,
+  professionalCouncil,
+  cityState,
+  clinicLegalName,
 }) => {
+  const displayPhysician = professionalName?.trim() || CLINIC_OFFICIAL_DATA.physicianName;
+  const displayCouncil = professionalCouncil?.trim() || CLINIC_OFFICIAL_DATA.crm;
+  const displayCityState = cityState?.trim() || `${CLINIC_OFFICIAL_DATA.city} - ${CLINIC_OFFICIAL_DATA.state}`;
+  const displayLegalName = clinicLegalName?.trim() || CLINIC_OFFICIAL_DATA.legalName;
+
   return (
-    <div className="pt-6 mt-6 border-t border-slate-200 flex flex-col sm:flex-row sm:items-end justify-between gap-4 text-xs">
+    <div className="medsync-break-avoid pt-6 mt-6 border-t border-slate-200 flex flex-col sm:flex-row sm:items-end justify-between gap-4 text-xs">
       <div className="space-y-1">
         <p className="text-[11px] text-slate-600">
-          {CLINIC_OFFICIAL_DATA.city} - {CLINIC_OFFICIAL_DATA.state} · {dateLabel}:{' '}
+          {displayCityState} · {dateLabel}:{' '}
           <strong className="text-slate-900">{dateValue}</strong>
         </p>
         {extraLeftText && (
@@ -280,13 +312,13 @@ export const MedicalDocumentFooter: React.FC<MedicalDocumentFooterProps> = ({
 
       <div className="text-center w-64 shrink-0 self-end">
         <div className="border-b border-slate-800 pb-1 mb-1 font-bold text-slate-900 text-sm">
-          {CLINIC_OFFICIAL_DATA.physicianName}
+          {displayPhysician}
         </div>
         <span className="block text-xs font-semibold text-slate-800">
-          Médico · {CLINIC_OFFICIAL_DATA.crm}
+          Médico · {displayCouncil}
         </span>
         <span className="block text-[10px] text-[#9A7B2C] font-medium">
-          {roleSubtitle} · {CLINIC_OFFICIAL_DATA.legalName}
+          {roleSubtitle} · {displayLegalName}
         </span>
       </div>
     </div>

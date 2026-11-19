@@ -235,6 +235,7 @@ export interface Patient {
   sharingMode: PatientSharingMode;
   authorizedBranchIds?: string[];
   createdAt: string;
+  updatedAt?: string;
   isActive: boolean;
 }
 
@@ -352,6 +353,7 @@ export interface Prescription {
   organizationId: string;
   branchId: string;
   patientId: string;
+  medicalRecordId?: string;
   patientName: string;
   patientCpf: string;
   patientAddress?: string;
@@ -389,6 +391,7 @@ export interface MedicalCertificate {
   organizationId: string;
   branchId: string;
   patientId: string;
+  medicalRecordId?: string;
   patientName: string;
   patientCpf: string;
   patientSocialName?: string;
@@ -427,6 +430,7 @@ export interface LabOrder {
   organizationId: string;
   branchId: string;
   patientId: string;
+  medicalRecordId?: string;
   patientName: string;
   patientCpf: string;
   professionalId: string;
@@ -445,8 +449,11 @@ export interface LabOrder {
 export interface ExamResult {
   id: string;
   organizationId: string;
+  branchId?: string;
   patientId: string;
   orderId?: string;
+  medicalRecordId?: string;
+  professionalId?: string;
   examName: string;
   examCategory: 'laboratorial' | 'imagem' | 'outros';
   performedDate: string;
@@ -454,11 +461,46 @@ export interface ExamResult {
   reportSummary: string; // Laudo / Conclusão
   referenceValues?: string;
   status: 'performed' | 'evaluated' | 'critical';
-  attachmentUrl?: string; // Link / Arquivo
+  attachmentUrl?: string; // Link externo ou URL assinada temporária
+  storageBucket?: string;
+  storagePath?: string;
+  attachmentFilename?: string;
+  attachmentMimeType?: string;
+  attachmentSizeBytes?: number;
   evaluatedByProfessionalName?: string;
   evaluatedAt?: string;
   notes?: string;
   createdAt: string;
+}
+
+export type MedicalDocumentType =
+  | 'laudo_externo'
+  | 'exame_pdf'
+  | 'receita_externa'
+  | 'termo_consentimento'
+  | 'relatorio_clinico'
+  | 'outros';
+
+export interface MedicalDocument {
+  id: string;
+  organizationId: string;
+  branchId?: string;
+  patientId: string;
+  medicalRecordId?: string;
+  professionalId?: string;
+  professionalName?: string;
+  documentType: MedicalDocumentType;
+  title: string;
+  description?: string;
+  documentDate: string;
+  storageBucket: string;
+  storagePath: string;
+  fileName: string;
+  mimeType?: string;
+  fileSizeBytes?: number;
+  signedUrl?: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 export interface MessageTemplate {

@@ -383,7 +383,7 @@ export async function submitBookingToN8nAndSupabase(
               lgpd_consent: true,
               lgpd_consent_date: nowIso,
               sharing_mode: 'model_b_shared',
-              notes: newPatientRecord.administrativeNotes,
+              administrative_notes: newPatientRecord.administrativeNotes || null,
             })
             .select('id')
             .single();

@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
-import { X, Plus, Trash2, ClipboardList, ShieldCheck, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Plus, Trash2, ClipboardList, ShieldCheck, AlertCircle, Loader2 } from 'lucide-react';
 import { Patient, LabOrder, LabOrderItem } from '../../types';
 import { StorageService } from '../../services/storage';
+import { ClinicalCloudService } from '../../services/clinicalCloudService';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTenant } from '../../contexts/TenantContext';
 
@@ -9,6 +10,7 @@ interface LabOrderFormModalProps {
   isOpen: boolean;
   onClose: () => void;
   patient: Patient | null;
+  medicalRecordId?: string;
   onSuccess: (order: LabOrder) => void;
 }
 
@@ -16,14 +18,30 @@ export const LabOrderFormModal: React.FC<LabOrderFormModalProps> = ({
   isOpen,
   onClose,
   patient,
+  medicalRecordId,
   onSuccess,
 }) => {
   const { currentUser } = useAuth();
-  const { activeBranchId, branches } = useTenant();
+  const { organization, activeBranchId, branches } = useTenant();
 
   const [clinicalIndication, setClinicalIndication] = useState('');
   const [notes, setNotes] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
+  const professionals = StorageService.getProfessionals();
+  const activeProf =
+    professionals.find((p) => p.userProfileId === currentUser.id) ||
+    professionals.find((p) => p.fullName === currentUser.fullName) ||
+    professionals[0];
+  const councilNumber = activeProf?.councilNumber || 'CRM/RJ 52-444985';
+
+  useEffect(() => {
+    if (isOpen) {
+      setErrorMessage('');
+      setIsSaving(false);
+    }
+  }, [isOpen]);
 
   const [items, setItems] = useState<Array<Omit<LabOrderItem, 'id'>>>([
     {
@@ -65,8 +83,9 @@ export const LabOrderFormModal: React.FC<LabOrderFormModalProps> = ({
     setItems(updated);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
     setErrorMessage('');
 
     if (!clinicalIndication.trim()) {
@@ -81,16 +100,22 @@ export const LabOrderFormModal: React.FC<LabOrderFormModalProps> = ({
     }
 
     const orderId = `order_${Date.now()}`;
+    const resolvedBranchId =
+      activeBranchId !== 'all'
+        ? activeBranchId
+        : patient.originBranchId || branches[0]?.id || 'branch_cf_centro';
+
     const order: LabOrder = {
       id: orderId,
-      organizationId: 'org_mureb_01',
-      branchId: activeBranchId === 'all' ? branches[0].id : activeBranchId,
+      organizationId: patient.organizationId || organization.id || 'org_mureb_01',
+      branchId: resolvedBranchId,
       patientId: patient.id,
+      medicalRecordId,
       patientName: patient.fullName,
       patientCpf: patient.documentCpf,
-      professionalId: currentUser.id,
+      professionalId: activeProf?.id || currentUser.id,
       professionalName: currentUser.fullName,
-      professionalCouncil: 'CRM/RJ 52-444985',
+      professionalCouncil: councilNumber,
       orderDate: new Date().toISOString().split('T')[0],
       clinicalIndication: clinicalIndication.trim(),
       items: items.map((it, idx) => ({ ...it, id: `item_${orderId}_${idx}` })),
@@ -101,9 +126,23 @@ export const LabOrderFormModal: React.FC<LabOrderFormModalProps> = ({
       createdAt: new Date().toISOString(),
     };
 
-    StorageService.saveLabOrder(order);
-    onSuccess(order);
-    onClose();
+    setIsSaving(true);
+    try {
+      const res = await ClinicalCloudService.saveLabOrderToCloud(order, patient);
+      if (!res.success || !res.order) {
+        setErrorMessage(res.message || 'Erro ao gravar pedido de exames no banco de dados.');
+        return;
+      }
+
+      onSuccess(res.order);
+      onClose();
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error ? err.message : 'Erro inesperado ao emitir solicitação de exames.'
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -239,7 +278,7 @@ export const LabOrderFormModal: React.FC<LabOrderFormModalProps> = ({
           <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 flex items-center justify-between text-xs text-emerald-900">
             <div className="flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-emerald-600" />
-              <span>Assinatura Digital ICP-Brasil: <strong>Dr. Newton Mureb (CRM/RJ 52-444985)</strong></span>
+              <span>Assinatura Digital ICP-Brasil: <strong>{currentUser.fullName} ({councilNumber})</strong></span>
             </div>
             <span className="text-[11px] font-mono text-emerald-700">Data: {new Date().toLocaleDateString('pt-BR')}</span>
           </div>
@@ -247,17 +286,19 @@ export const LabOrderFormModal: React.FC<LabOrderFormModalProps> = ({
           <div className="pt-3 flex items-center justify-end gap-3 border-t border-slate-200">
             <button
               type="button"
+              disabled={isSaving}
               onClick={onClose}
-              className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800 transition"
+              className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800 transition disabled:opacity-50"
             >
               Cancelar
             </button>
             <button
               type="submit"
-              className="px-5 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5"
+              disabled={isSaving}
+              className="px-5 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5 disabled:opacity-60"
             >
-              <ShieldCheck className="w-4 h-4" />
-              <span>Emitir Pedido de Exames</span>
+              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+              <span>{isSaving ? 'Emitindo Pedido...' : 'Emitir Pedido de Exames'}</span>
             </button>
           </div>
 

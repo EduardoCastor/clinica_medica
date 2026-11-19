@@ -13,7 +13,7 @@ import {
   Loader2 
 } from 'lucide-react';
 import { Patient, PatientSharingMode } from '../../types';
-import { StorageService } from '../../services/storage';
+import { ClinicalCloudService } from '../../services/clinicalCloudService';
 import { useTenant } from '../../contexts/TenantContext';
 import { 
   validateCpf, 
@@ -30,7 +30,7 @@ interface PatientFormModalProps {
   isOpen: boolean;
   onClose: () => void;
   existingPatient?: Patient | null;
-  onSaveSuccess: () => void;
+  onSaveSuccess: (savedPatient?: Patient) => void;
 }
 
 export const PatientFormModal: React.FC<PatientFormModalProps> = ({
@@ -39,7 +39,7 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
   existingPatient,
   onSaveSuccess,
 }) => {
-  const { branches, activeBranchId } = useTenant();
+  const { organization, branches, activeBranchId } = useTenant();
   const defaultBranch = activeBranchId !== 'all' ? activeBranchId : branches[0]?.id || '';
 
   // Form Section Tabs
@@ -106,9 +106,12 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
   const [administrativeNotes, setAdministrativeNotes] = useState('');
 
   const [errorMessage, setErrorMessage] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   // Populate on open or edit
   useEffect(() => {
+    setErrorMessage('');
+    setIsSaving(false);
     if (existingPatient) {
       setFullName(existingPatient.fullName || '');
       setSocialName(existingPatient.socialName || '');
@@ -216,9 +219,10 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
 
   // Auto-fetch ViaCEP
   const handleCepSearch = async () => {
+    setErrorMessage('');
     const clean = postalCode.replace(/\D/g, '');
     if (clean.length !== 8) {
-      alert('Informe um CEP válido com 8 dígitos.');
+      setErrorMessage('Informe um CEP válido com 8 dígitos para buscar o endereço.');
       return;
     }
 
@@ -232,7 +236,7 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
       setCity(data.localidade || city);
       setState(data.uf || state);
     } else {
-      alert('CEP não localizado no serviço ViaCEP. Preencha manualmente.');
+      setErrorMessage('CEP não localizado no serviço ViaCEP. Preencha o endereço manualmente.');
     }
   };
 
@@ -244,8 +248,9 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
     setErrorMessage('');
 
     if (!fullName.trim()) {
@@ -298,8 +303,8 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
 
     const payload: Patient = {
       id: existingPatient?.id || `pat_${Date.now()}`,
-      organizationId: 'org_mureb_01',
-      originBranchId,
+      organizationId: existingPatient?.organizationId || organization.id || 'org_mureb_01',
+      originBranchId: originBranchId || existingPatient?.originBranchId || defaultBranch,
       fullName: fullName.trim(),
       socialName: socialName.trim() || undefined,
       documentCpf: formatCpf(documentCpf),
@@ -352,14 +357,23 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
       isActive: true,
     };
 
-    const res = StorageService.savePatient(payload);
-    if (!res.success) {
-      setErrorMessage(res.message || 'Erro ao gravar cadastro do paciente.');
-      return;
-    }
+    setIsSaving(true);
+    try {
+      const res = await ClinicalCloudService.savePatientToCloud(payload);
+      if (!res.success) {
+        setErrorMessage(res.message || 'Erro ao gravar cadastro do paciente no banco de dados.');
+        return;
+      }
 
-    onSaveSuccess();
-    onClose();
+      onSaveSuccess(res.patient || payload);
+      onClose();
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error ? err.message : 'Falha inesperada ao salvar cadastro do paciente.'
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -1252,16 +1266,19 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                disabled={isSaving}
                 onClick={onClose}
-                className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800 transition"
+                className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800 transition disabled:opacity-50"
               >
                 Cancelar
               </button>
               <button
                 type="submit"
-                className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition"
+                disabled={isSaving}
+                className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5 disabled:opacity-60"
               >
-                Salvar Cadastro do Paciente
+                {isSaving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isSaving ? 'Salvando no Banco...' : 'Salvar Cadastro do Paciente'}</span>
               </button>
             </div>
           </div>

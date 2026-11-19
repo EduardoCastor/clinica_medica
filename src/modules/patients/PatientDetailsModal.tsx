@@ -1,24 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, 
   User, 
-  Calendar, 
-  FileText, 
-  DollarSign, 
   MapPin, 
-  Phone, 
   ShieldCheck, 
-  Mail, 
-  Clock, 
-  Pill, 
-  ClipboardList, 
   AlertTriangle, 
   Printer, 
-  Activity, 
-  FileCheck,
-  Plus,
   Stethoscope,
-  Pencil
+  Pencil,
+  Loader2,
+  Eye,
+  Paperclip,
+  ExternalLink
 } from 'lucide-react';
 import { 
   Patient, 
@@ -28,9 +21,11 @@ import {
   Prescription,
   MedicalCertificate,
   LabOrder,
-  ExamResult
+  ExamResult,
+  MedicalDocument
 } from '../../types';
 import { StorageService } from '../../services/storage';
+import { ClinicalCloudService } from '../../services/clinicalCloudService';
 import { useTenant } from '../../contexts/TenantContext';
 import { calculateBmi, calculateAge } from '../../services/brazilianFormatters';
 import { DocumentPrintModal, PrintableDocumentType } from '../../components/medical-documents/DocumentPrintModal';
@@ -55,20 +50,84 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
   const { branches } = useTenant();
   const [activeTab, setActiveTab] = useState<'profile' | 'clinical' | 'timeline' | 'records' | 'prescriptions' | 'certificates' | 'exams' | 'financial'>('profile');
   const [printableDoc, setPrintableDoc] = useState<PrintableDocumentType | null>(null);
+  const [medicalRecords, setMedicalRecords] = useState<MedicalRecordEntry[]>([]);
+  const [prescriptions, setPrescriptions] = useState<Prescription[]>([]);
+  const [certificates, setCertificates] = useState<MedicalCertificate[]>([]);
+  const [labOrders, setLabOrders] = useState<LabOrder[]>([]);
+  const [examResults, setExamResults] = useState<ExamResult[]>([]);
+  const [medicalDocuments, setMedicalDocuments] = useState<MedicalDocument[]>([]);
+  const [isLoadingCloud, setIsLoadingCloud] = useState(false);
+  const [signedError, setSignedError] = useState('');
+  const [previewDoc, setPreviewDoc] = useState<{ title: string; url: string; mimeType?: string } | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || !patient) return;
+    let cancelled = false;
+    setSignedError('');
+
+    setMedicalRecords(StorageService.getMedicalRecords(patient.id));
+    setPrescriptions(StorageService.getPrescriptions(patient.id));
+    setCertificates(StorageService.getCertificates(patient.id));
+    setLabOrders(StorageService.getLabOrders(patient.id));
+    setExamResults(StorageService.getExamResults(patient.id));
+    setMedicalDocuments(StorageService.getMedicalDocuments(patient.id));
+
+    setIsLoadingCloud(true);
+    ClinicalCloudService.fetchPatientClinicalBundleFromCloud(patient)
+      .then((bundle) => {
+        if (cancelled) return;
+        setMedicalRecords(bundle.records);
+        setPrescriptions(bundle.prescriptions);
+        setCertificates(bundle.certificates);
+        setLabOrders(bundle.labOrders);
+        setExamResults(bundle.examResults);
+        setMedicalDocuments(bundle.documents);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingCloud(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, patient]);
 
   if (!isOpen || !patient) return null;
 
   const appointments: Appointment[] = StorageService.getAppointments().filter(a => a.patientId === patient.id);
-  const medicalRecords: MedicalRecordEntry[] = StorageService.getMedicalRecords(patient.id);
-  const prescriptions: Prescription[] = StorageService.getPrescriptions(patient.id);
-  const certificates: MedicalCertificate[] = StorageService.getCertificates(patient.id);
-  const labOrders: LabOrder[] = StorageService.getLabOrders(patient.id);
-  const examResults: ExamResult[] = StorageService.getExamResults(patient.id);
   const financial: FinancialTransaction[] = StorageService.getFinancial().filter(f => f.patientId === patient.id);
 
   const originBranch = branches.find(b => b.id === patient.originBranchId);
   const age = calculateAge(patient.birthDate);
   const bmiInfo = patient.weightKg && patient.heightCm ? calculateBmi(patient.weightKg, patient.heightCm) : null;
+
+  const handleViewSigned = async (
+    title: string,
+    bucket: string | undefined,
+    path: string | undefined,
+    mimeType?: string,
+    fallbackUrl?: string
+  ) => {
+    setSignedError('');
+    if (path && !path.startsWith('local/')) {
+      const res = await ClinicalCloudService.getSignedDocumentUrl(
+        bucket || 'medical-documents',
+        path,
+        300
+      );
+      if (res.error || !res.url) {
+        setSignedError(res.error || 'Não foi possível gerar link assinado.');
+        return;
+      }
+      setPreviewDoc({ title, url: res.url, mimeType });
+      return;
+    }
+    if (fallbackUrl) {
+      setPreviewDoc({ title, url: fallbackUrl, mimeType });
+      return;
+    }
+    setSignedError('Arquivo disponível apenas após envio ao Storage em nuvem.');
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
@@ -232,9 +291,9 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
               activeTab === 'exams' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
-            <span>Exames & Laudos</span>
+            <span>Exames & Docs</span>
             <span className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded-full text-[10px]">
-              {labOrders.length + examResults.length}
+              {labOrders.length + examResults.length + medicalDocuments.length}
             </span>
           </button>
           <button
@@ -563,42 +622,117 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
             </div>
           )}
 
-          {/* TAB 7: EXAMS */}
+          {/* TAB 7: EXAMS & MEDICAL DOCUMENTS */}
           {activeTab === 'exams' && (
             <div className="space-y-4 text-xs">
+              {isLoadingCloud && (
+                <div className="p-2.5 bg-sky-50 border border-sky-200 rounded-lg text-sky-800 flex items-center gap-2">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Atualizando documentos do banco de dados...</span>
+                </div>
+              )}
+
+              {signedError && (
+                <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-700">
+                  {signedError}
+                </div>
+              )}
+
               <div>
                 <span className="font-bold text-slate-800 uppercase block mb-2">Solicitações de Exames</span>
-                {labOrders.map(order => (
-                  <div key={order.id} className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between mb-2">
-                    <div>
-                      <span className="font-bold text-slate-900 block">
-                        Pedido em {new Date(order.orderDate + 'T00:00:00').toLocaleDateString('pt-BR')} ({order.items.length} exames)
-                      </span>
-                      <span className="text-slate-500 text-[11px]">Justificativa: {order.clinicalIndication}</span>
+                {labOrders.length === 0 ? (
+                  <p className="text-slate-400 italic">Nenhuma solicitação emitida.</p>
+                ) : (
+                  labOrders.map(order => (
+                    <div key={order.id} className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between mb-2">
+                      <div>
+                        <span className="font-bold text-slate-900 block">
+                          Pedido em {new Date(order.orderDate + 'T00:00:00').toLocaleDateString('pt-BR')} ({order.items.length} exames)
+                        </span>
+                        <span className="text-slate-500 text-[11px]">Justificativa: {order.clinicalIndication}</span>
+                      </div>
+                      <button
+                        onClick={() => setPrintableDoc({ type: 'lab_order', data: order })}
+                        className="px-2.5 py-1 text-xs font-semibold text-sky-700 bg-white border border-sky-200 rounded-lg"
+                      >
+                        Imprimir
+                      </button>
                     </div>
-                    <button
-                      onClick={() => setPrintableDoc({ type: 'lab_order', data: order })}
-                      className="px-2.5 py-1 text-xs font-semibold text-sky-700 bg-white border border-sky-200 rounded-lg"
-                    >
-                      Imprimir
-                    </button>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
 
               <div>
                 <span className="font-bold text-slate-800 uppercase block mb-2">Resultados Recebidos</span>
-                {examResults.map(res => (
-                  <div key={res.id} className="p-3 bg-slate-50 rounded-xl border border-slate-200 mb-2">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-slate-900">{res.examName} ({res.laboratoryName})</span>
-                      <span className="text-[10px] font-semibold text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200 uppercase">
-                        {res.status}
-                      </span>
+                {examResults.length === 0 ? (
+                  <p className="text-slate-400 italic">Nenhum resultado registrado.</p>
+                ) : (
+                  examResults.map(res => (
+                    <div key={res.id} className="p-3 bg-slate-50 rounded-xl border border-slate-200 mb-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-slate-900">{res.examName} ({res.laboratoryName})</span>
+                        <span className="text-[10px] font-semibold text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200 uppercase">
+                          {res.status}
+                        </span>
+                      </div>
+                      <p className="text-slate-600 mt-1">{res.reportSummary}</p>
+                      {(res.storagePath || res.attachmentUrl) && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void handleViewSigned(
+                              res.examName,
+                              res.storageBucket,
+                              res.storagePath,
+                              res.attachmentMimeType,
+                              res.attachmentUrl
+                            )
+                          }
+                          className="mt-2 px-2.5 py-1 text-[11px] font-semibold text-sky-700 bg-white border border-sky-200 rounded-lg inline-flex items-center gap-1"
+                        >
+                          <Eye className="w-3 h-3" />
+                          <span>Visualizar Anexo</span>
+                        </button>
+                      )}
                     </div>
-                    <p className="text-slate-600 mt-1">{res.reportSummary}</p>
-                  </div>
-                ))}
+                  ))
+                )}
+              </div>
+
+              <div>
+                <span className="font-bold text-slate-800 uppercase flex items-center gap-1.5 mb-2">
+                  <Paperclip className="w-3.5 h-3.5 text-sky-600" />
+                  <span>Documentos Médicos Anexados ({medicalDocuments.length})</span>
+                </span>
+                {medicalDocuments.length === 0 ? (
+                  <p className="text-slate-400 italic">Nenhum documento anexado ao prontuário.</p>
+                ) : (
+                  medicalDocuments.map(doc => (
+                    <div key={doc.id} className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between mb-2">
+                      <div>
+                        <span className="font-bold text-slate-900 block">{doc.title}</span>
+                        <span className="text-[11px] text-slate-500">
+                          {doc.fileName} · {new Date(doc.documentDate + 'T00:00:00').toLocaleDateString('pt-BR')}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void handleViewSigned(
+                            doc.title,
+                            doc.storageBucket,
+                            doc.storagePath,
+                            doc.mimeType
+                          )
+                        }
+                        className="px-2.5 py-1 text-xs font-semibold text-sky-700 bg-white border border-sky-200 rounded-lg inline-flex items-center gap-1"
+                      >
+                        <Eye className="w-3 h-3" />
+                        <span>Visualizar</span>
+                      </button>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}
@@ -634,6 +768,50 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
         </div>
 
       </div>
+
+      {/* Secure Signed Document Preview Modal */}
+      {previewDoc && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/75 backdrop-blur-xs p-4">
+          <div className="w-full max-w-4xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="bg-slate-900 text-white px-5 py-3 flex items-center justify-between">
+              <span className="text-sm font-bold truncate">{previewDoc.title}</span>
+              <div className="flex items-center gap-2">
+                <a
+                  href={previewDoc.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-1.5 text-xs font-semibold text-slate-900 bg-amber-300 hover:bg-amber-200 rounded-lg inline-flex items-center gap-1"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Abrir / Baixar</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setPreviewDoc(null)}
+                  className="p-1 text-slate-400 hover:text-white rounded-lg"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 bg-slate-100 overflow-auto p-4 flex items-center justify-center min-h-[60vh]">
+              {previewDoc.mimeType?.startsWith('image/') ? (
+                <img
+                  src={previewDoc.url}
+                  alt={previewDoc.title}
+                  className="max-w-full max-h-[75vh] object-contain rounded-lg"
+                />
+              ) : (
+                <iframe
+                  src={previewDoc.url}
+                  title={previewDoc.title}
+                  className="w-full h-[75vh] bg-white rounded-lg border border-slate-200"
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Document Print Modal */}
       <DocumentPrintModal

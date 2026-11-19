@@ -21,3 +21,38 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
+
+@page {
+  size: A4 portrait;
+  margin: 12mm 14mm;
+}
+
+.medsync-break-avoid {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+@media print {
+  html,
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Quando DocumentPrintModal estiver aberto, oculta toda a interface (#root e modais) e imprime apenas o portal exclusivo */
+  body.medsync-printing-doc > *:not(#medsync-print-portal) {
+    display: none !important;
+  }
+
+  body.medsync-printing-doc #medsync-print-portal {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    overflow: visible !important;
+  }
+}

@@ -25,6 +25,7 @@ import {
   LabOrder,
   ExamResult,
   MedicalRecordAddendum,
+  MedicalDocument,
   SaasPlan,
   WhatsAppAutomationTrigger,
   AutomationExecutionRecord,
@@ -80,6 +81,7 @@ const STORAGE_KEYS = {
   CERTIFICATES: 'medsync_certificates',
   LAB_ORDERS: 'medsync_lab_orders',
   EXAM_RESULTS: 'medsync_exam_results',
+  MEDICAL_DOCUMENTS: 'medsync_medical_documents',
   TEMPLATES: 'medsync_templates',
   MESSAGES: 'medsync_messages',
   AUTOMATION_TRIGGERS: 'medsync_whatsapp_triggers',
@@ -217,6 +219,7 @@ export function runDataMigrationIfNeeded(): void {
     localStorage.setItem(STORAGE_KEYS.CERTIFICATES, JSON.stringify(INITIAL_CERTIFICATES));
     localStorage.setItem(STORAGE_KEYS.LAB_ORDERS, JSON.stringify(INITIAL_LAB_ORDERS));
     localStorage.setItem(STORAGE_KEYS.EXAM_RESULTS, JSON.stringify(INITIAL_EXAM_RESULTS));
+    localStorage.setItem(STORAGE_KEYS.MEDICAL_DOCUMENTS, JSON.stringify([]));
     localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify(INITIAL_MESSAGES));
     localStorage.setItem(
       STORAGE_KEYS.AUTOMATION_TRIGGERS,
@@ -517,6 +520,7 @@ export const StorageService = {
     setStored(STORAGE_KEYS.CERTIFICATES, INITIAL_CERTIFICATES);
     setStored(STORAGE_KEYS.LAB_ORDERS, INITIAL_LAB_ORDERS);
     setStored(STORAGE_KEYS.EXAM_RESULTS, INITIAL_EXAM_RESULTS);
+    setStored(STORAGE_KEYS.MEDICAL_DOCUMENTS, []);
     setStored(STORAGE_KEYS.TEMPLATES, INITIAL_TEMPLATES);
     setStored(STORAGE_KEYS.MESSAGES, INITIAL_MESSAGES);
     setStored(STORAGE_KEYS.FINANCIAL, INITIAL_FINANCIAL);
@@ -1308,6 +1312,70 @@ export const StorageService = {
       entityId: result.id,
       details: `${result.examName} - Laboratório: ${result.laboratoryName} - Status: ${result.status}`,
     });
+  },
+
+  // Documentos Médicos Anexos (Laudos externos, PDFs, imagens clínicas)
+  getMedicalDocuments: (patientId?: string): MedicalDocument[] => {
+    const list = getStored<MedicalDocument[]>(STORAGE_KEYS.MEDICAL_DOCUMENTS, []);
+    if (!patientId) return list;
+    return list.filter(d => d.patientId === patientId);
+  },
+  saveMedicalDocument: (doc: MedicalDocument): void => {
+    const list = getStored<MedicalDocument[]>(STORAGE_KEYS.MEDICAL_DOCUMENTS, []);
+    const index = list.findIndex(d => d.id === doc.id);
+    if (index >= 0) {
+      list[index] = doc;
+    } else {
+      list.unshift(doc);
+    }
+    setStored(STORAGE_KEYS.MEDICAL_DOCUMENTS, list);
+
+    StorageService.addAuditLog({
+      action: 'Anexou Documento Médico ao Prontuário',
+      entity: 'Documento Médico',
+      entityId: doc.id,
+      details: `${doc.title} (${doc.fileName})`,
+    });
+  },
+  deleteMedicalDocument: (docId: string): void => {
+    const list = getStored<MedicalDocument[]>(STORAGE_KEYS.MEDICAL_DOCUMENTS, []).filter(d => d.id !== docId);
+    setStored(STORAGE_KEYS.MEDICAL_DOCUMENTS, list);
+  },
+
+  // Helpers de sincronização de cache com o Supabase (ClinicalCloudService)
+  replacePatientsCache: (patients: Patient[]): void => {
+    setStored(STORAGE_KEYS.PATIENTS, patients);
+  },
+  upsertPatientCacheById: (patient: Patient, replaceLegacyId?: string): void => {
+    const list = getStored<Patient[]>(STORAGE_KEYS.PATIENTS, INITIAL_PATIENTS);
+    const filtered = list.filter(
+      p => p.id !== patient.id && (!replaceLegacyId || p.id !== replaceLegacyId)
+    );
+    filtered.unshift(patient);
+    setStored(STORAGE_KEYS.PATIENTS, filtered);
+  },
+  replacePatientClinicalCache: (
+    patientId: string,
+    bundle: {
+      records: MedicalRecordEntry[];
+      prescriptions: Prescription[];
+      certificates: MedicalCertificate[];
+      labOrders: LabOrder[];
+      examResults: ExamResult[];
+      documents: MedicalDocument[];
+    }
+  ): void => {
+    const mergeForPatient = <T extends { patientId: string }>(key: string, fallback: T[], incoming: T[]) => {
+      const others = getStored<T[]>(key, fallback).filter(item => item.patientId !== patientId);
+      setStored(key, [...incoming, ...others]);
+    };
+
+    mergeForPatient(STORAGE_KEYS.MEDICAL_RECORDS, INITIAL_MEDICAL_RECORDS, bundle.records);
+    mergeForPatient(STORAGE_KEYS.PRESCRIPTIONS, INITIAL_PRESCRIPTIONS, bundle.prescriptions);
+    mergeForPatient(STORAGE_KEYS.CERTIFICATES, INITIAL_CERTIFICATES, bundle.certificates);
+    mergeForPatient(STORAGE_KEYS.LAB_ORDERS, INITIAL_LAB_ORDERS, bundle.labOrders);
+    mergeForPatient(STORAGE_KEYS.EXAM_RESULTS, INITIAL_EXAM_RESULTS, bundle.examResults);
+    mergeForPatient(STORAGE_KEYS.MEDICAL_DOCUMENTS, [], bundle.documents);
   },
 
   // Message Templates & Logs

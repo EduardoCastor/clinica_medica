@@ -1,27 +1,26 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   FileText, 
   User, 
   Stethoscope, 
   Plus, 
-  CheckCircle2, 
   Lock, 
   Clock, 
   ShieldCheck, 
-  Calendar, 
   Pill, 
   ClipboardList, 
-  Search,
   AlertCircle,
   AlertTriangle,
   Printer,
   Activity,
-  Heart,
-  Thermometer,
-  Layers,
-  ChevronDown,
-  ChevronUp,
-  FileCheck
+  FileCheck,
+  Loader2,
+  Upload,
+  Eye,
+  Trash2,
+  Paperclip,
+  X,
+  ExternalLink
 } from 'lucide-react';
 import { 
   MedicalRecordEntry, 
@@ -30,9 +29,12 @@ import {
   MedicalCertificate, 
   LabOrder, 
   ExamResult, 
+  MedicalDocument,
+  MedicalDocumentType,
   VitalSigns 
 } from '../../types';
 import { StorageService } from '../../services/storage';
+import { ClinicalCloudService } from '../../services/clinicalCloudService';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTenant } from '../../contexts/TenantContext';
 import { calculateBmi, calculateAge } from '../../services/brazilianFormatters';
@@ -50,16 +52,31 @@ interface MedicalRecordsModuleProps {
   initialPatient?: Patient | null;
 }
 
+const DOC_TYPE_LABELS: Record<MedicalDocumentType, string> = {
+  laudo_externo: 'Laudo Externo',
+  exame_pdf: 'Exame (PDF / Imagem)',
+  receita_externa: 'Receita Externa / Digital',
+  termo_consentimento: 'Termo de Consentimento',
+  relatorio_clinico: 'Relatório Clínico / Encaminhamento',
+  outros: 'Outro Documento',
+};
+
 export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ initialPatient }) => {
   const { currentUser, canEditMedicalRecords } = useAuth();
-  const { activeBranchId, branches } = useTenant();
+  const { organization, activeBranchId, branches } = useTenant();
 
-  const patients = StorageService.getPatients(activeBranchId);
+  const [patients, setPatients] = useState<Patient[]>(() => {
+    const cached = StorageService.getPatients(activeBranchId);
+    if (initialPatient && !cached.some((p) => p.id === initialPatient.id)) {
+      return [initialPatient, ...cached];
+    }
+    return cached;
+  });
   const [selectedPatientId, setSelectedPatientId] = useState<string>(
     initialPatient?.id || patients[0]?.id || ''
   );
   
-  const selectedPatient = patients.find(p => p.id === selectedPatientId) || patients[0];
+  const selectedPatient = patients.find(p => p.id === selectedPatientId) || patients[0] || null;
 
   // Active Tab within Medical Records
   const [activeTab, setActiveTab] = useState<'evolutions' | 'prescriptions' | 'certificates' | 'exams' | 'timeline'>('evolutions');
@@ -80,6 +97,25 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
   const [examResults, setExamResults] = useState<ExamResult[]>(
     selectedPatient ? StorageService.getExamResults(selectedPatient.id) : []
   );
+  const [medicalDocuments, setMedicalDocuments] = useState<MedicalDocument[]>(
+    selectedPatient ? StorageService.getMedicalDocuments(selectedPatient.id) : []
+  );
+
+  const [isLoadingBundle, setIsLoadingBundle] = useState(false);
+  const [clinicalSyncError, setClinicalSyncError] = useState('');
+  const [formError, setFormError] = useState('');
+  const [isSavingRecord, setIsSavingRecord] = useState(false);
+
+  // Attached document upload states
+  const [docTitle, setDocTitle] = useState('');
+  const [docType, setDocType] = useState<MedicalDocumentType>('laudo_externo');
+  const [docDate, setDocDate] = useState(new Date().toISOString().split('T')[0]);
+  const [docDescription, setDocDescription] = useState('');
+  const [docFile, setDocFile] = useState<File | null>(null);
+  const [isUploadingDoc, setIsUploadingDoc] = useState(false);
+  const [docActionError, setDocActionError] = useState('');
+  const [previewDoc, setPreviewDoc] = useState<{ title: string; url: string; mimeType?: string } | null>(null);
+  const [loadingSignedId, setLoadingSignedId] = useState<string | null>(null);
 
   // New Record Form State
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -124,26 +160,87 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
   // Print Document Modal State
   const [printableDoc, setPrintableDoc] = useState<PrintableDocumentType | null>(null);
 
-  const refreshPatientData = (patientId: string) => {
+  const professionals = StorageService.getProfessionals();
+  const activeProf =
+    professionals.find((p) => p.userProfileId === currentUser.id) ||
+    professionals.find((p) => p.fullName === currentUser.fullName) ||
+    professionals[0];
+  const councilNumber = activeProf?.councilNumber || 'CRM/RJ 52-444985';
+
+  const applyLocalBundle = useCallback((patientId: string) => {
     setRecords(StorageService.getMedicalRecords(patientId));
     setPrescriptions(StorageService.getPrescriptions(patientId));
     setCertificates(StorageService.getCertificates(patientId));
     setLabOrders(StorageService.getLabOrders(patientId));
     setExamResults(StorageService.getExamResults(patientId));
-  };
+    setMedicalDocuments(StorageService.getMedicalDocuments(patientId));
+  }, []);
 
-  React.useEffect(() => {
+  const loadPatientBundle = useCallback(
+    async (patientObj: Patient | null | undefined) => {
+      if (!patientObj) return;
+      applyLocalBundle(patientObj.id);
+      setIsLoadingBundle(true);
+      setClinicalSyncError('');
+      try {
+        const bundle = await ClinicalCloudService.fetchPatientClinicalBundleFromCloud(patientObj);
+        setRecords(bundle.records);
+        setPrescriptions(bundle.prescriptions);
+        setCertificates(bundle.certificates);
+        setLabOrders(bundle.labOrders);
+        setExamResults(bundle.examResults);
+        setMedicalDocuments(bundle.documents);
+        if (bundle.error) {
+          setClinicalSyncError(bundle.error);
+        }
+      } catch (err) {
+        setClinicalSyncError(
+          err instanceof Error ? err.message : 'Erro ao sincronizar documentos do paciente.'
+        );
+      } finally {
+        setIsLoadingBundle(false);
+      }
+    },
+    [applyLocalBundle]
+  );
+
+  // Hydrate patient selector list from Supabase
+  useEffect(() => {
+    let cancelled = false;
+    ClinicalCloudService.fetchPatientsFromCloud(activeBranchId).then((res) => {
+      if (cancelled) return;
+      let list = res.patients;
+      if (initialPatient && !list.some((p) => p.id === initialPatient.id)) {
+        list = [initialPatient, ...list];
+      }
+      setPatients(list);
+      if (!selectedPatientId && list[0]?.id) {
+        setSelectedPatientId(list[0].id);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeBranchId, initialPatient, selectedPatientId]);
+
+  useEffect(() => {
     if (initialPatient?.id) {
       setSelectedPatientId(initialPatient.id);
-      refreshPatientData(initialPatient.id);
     }
   }, [initialPatient]);
 
+  useEffect(() => {
+    if (selectedPatient) {
+      void loadPatientBundle(selectedPatient);
+    }
+  }, [selectedPatient?.id, loadPatientBundle]);
+
   const handlePatientChange = (id: string) => {
     setSelectedPatientId(id);
-    refreshPatientData(id);
     setIsFormOpen(false);
     setEditingRecordId(null);
+    setFormError('');
+    setDocActionError('');
   };
 
   // Calculated BMI in realtime for vitals
@@ -190,11 +287,12 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
     setIsFormOpen(true);
   };
 
-  const handleSaveEntry = (statusToSave: 'draft' | 'signed') => {
-    if (!selectedPatient) return;
+  const handleSaveEntry = async (statusToSave: 'draft' | 'signed') => {
+    if (!selectedPatient || isSavingRecord) return;
+    setFormError('');
 
     if (!chiefComplaint.trim() || !therapeuticPlan.trim()) {
-      alert('Por favor, informe ao menos a Queixa Principal e o Plano Terapêutico.');
+      setFormError('Por favor, informe ao menos a Queixa Principal e o Plano Terapêutico.');
       return;
     }
 
@@ -212,15 +310,19 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
     };
 
     const isSigned = statusToSave === 'signed';
+    const resolvedBranchId =
+      activeBranchId !== 'all'
+        ? activeBranchId
+        : selectedPatient.originBranchId || branches[0]?.id || 'branch_cf_centro';
 
     const entryToSave: MedicalRecordEntry = {
       id: editingRecordId || `rec_${Date.now()}`,
-      organizationId: 'org_mureb_01',
+      organizationId: selectedPatient.organizationId || organization.id || 'org_mureb_01',
       patientId: selectedPatient.id,
-      branchId: activeBranchId === 'all' ? branches[0].id : activeBranchId,
-      professionalId: currentUser.id,
+      branchId: resolvedBranchId,
+      professionalId: activeProf?.id || currentUser.id,
       professionalName: currentUser.fullName,
-      professionalCouncilNumber: 'CRM/RJ 52-444985',
+      professionalCouncilNumber: councilNumber,
       recordDate: new Date().toISOString(),
       status: statusToSave,
       consultationType,
@@ -240,26 +342,128 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
       createdAt: new Date().toISOString(),
     };
 
-    const res = StorageService.saveMedicalRecord(entryToSave);
-    if (!res.success) {
-      alert(res.message);
+    setIsSavingRecord(true);
+    try {
+      const res = await ClinicalCloudService.saveMedicalRecordToCloud(entryToSave, selectedPatient);
+      if (!res.success) {
+        setFormError(res.message || 'Erro ao gravar evolução clínica no banco de dados.');
+        return;
+      }
+
+      await loadPatientBundle(selectedPatient);
+      setIsFormOpen(false);
+      setEditingRecordId(null);
+
+      // Reset Form
+      setChiefComplaint('');
+      setClinicalHistory('');
+      setPhysicalExam('');
+      setDiagnosticHypothesis('');
+      setSelectedCids([]);
+      setTherapeuticPlan('');
+      setPrescriptionsText('');
+      setExamRequestsText('');
+      setEvolutionNotes('');
+    } catch (err) {
+      setFormError(
+        err instanceof Error ? err.message : 'Erro inesperado ao salvar evolução clínica.'
+      );
+    } finally {
+      setIsSavingRecord(false);
+    }
+  };
+
+  const handleUploadMedicalDocument = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedPatient || isUploadingDoc) return;
+    setDocActionError('');
+
+    if (!docTitle.trim() || !docFile) {
+      setDocActionError('Informe o título do documento e selecione um arquivo PDF ou imagem.');
       return;
     }
 
-    refreshPatientData(selectedPatient.id);
-    setIsFormOpen(false);
-    setEditingRecordId(null);
+    const resolvedBranchId =
+      activeBranchId !== 'all'
+        ? activeBranchId
+        : selectedPatient.originBranchId || branches[0]?.id || 'branch_cf_centro';
 
-    // Reset Form
-    setChiefComplaint('');
-    setClinicalHistory('');
-    setPhysicalExam('');
-    setDiagnosticHypothesis('');
-    setSelectedCids([]);
-    setTherapeuticPlan('');
-    setPrescriptionsText('');
-    setExamRequestsText('');
-    setEvolutionNotes('');
+    setIsUploadingDoc(true);
+    try {
+      const res = await ClinicalCloudService.uploadMedicalDocumentToCloud({
+        patient: selectedPatient,
+        file: docFile,
+        title: docTitle.trim(),
+        documentType: docType,
+        documentDate: docDate,
+        description: docDescription.trim() || undefined,
+        branchId: resolvedBranchId,
+        medicalRecordId: records[0]?.id,
+        professionalId: activeProf?.id || currentUser.id,
+        professionalName: currentUser.fullName,
+      });
+
+      if (!res.success) {
+        setDocActionError(res.message || 'Erro ao enviar documento para o Storage privado.');
+        return;
+      }
+
+      setDocTitle('');
+      setDocDescription('');
+      setDocFile(null);
+      await loadPatientBundle(selectedPatient);
+    } catch (err) {
+      setDocActionError(err instanceof Error ? err.message : 'Erro ao anexar documento.');
+    } finally {
+      setIsUploadingDoc(false);
+    }
+  };
+
+  const handleOpenSignedAttachment = async (
+    id: string,
+    title: string,
+    bucket: string | undefined,
+    storagePath: string | undefined,
+    mimeType?: string,
+    fallbackUrl?: string
+  ) => {
+    setDocActionError('');
+    if (storagePath && !storagePath.startsWith('local/')) {
+      setLoadingSignedId(id);
+      const res = await ClinicalCloudService.getSignedDocumentUrl(
+        bucket || 'medical-documents',
+        storagePath,
+        300
+      );
+      setLoadingSignedId(null);
+      if (res.error || !res.url) {
+        setDocActionError(res.error || 'Não foi possível gerar link temporário seguro.');
+        return;
+      }
+      setPreviewDoc({ title, url: res.url, mimeType });
+      return;
+    }
+
+    if (fallbackUrl) {
+      setPreviewDoc({ title, url: fallbackUrl, mimeType });
+      return;
+    }
+
+    setDocActionError(
+      'Arquivo registrado em cache local sem sincronização na nuvem. Conecte o banco para armazenar no Storage privado.'
+    );
+  };
+
+  const handleDeleteDocument = async (doc: MedicalDocument) => {
+    setDocActionError('');
+    const res = await ClinicalCloudService.deleteMedicalDocumentFromCloud(doc);
+    if (!res.success) {
+      setDocActionError(res.error || 'Erro ao excluir documento médico.');
+      return;
+    }
+    if (selectedPatient) {
+      await loadPatientBundle(selectedPatient);
+    }
   };
 
   const patientAge = selectedPatient ? calculateAge(selectedPatient.birthDate) : null;
@@ -458,7 +662,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
           }`}
         >
           <ClipboardList className="w-4 h-4" />
-          <span>Exames & Laudos ({labOrders.length + examResults.length})</span>
+          <span>Exames & Documentos ({labOrders.length + examResults.length + medicalDocuments.length})</span>
         </button>
 
         <button
@@ -472,9 +676,29 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
         </button>
       </div>
 
+      {clinicalSyncError && (
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+          <span>Aviso ao carregar prontuário do banco de dados: {clinicalSyncError}</span>
+        </div>
+      )}
+
+      {isLoadingBundle && (
+        <div className="p-2.5 bg-sky-50 border border-sky-200 rounded-xl text-xs text-sky-800 flex items-center gap-2">
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-600 shrink-0" />
+          <span>Sincronizando histórico e documentos clínicos do paciente...</span>
+        </div>
+      )}
+
       {/* New Evolution Form (Collapsible SOAP & Free Text) */}
       {isFormOpen && (
         <div className="p-6 bg-white rounded-2xl border border-sky-300 shadow-md space-y-5">
+          {formError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{formError}</span>
+            </div>
+          )}
           
           <div className="flex items-center justify-between pb-3 border-b border-slate-100">
             <div className="flex items-center gap-2">
@@ -758,19 +982,21 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => handleSaveEntry('draft')}
-                className="px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl shadow-xs transition"
+                disabled={isSavingRecord}
+                onClick={() => void handleSaveEntry('draft')}
+                className="px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl shadow-xs transition disabled:opacity-50"
               >
                 Salvar Rascunho
               </button>
 
               <button
                 type="button"
-                onClick={() => handleSaveEntry('signed')}
-                className="px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition flex items-center gap-1.5"
+                disabled={isSavingRecord}
+                onClick={() => void handleSaveEntry('signed')}
+                className="px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition flex items-center gap-1.5 disabled:opacity-60"
               >
-                <ShieldCheck className="w-4 h-4" />
-                <span>Finalizar e Assinar</span>
+                {isSavingRecord ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                <span>{isSavingRecord ? 'Gravando...' : 'Finalizar e Assinar'}</span>
               </button>
             </div>
           </div>
@@ -1251,9 +1477,211 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
                     {res.referenceValues && (
                       <p className="text-[11px] text-slate-500 italic mt-1">Ref: {res.referenceValues}</p>
                     )}
+                    {(res.storagePath || res.attachmentUrl) && (
+                      <div className="pt-2 flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={loadingSignedId === res.id}
+                          onClick={() =>
+                            void handleOpenSignedAttachment(
+                              res.id,
+                              `${res.examName} (${res.laboratoryName})`,
+                              res.storageBucket,
+                              res.storagePath,
+                              res.attachmentMimeType,
+                              res.attachmentUrl
+                            )
+                          }
+                          className="px-2.5 py-1 text-[11px] font-semibold text-sky-700 bg-white hover:bg-sky-50 border border-sky-200 rounded-lg inline-flex items-center gap-1.5 transition"
+                        >
+                          {loadingSignedId === res.id ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Eye className="w-3 h-3" />
+                          )}
+                          <span>Visualizar Anexo ({res.attachmentFilename || 'Laudo'})</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))
+            )}
+          </div>
+
+          {/* Documentos Médicos Anexados (PDFs, Laudos Externos, Imagens no Storage Privado) */}
+          <div className="space-y-4 pt-6 border-t border-slate-200">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                  <Paperclip className="w-4 h-4 text-sky-600" />
+                  <span>Documentos Médicos & Anexos do Paciente ({medicalDocuments.length})</span>
+                </h4>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Armazenamento privado vinculado individualmente ao prontuário de {selectedPatient?.fullName}.
+                </p>
+              </div>
+            </div>
+
+            {docActionError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>{docActionError}</span>
+              </div>
+            )}
+
+            {canEditMedicalRecords && (
+              <form
+                onSubmit={handleUploadMedicalDocument}
+                className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3"
+              >
+                <span className="text-xs font-bold text-slate-800 block">
+                  Anexar Novo Documento Médico ao Prontuário
+                </span>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Título do Documento *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={docTitle}
+                      onChange={(e) => setDocTitle(e.target.value)}
+                      placeholder="Ex: Doppler Venoso MMII, TCLE Cirúrgico"
+                      className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Categoria
+                    </label>
+                    <select
+                      value={docType}
+                      onChange={(e) => setDocType(e.target.value as MedicalDocumentType)}
+                      className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg bg-white"
+                    >
+                      {Object.entries(DOC_TYPE_LABELS).map(([k, label]) => (
+                        <option key={k} value={k}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Data do Documento
+                    </label>
+                    <input
+                      type="date"
+                      value={docDate}
+                      onChange={(e) => setDocDate(e.target.value)}
+                      className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Arquivo (PDF, JPG, PNG ou WEBP - máx. 15 MB) *
+                    </label>
+                    <input
+                      type="file"
+                      required
+                      accept="application/pdf,image/jpeg,image/png,image/webp"
+                      onChange={(e) => setDocFile(e.target.files?.[0] || null)}
+                      className="block w-full text-xs text-slate-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-slate-300 file:text-xs file:font-semibold file:bg-white file:text-slate-700 hover:file:bg-slate-100 cursor-pointer"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={docDescription}
+                      onChange={(e) => setDocDescription(e.target.value)}
+                      placeholder="Observação clínica breve (opcional)"
+                      className="flex-1 px-3 py-1.5 text-xs border border-slate-300 rounded-lg bg-white"
+                    />
+                    <button
+                      type="submit"
+                      disabled={isUploadingDoc}
+                      className="px-4 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition flex items-center gap-1.5 shrink-0 disabled:opacity-60"
+                    >
+                      {isUploadingDoc ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Upload className="w-3.5 h-3.5" />
+                      )}
+                      <span>{isUploadingDoc ? 'Enviando...' : 'Anexar'}</span>
+                    </button>
+                  </div>
+                </div>
+              </form>
+            )}
+
+            {medicalDocuments.length === 0 ? (
+              <div className="p-6 text-center bg-white rounded-2xl border border-slate-200 text-xs text-slate-400">
+                Nenhum documento externo anexado ao prontuário deste paciente.
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {medicalDocuments.map((doc) => (
+                  <div
+                    key={doc.id}
+                    className="bg-white rounded-2xl border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-slate-900 text-xs">{doc.title}</span>
+                        <span className="text-[10px] font-semibold bg-sky-50 text-sky-700 border border-sky-200 px-2 py-0.5 rounded">
+                          {DOC_TYPE_LABELS[doc.documentType] || doc.documentType}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                        {doc.fileName} · {new Date(doc.documentDate + 'T00:00:00').toLocaleDateString('pt-BR')}
+                        {doc.fileSizeBytes ? ` · ${(doc.fileSizeBytes / 1024).toFixed(0)} KB` : ''}
+                      </p>
+                      {doc.description && (
+                        <p className="text-[11px] text-slate-600 italic mt-0.5">{doc.description}</p>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        disabled={loadingSignedId === doc.id}
+                        onClick={() =>
+                          void handleOpenSignedAttachment(
+                            doc.id,
+                            doc.title,
+                            doc.storageBucket,
+                            doc.storagePath,
+                            doc.mimeType
+                          )
+                        }
+                        className="px-3 py-1.5 text-xs font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-xl transition flex items-center gap-1.5"
+                      >
+                        {loadingSignedId === doc.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Eye className="w-3.5 h-3.5" />
+                        )}
+                        <span>Visualizar</span>
+                      </button>
+                      {canEditMedicalRecords && (
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteDocument(doc)}
+                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                          title="Excluir documento"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
 
@@ -1346,7 +1774,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
         }}
         record={selectedRecordForAddendum}
         onSuccess={() => {
-          if (selectedPatient) refreshPatientData(selectedPatient.id);
+          if (selectedPatient) void loadPatientBundle(selectedPatient);
         }}
       />
 
@@ -1355,8 +1783,9 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
         isOpen={isRxModalOpen}
         onClose={() => setIsRxModalOpen(false)}
         patient={selectedPatient}
+        medicalRecordId={records[0]?.id}
         onSuccess={(rx) => {
-          if (selectedPatient) refreshPatientData(selectedPatient.id);
+          if (selectedPatient) void loadPatientBundle(selectedPatient);
           setPrintableDoc({ type: 'prescription', data: rx });
         }}
       />
@@ -1366,8 +1795,9 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
         isOpen={isCertModalOpen}
         onClose={() => setIsCertModalOpen(false)}
         patient={selectedPatient}
+        medicalRecordId={records[0]?.id}
         onSuccess={(cert) => {
-          if (selectedPatient) refreshPatientData(selectedPatient.id);
+          if (selectedPatient) void loadPatientBundle(selectedPatient);
           setPrintableDoc({ type: 'certificate', data: cert });
         }}
       />
@@ -1377,8 +1807,9 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
         isOpen={isLabOrderModalOpen}
         onClose={() => setIsLabOrderModalOpen(false)}
         patient={selectedPatient}
+        medicalRecordId={records[0]?.id}
         onSuccess={(order) => {
-          if (selectedPatient) refreshPatientData(selectedPatient.id);
+          if (selectedPatient) void loadPatientBundle(selectedPatient);
           setPrintableDoc({ type: 'lab_order', data: order });
         }}
       />
@@ -1388,10 +1819,60 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
         isOpen={isExamResultModalOpen}
         onClose={() => setIsExamResultModalOpen(false)}
         patient={selectedPatient}
+        medicalRecordId={records[0]?.id}
         onSuccess={() => {
-          if (selectedPatient) refreshPatientData(selectedPatient.id);
+          if (selectedPatient) void loadPatientBundle(selectedPatient);
         }}
       />
+
+      {/* Secure Signed Document Preview Modal */}
+      {previewDoc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-xs p-4">
+          <div className="w-full max-w-4xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="bg-slate-900 text-white px-5 py-3.5 flex items-center justify-between">
+              <div className="min-w-0">
+                <h4 className="text-sm font-bold truncate">{previewDoc.title}</h4>
+                <span className="text-[11px] text-slate-400">
+                  Acesso temporário protegido (URL assinada)
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={previewDoc.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-1.5 text-xs font-semibold text-slate-900 bg-amber-300 hover:bg-amber-200 rounded-lg inline-flex items-center gap-1"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Abrir / Baixar</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setPreviewDoc(null)}
+                  className="p-1.5 text-slate-400 hover:text-white rounded-lg"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 bg-slate-100 overflow-auto p-4 flex items-center justify-center min-h-[60vh]">
+              {previewDoc.mimeType?.startsWith('image/') ? (
+                <img
+                  src={previewDoc.url}
+                  alt={previewDoc.title}
+                  className="max-w-full max-h-[75vh] object-contain rounded-lg shadow-sm"
+                />
+              ) : (
+                <iframe
+                  src={previewDoc.url}
+                  title={previewDoc.title}
+                  className="w-full h-[75vh] bg-white rounded-lg border border-slate-200"
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Document Print Modal */}
       <DocumentPrintModal

@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
-import { X, Plus, Trash2, Pill, ShieldCheck, Printer, AlertTriangle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Plus, Trash2, Pill, ShieldCheck, AlertTriangle, Loader2 } from 'lucide-react';
 import { Patient, Prescription, PrescriptionItem } from '../../types';
 import { StorageService } from '../../services/storage';
+import { ClinicalCloudService } from '../../services/clinicalCloudService';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTenant } from '../../contexts/TenantContext';
 
@@ -9,6 +10,7 @@ interface PrescriptionFormModalProps {
   isOpen: boolean;
   onClose: () => void;
   patient: Patient | null;
+  medicalRecordId?: string;
   onSuccess: (prescription: Prescription) => void;
 }
 
@@ -16,16 +18,32 @@ export const PrescriptionFormModal: React.FC<PrescriptionFormModalProps> = ({
   isOpen,
   onClose,
   patient,
+  medicalRecordId,
   onSuccess,
 }) => {
   const { currentUser } = useAuth();
-  const { activeBranchId, branches } = useTenant();
+  const { organization, activeBranchId, branches } = useTenant();
 
   const [type, setType] = useState<'simples' | 'controle_especial'>('simples');
   const [specialControlNotificationType, setSpecialControlNotificationType] = useState<'A1' | 'B1' | 'C1'>('C1');
   const [validityDays, setValidityDays] = useState(30);
   const [generalInstructions, setGeneralInstructions] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
+  const professionals = StorageService.getProfessionals();
+  const activeProf =
+    professionals.find((p) => p.userProfileId === currentUser.id) ||
+    professionals.find((p) => p.fullName === currentUser.fullName) ||
+    professionals[0];
+  const councilNumber = activeProf?.councilNumber || 'CRM/RJ 52-444985';
+
+  useEffect(() => {
+    if (isOpen) {
+      setErrorMessage('');
+      setIsSaving(false);
+    }
+  }, [isOpen]);
 
   const [items, setItems] = useState<Array<Omit<PrescriptionItem, 'id'>>>([
     {
@@ -67,8 +85,9 @@ export const PrescriptionFormModal: React.FC<PrescriptionFormModalProps> = ({
     setItems(updated);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
     setErrorMessage('');
 
     const hasEmpty = items.some(item => !item.medicineName.trim() || !item.dosageInstruction.trim());
@@ -78,17 +97,23 @@ export const PrescriptionFormModal: React.FC<PrescriptionFormModalProps> = ({
     }
 
     const prescriptionId = `rx_${Date.now()}`;
+    const resolvedBranchId =
+      activeBranchId !== 'all'
+        ? activeBranchId
+        : patient.originBranchId || branches[0]?.id || 'branch_cf_centro';
+
     const prescription: Prescription = {
       id: prescriptionId,
-      organizationId: 'org_mureb_01',
-      branchId: activeBranchId === 'all' ? branches[0].id : activeBranchId,
+      organizationId: patient.organizationId || organization.id || 'org_mureb_01',
+      branchId: resolvedBranchId,
       patientId: patient.id,
+      medicalRecordId,
       patientName: patient.fullName,
       patientCpf: patient.documentCpf,
       patientAddress: patient.address ? `${patient.address}, ${patient.addressNumber || ''} - ${patient.city || ''}/${patient.state || ''}` : undefined,
-      professionalId: currentUser.id,
+      professionalId: activeProf?.id || currentUser.id,
       professionalName: currentUser.fullName,
-      professionalCouncil: 'CRM/RJ 52-444985',
+      professionalCouncil: councilNumber,
       type,
       specialControlNotificationType: type === 'controle_especial' ? specialControlNotificationType : undefined,
       prescriptionDate: new Date().toISOString().split('T')[0],
@@ -104,9 +129,23 @@ export const PrescriptionFormModal: React.FC<PrescriptionFormModalProps> = ({
       createdAt: new Date().toISOString(),
     };
 
-    StorageService.savePrescription(prescription);
-    onSuccess(prescription);
-    onClose();
+    setIsSaving(true);
+    try {
+      const res = await ClinicalCloudService.savePrescriptionToCloud(prescription, patient);
+      if (!res.success || !res.prescription) {
+        setErrorMessage(res.message || 'Erro ao gravar prescrição no banco de dados.');
+        return;
+      }
+
+      onSuccess(res.prescription);
+      onClose();
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error ? err.message : 'Erro inesperado ao salvar prescrição.'
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -355,7 +394,7 @@ export const PrescriptionFormModal: React.FC<PrescriptionFormModalProps> = ({
           <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 flex items-center justify-between text-xs text-emerald-900">
             <div className="flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-emerald-600" />
-              <span>Assinatura Digital ICP-Brasil: <strong>Dr. Newton Mureb (CRM/RJ 52-444985)</strong></span>
+              <span>Assinatura Digital ICP-Brasil: <strong>{currentUser.fullName} ({councilNumber})</strong></span>
             </div>
             <span className="text-[11px] font-mono text-emerald-700">Validade: {validityDays} dias</span>
           </div>
@@ -364,17 +403,19 @@ export const PrescriptionFormModal: React.FC<PrescriptionFormModalProps> = ({
           <div className="pt-3 flex items-center justify-end gap-3 border-t border-slate-200">
             <button
               type="button"
+              disabled={isSaving}
               onClick={onClose}
-              className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800 transition"
+              className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800 transition disabled:opacity-50"
             >
               Cancelar
             </button>
             <button
               type="submit"
-              className="px-5 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5"
+              disabled={isSaving}
+              className="px-5 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5 disabled:opacity-60"
             >
-              <ShieldCheck className="w-4 h-4" />
-              <span>Emitir e Assinar Receita</span>
+              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+              <span>{isSaving ? 'Salvando Receita...' : 'Emitir e Assinar Receita'}</span>
             </button>
           </div>
 
