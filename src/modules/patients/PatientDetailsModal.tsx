@@ -17,7 +17,8 @@ import {
   Activity, 
   FileCheck,
   Plus,
-  Stethoscope
+  Stethoscope,
+  Pencil
 } from 'lucide-react';
 import { 
   Patient, 
@@ -40,6 +41,7 @@ interface PatientDetailsModalProps {
   patient: Patient | null;
   onNewAppointment: (patient: Patient) => void;
   onOpenRecord: (patient: Patient) => void;
+  onEdit?: (patient: Patient) => void;
 }
 
 export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
@@ -48,6 +50,7 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
   patient,
   onNewAppointment,
   onOpenRecord,
+  onEdit,
 }) => {
   const { branches } = useTenant();
   const [activeTab, setActiveTab] = useState<'profile' | 'clinical' | 'timeline' | 'records' | 'prescriptions' | 'certificates' | 'exams' | 'financial'>('profile');
@@ -105,8 +108,22 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {onEdit && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onEdit(patient);
+                }}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-800 bg-amber-300 hover:bg-amber-200 rounded-lg shadow-xs transition flex items-center gap-1.5"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                <span>Editar Cadastro</span>
+              </button>
+            )}
             <button
+              type="button"
               onClick={() => {
                 onClose();
                 onOpenRecord(patient);
@@ -117,6 +134,7 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
               <span>Abrir no PEP</span>
             </button>
             <button
+              type="button"
               onClick={() => {
                 onClose();
                 onNewAppointment(patient);
@@ -125,7 +143,12 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
             >
               Novo Agendamento
             </button>
-            <button onClick={onClose} className="p-1 text-slate-400 hover:text-white rounded-lg">
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Fechar detalhes do paciente"
+              className="p-1 text-slate-400 hover:text-white rounded-lg"
+            >
               <X className="w-5 h-5" />
             </button>
           </div>
