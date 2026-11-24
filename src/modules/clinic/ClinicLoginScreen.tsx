@@ -12,10 +12,12 @@ import {
   Sparkles,
   Loader2,
   CheckCircle2,
+  UserPlus,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTenant } from '../../contexts/TenantContext';
 import { ClinicBrandLogo, CLINIC_OFFICIAL_DATA } from '../../components/ClinicBrandLogo';
+import { FirstAccessBootstrapPanel } from './FirstAccessBootstrapPanel';
 
 interface ClinicLoginScreenProps {
   onSuccess?: () => void;
@@ -28,7 +30,9 @@ export const ClinicLoginScreen: React.FC<ClinicLoginScreenProps> = ({ onSuccess 
     login,
     signInWithEmail,
     sendPasswordReset,
+    isSupabaseAuthMode,
     isDevSimulationMode,
+    bootstrapStatus,
     authError,
     clearAuthError,
   } = useAuth();
@@ -37,9 +41,25 @@ export const ClinicLoginScreen: React.FC<ClinicLoginScreenProps> = ({ onSuccess 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [resetSuccessMessage, setResetSuccessMessage] = useState<string | null>(null);
   const [isResetMode, setIsResetMode] = useState(false);
+  const [isFirstAccessView, setIsFirstAccessView] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Clinic staff users (rendered exclusively in local dev simulation without Supabase)
+  const canShowFirstAccess = Boolean(
+    isSupabaseAuthMode &&
+      bootstrapStatus.checkedFromCloud &&
+      bootstrapStatus.needsBootstrap &&
+      !bootstrapStatus.alreadyInitialized
+  );
+
+  React.useEffect(() => {
+    if (canShowFirstAccess) {
+      setIsFirstAccessView(true);
+    } else {
+      setIsFirstAccessView(false);
+    }
+  }, [canShowFirstAccess]);
+
+  // Clinic staff users (rendered exclusively in local dev simulation without cloud auth)
   const staffUsers = usersList.filter(
     (u) => u.role !== 'super_admin' && u.role !== 'patient' && u.role !== 'physiotherapist' && u.isActive
   );
@@ -127,7 +147,50 @@ export const ClinicLoginScreen: React.FC<ClinicLoginScreenProps> = ({ onSuccess 
           </div>
 
           <div className="p-8 space-y-6">
-            {/* Real Email/Password Login & Password Recovery Form */}
+            {canShowFirstAccess && (
+              <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl text-xs">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsFirstAccessView(true);
+                    setErrorMessage(null);
+                    clearAuthError();
+                  }}
+                  className={`py-2 px-3 rounded-lg font-bold transition flex items-center justify-center gap-1.5 ${
+                    isFirstAccessView
+                      ? 'bg-white text-sky-700 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Primeiro acesso</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsFirstAccessView(false);
+                    setErrorMessage(null);
+                    clearAuthError();
+                  }}
+                  className={`py-2 px-3 rounded-lg font-bold transition ${
+                    !isFirstAccessView
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Entrar
+                </button>
+              </div>
+            )}
+
+            {canShowFirstAccess && isFirstAccessView ? (
+              <FirstAccessBootstrapPanel
+                variant="light"
+                onSwitchToLogin={() => setIsFirstAccessView(false)}
+                onSuccess={onSuccess}
+              />
+            ) : (
+            /* Real Email/Password Login & Password Recovery Form */
             <form onSubmit={handleFormSubmit} className="space-y-4">
               {displayedError && (
                 <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-xl">
@@ -224,8 +287,9 @@ export const ClinicLoginScreen: React.FC<ClinicLoginScreenProps> = ({ onSuccess 
                 </button>
               )}
             </form>
+            )}
 
-            {/* Quick Demo Access ONLY in local dev without Supabase */}
+            {/* Quick Demo Access ONLY in local dev without cloud auth */}
             {isDevSimulationMode && (
               <div className="pt-4 border-t border-slate-100 space-y-3">
                 <div className="flex items-center justify-between">

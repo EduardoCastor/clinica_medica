@@ -51,8 +51,8 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
               <Database className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-white">Conexão Backend & Supabase</h3>
-              <p className="text-xs text-slate-400">PostgreSQL com RLS e persistência em nuvem</p>
+              <h3 className="text-base font-bold text-white">Conexão com a Nuvem</h3>
+              <p className="text-xs text-slate-400">Segurança por clínica e sincronização em tempo real</p>
             </div>
           </div>
           <button onClick={onClose} className="p-1 text-slate-400 hover:text-white rounded-lg">
@@ -64,9 +64,9 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
         <div className="p-4 bg-emerald-50 border-b border-emerald-100 flex items-start gap-3">
           <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
           <div className="text-xs text-emerald-800 space-y-1">
-            <p className="font-semibold">Modo Dual Ativo: Demonstração Completa + Supabase Ready</p>
+            <p className="font-semibold">Modo Dual Ativo: Demonstração Local + Nuvem</p>
             <p className="text-emerald-700">
-              O MedSync já está 100% funcional com banco relacional reativo em memória/storage local. Para conectar à sua instância real do Supabase em nuvem, insira as credenciais abaixo.
+              O MedSync funciona com cache local para testes e com armazenamento seguro em nuvem para operação da clínica. Para conectar ao servidor de produção, insira os dados abaixo.
             </p>
           </div>
         </div>
@@ -76,13 +76,13 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1 flex items-center gap-1.5">
               <Globe className="w-3.5 h-3.5 text-slate-400" />
-              <span>Project URL (Supabase)</span>
+              <span>Endereço do Projeto (URL)</span>
             </label>
             <input
               type="text"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://xyzcompany.supabase.co"
+              placeholder="https://seu-projeto.supabase.co"
               className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
           </div>
@@ -90,7 +90,7 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1 flex items-center gap-1.5">
               <Key className="w-3.5 h-3.5 text-slate-400" />
-              <span>Anon / Public Key</span>
+              <span>Chave Pública de Acesso</span>
             </label>
             <input
               type="password"
@@ -100,21 +100,17 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
               className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500 font-mono"
             />
             <p className="mt-1 text-[11px] text-slate-500">
-              Nunca utilize a chave de serviço (service_role) no frontend!
+              Utilize apenas a chave pública do projeto. Chaves privadas administrativas nunca devem ser inseridas no navegador.
             </p>
           </div>
 
           <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-600 space-y-1.5">
             <p className="font-semibold text-slate-800 flex items-center gap-1.5">
               <CheckCircle2 className="w-3.5 h-3.5 text-sky-600" />
-              <span>Migrações SQL prontas no projeto</span>
+              <span>Ambiente isolado por organização</span>
             </p>
             <p className="text-[11px] text-slate-500 leading-relaxed">
-              O script DDL completo com todas as tabelas e políticas de Row Level Security (RLS) está salvo em:
-              <br />
-              <code className="text-slate-800 bg-white px-1.5 py-0.5 rounded border border-slate-200 font-mono text-[10px]">
-                /supabase/migrations/20261109000000_initial_schema.sql
-              </code>
+              Todas as permissões de equipe, prontuários e agendamentos respeitam o isolamento da clínica autenticada.
             </p>
           </div>
 

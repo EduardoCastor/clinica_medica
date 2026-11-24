@@ -2,7 +2,9 @@
 // Executa operações administrativas seguras de Supabase Auth usando SUPABASE_SERVICE_ROLE_KEY
 // exclusivamente no servidor (nunca exposta ao frontend).
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.8';
+import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.49.8';
+
+const AUTHORIZED_BOOTSTRAP_EMAIL = 'admin@drnewtonmureb.com.br';
 
 const corsHeaders: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -21,11 +23,55 @@ interface MenuPermInput {
   isCustomOverride: boolean;
 }
 
+interface AuthUserRow {
+  id: string;
+  email?: string;
+  new_email?: string;
+  email_confirmed_at?: string;
+  user_metadata?: Record<string, unknown>;
+}
+
+interface SuperProfileRow {
+  id: string;
+  user_id: string | null;
+  organization_id: string;
+  full_name: string;
+  email: string;
+  role_code: string;
+  is_active: boolean;
+  created_at: string;
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
+}
+
+async function findAuthUserByEmail(
+  adminClient: SupabaseClient,
+  targetEmail: string
+): Promise<{ user: AuthUserRow | null; error?: string }> {
+  const clean = targetEmail.trim().toLowerCase();
+  for (let page = 1; page <= 10; page += 1) {
+    const { data, error } = await adminClient.auth.admin.listUsers({
+      page,
+      perPage: 1000,
+    });
+    if (error) {
+      return { user: null, error: error.message };
+    }
+    const users = (data?.users || []) as AuthUserRow[];
+    const match = users.find((u) => u.email?.toLowerCase() === clean);
+    if (match) {
+      return { user: match };
+    }
+    if (users.length < 1000) {
+      break;
+    }
+  }
+  return { user: null };
 }
 
 Deno.serve(async (req: Request) => {
@@ -43,24 +89,51 @@ Deno.serve(async (req: Request) => {
 
   if (!supabaseUrl || !anonKey || !serviceRoleKey) {
     return jsonResponse(
-      { error: 'Variáveis de ambiente do Supabase Edge Function não configuradas.' },
+      { error: 'Configuração do servidor de contas incompleta.' },
       500
     );
   }
 
+  let payload: Record<string, unknown>;
+  try {
+    payload = (await req.json()) as Record<string, unknown>;
+  } catch {
+    return jsonResponse({ error: 'Corpo JSON inválido.' }, 400);
+  }
+
+  const action = String(payload.action || '');
+
+  // Cliente administrativo (service_role exclusivo no servidor)
+  const adminClient = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+
+  // ===========================================================================
+  // AÇÃO 0A: CONSULTA SEGURA DO STATUS DE PRIMEIRO ACESSO (SEM EXPOR PII)
+  // ===========================================================================
+  if (action === 'get_bootstrap_status') {
+    const { data: statusData, error: statusErr } = await adminClient.rpc('medsync_get_bootstrap_status');
+    if (statusErr) {
+      return jsonResponse({ error: 'Não foi possível verificar o status de inicialização.' }, 500);
+    }
+    const status = (statusData || {}) as Record<string, unknown>;
+    return jsonResponse({
+      success: true,
+      needsBootstrap: Boolean(status.needs_bootstrap),
+      alreadyInitialized: Boolean(status.already_initialized),
+      organizationFound: Boolean(status.organization_found),
+      organizationName: String(status.organization_name || 'Clínica Dr Newton Mureb'),
+    });
+  }
+
   const authHeader = req.headers.get('Authorization') || '';
   if (!authHeader.startsWith('Bearer ')) {
-    return jsonResponse({ error: 'Cabeçalho Authorization Bearer obrigatório.' }, 401);
+    return jsonResponse({ error: 'Autenticação obrigatória.' }, 401);
   }
 
   // Cliente autenticado com o JWT do solicitante
   const userClient = createClient(supabaseUrl, anonKey, {
     global: { headers: { Authorization: authHeader } },
-  });
-
-  // Cliente administrativo (service_role exclusivo no servidor)
-  const adminClient = createClient(supabaseUrl, serviceRoleKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
   });
 
   const {
@@ -72,6 +145,88 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: 'Sessão inválida ou expirada.' }, 401);
   }
 
+  // ===========================================================================
+  // AÇÃO 0B: BOOTSTRAP DO PRIMEIRO SUPER ADMIN (CLÍNICA DR NEWTON MUREB)
+  // ===========================================================================
+  if (action === 'bootstrap_super_admin') {
+    const callerEmail = (callerAuthUser.email || '').trim().toLowerCase();
+    if (callerEmail !== AUTHORIZED_BOOTSTRAP_EMAIL) {
+      return jsonResponse(
+        {
+          error:
+            'Apenas o e-mail autorizado admin@drnewtonmureb.com.br pode realizar o primeiro acesso administrativo.',
+        },
+        403
+      );
+    }
+
+    if (!callerAuthUser.email_confirmed_at) {
+      return jsonResponse(
+        {
+          error:
+            'Confirme a propriedade do e-mail admin@drnewtonmureb.com.br antes de concluir a inicialização.',
+        },
+        403
+      );
+    }
+
+    const metaFullName =
+      callerAuthUser.user_metadata && typeof callerAuthUser.user_metadata.full_name === 'string'
+        ? callerAuthUser.user_metadata.full_name
+        : '';
+    const requestedFullName = String(payload.fullName || metaFullName || '').trim();
+    const effectiveFullName =
+      requestedFullName.length >= 3 ? requestedFullName : 'Administrador Clínica Dr Newton Mureb';
+
+    const { data: bootstrapRes, error: bootstrapErr } = await adminClient.rpc(
+      'medsync_bootstrap_first_super_admin',
+      {
+        p_auth_user_id: callerAuthUser.id,
+        p_auth_email: callerEmail,
+        p_full_name: effectiveFullName,
+        p_email_confirmed_at: callerAuthUser.email_confirmed_at,
+      }
+    );
+
+    if (bootstrapErr) {
+      const errMsg = bootstrapErr.message || 'Não foi possível concluir o primeiro acesso.';
+      if (errMsg.includes('BOOTSTRAP_ALREADY_COMPLETED') || errMsg.includes('BOOTSTRAP_CONFLICT')) {
+        return jsonResponse(
+          {
+            error: 'O primeiro acesso já foi concluído anteriormente. Utilize o login padrão.',
+          },
+          409
+        );
+      }
+      if (errMsg.includes('BOOTSTRAP_FORBIDDEN_EMAIL') || errMsg.includes('BOOTSTRAP_EMAIL_UNCONFIRMED')) {
+        return jsonResponse({ error: errMsg }, 403);
+      }
+      return jsonResponse({ error: errMsg }, 500);
+    }
+
+    const result = (bootstrapRes || {}) as Record<string, unknown>;
+    const resolvedOrgId = String(result.organization_id || '');
+
+    // Atualiza metadados da conta autenticada sem alterar senha nem exigir confirmação extra
+    await adminClient.auth.admin.updateUserById(callerAuthUser.id, {
+      user_metadata: {
+        ...(callerAuthUser.user_metadata || {}),
+        full_name: effectiveFullName,
+        role_code: 'super_admin',
+        organization_id: resolvedOrgId,
+      },
+    });
+
+    return jsonResponse({
+      success: true,
+      idempotent: Boolean(result.idempotent),
+      profileId: result.profile_id,
+      organizationId: resolvedOrgId,
+      roleCode: 'super_admin',
+    });
+  }
+
+  // Para todas as demais operações administrativas, exigir perfil ativo vinculado
   const { data: callerProfile, error: callerProfileErr } = await adminClient
     .from('user_profiles')
     .select('*')
@@ -82,39 +237,35 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: 'Perfil do solicitante inativo ou não encontrado.' }, 403);
   }
 
-  let payload: Record<string, unknown>;
-  try {
-    payload = (await req.json()) as Record<string, unknown>;
-  } catch {
-    return jsonResponse({ error: 'Corpo JSON inválido.' }, 400);
-  }
-
-  const action = String(payload.action || '');
   const callerRole = String(callerProfile.role_code);
   const callerOrgId = String(callerProfile.organization_id);
 
   // Verificar permissão para gerenciar equipe
   const canManageUsers = async (): Promise<boolean> => {
     if (callerRole === 'super_admin' || callerRole === 'clinic_admin') return true;
-    const { data: hasPerm } = await userClient.rpc('medsync_has_menu_permission', {
+    const { data: hasCreatePerm } = await userClient.rpc('medsync_has_menu_permission', {
       p_menu_key: 'users',
       p_action: 'create',
+    });
+    const { data: hasEditPerm } = await userClient.rpc('medsync_has_menu_permission', {
+      p_menu_key: 'users',
+      p_action: 'edit',
     });
     const { data: hasAdminPerm } = await userClient.rpc('medsync_has_menu_permission', {
       p_menu_key: 'users',
       p_action: 'admin',
     });
-    return Boolean(hasPerm || hasAdminPerm);
+    return Boolean(hasCreatePerm || hasEditPerm || hasAdminPerm);
   };
 
   try {
     // =========================================================================
-    // AÇÃO 1: AUDITORIA DO SUPER ADMIN (SEM ALTERAÇÃO AUTOMÁTICA EM AMBIGUIDADE)
+    // AÇÃO 1: AUDITORIA DO SUPER ADMIN (NO ESCOPO DA ORGANIZAÇÃO AUTORIZADA)
     // =========================================================================
     if (action === 'audit_super_admin_email' || action === 'update_super_admin_email') {
       if (callerRole !== 'super_admin') {
         return jsonResponse(
-          { error: 'Apenas um Super Administrador autenticado pode auditar ou atualizar o e-mail do Super Admin.' },
+          { error: 'Apenas o Super Administrador autenticado pode realizar esta operação.' },
           403
         );
       }
@@ -122,6 +273,7 @@ Deno.serve(async (req: Request) => {
       const { data: superProfiles, error: spErr } = await adminClient
         .from('user_profiles')
         .select('id, user_id, organization_id, full_name, email, role_code, is_active, created_at')
+        .eq('organization_id', callerOrgId)
         .eq('role_code', 'super_admin');
 
       if (spErr) {
@@ -135,23 +287,6 @@ Deno.serve(async (req: Request) => {
 
       if (listUsersErr) {
         return jsonResponse({ error: listUsersErr.message }, 500);
-      }
-
-      interface SuperProfileRow {
-        id: string;
-        user_id: string | null;
-        organization_id: string;
-        full_name: string;
-        email: string;
-        role_code: string;
-        is_active: boolean;
-        created_at: string;
-      }
-      interface AuthUserRow {
-        id: string;
-        email?: string;
-        new_email?: string;
-        email_confirmed_at?: string;
       }
 
       const candidates = ((superProfiles || []) as SuperProfileRow[]).map((prof) => {
@@ -181,7 +316,7 @@ Deno.serve(async (req: Request) => {
       // update_super_admin_email
       if (candidates.length === 0) {
         return jsonResponse(
-          { error: 'Nenhum usuário com papel super_admin encontrado em public.user_profiles.' },
+          { error: 'Nenhum Super Administrador encontrado para esta organização.' },
           404
         );
       }
@@ -190,7 +325,7 @@ Deno.serve(async (req: Request) => {
         return jsonResponse(
           {
             error:
-              'Mais de um candidato a Super Admin foi encontrado. Operação interrompida para identificação segura sem escolha arbitrária.',
+              'Mais de um candidato a Super Admin foi encontrado. Operação interrompida para identificação segura.',
             ambiguous: true,
             candidates,
           },
@@ -202,33 +337,30 @@ Deno.serve(async (req: Request) => {
       if (!target.authUserId) {
         return jsonResponse(
           {
-            error:
-              'O registro super_admin em user_profiles não possui user_id vinculado ao Supabase Auth.',
+            error: 'O registro do Super Admin não possui conta autenticada vinculada.',
             candidates,
           },
           409
         );
       }
 
-      const desiredEmail = String(payload.newEmail || 'admin@drnewtonmureb.com.br')
+      const desiredEmail = String(payload.newEmail || AUTHORIZED_BOOTSTRAP_EMAIL)
         .trim()
         .toLowerCase();
       const requireEmailConfirmation = Boolean(payload.requireEmailConfirmation);
 
-      // Verifica se o e-mail já está em uso por outro Auth user diferente
       const conflictingAuth = (authUsersList.users as AuthUserRow[]).find(
         (u) => u.email?.toLowerCase() === desiredEmail && u.id !== target.authUserId
       );
       if (conflictingAuth) {
         return jsonResponse(
           {
-            error: `O e-mail ${desiredEmail} já pertence a outro usuário no Supabase Auth (UUID ${conflictingAuth.id}).`,
+            error: `O e-mail ${desiredEmail} já pertence a outro usuário cadastrado.`,
           },
           409
         );
       }
 
-      // Atualiza exclusivamente via Supabase Admin API preservando UUID, senha e relacionamentos
       const { data: updatedAuth, error: updateAuthErr } =
         await adminClient.auth.admin.updateUserById(target.authUserId, {
           email: desiredEmail,
@@ -237,12 +369,11 @@ Deno.serve(async (req: Request) => {
 
       if (updateAuthErr || !updatedAuth?.user) {
         return jsonResponse(
-          { error: updateAuthErr?.message || 'Falha ao atualizar e-mail no Supabase Auth.' },
+          { error: updateAuthErr?.message || 'Falha ao atualizar e-mail de acesso.' },
           500
         );
       }
 
-      // Atualiza o perfil mantendo papel super_admin e UUIDs intactos
       const { error: updateProfErr } = await adminClient
         .from('user_profiles')
         .update({
@@ -250,12 +381,13 @@ Deno.serve(async (req: Request) => {
           updated_at: new Date().toISOString(),
         })
         .eq('id', target.profileId)
+        .eq('organization_id', callerOrgId)
         .eq('role_code', 'super_admin');
 
       if (updateProfErr) {
         return jsonResponse(
           {
-            error: `E-mail atualizado no Auth, mas houve falha ao atualizar user_profiles: ${updateProfErr.message}`,
+            error: `E-mail atualizado na conta de acesso, mas houve falha ao atualizar o perfil: ${updateProfErr.message}`,
           },
           500
         );
@@ -288,7 +420,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // =========================================================================
-    // AÇÃO 2: CRIAR USUÁRIO REAL NO SUPABASE AUTH + PERFIL + FILIAIS + RBAC
+    // AÇÃO 2: CRIAR USUÁRIO REAL + PERFIL + FILIAIS + RBAC (REUTILIZANDO AUTH SE NECESSÁRIO)
     // =========================================================================
     if (action === 'create_user') {
       if (!(await canManageUsers())) {
@@ -316,16 +448,18 @@ Deno.serve(async (req: Request) => {
         return jsonResponse({ error: 'Nome completo e e-mail são obrigatórios.' }, 400);
       }
 
+      // Isolamento multi-tenant estrito: todo usuário autenticado opera apenas na sua organização autorizada
+      if (requestedOrgId !== callerOrgId) {
+        return jsonResponse(
+          { error: 'Isolamento multi-tenant: não é permitido criar usuário em outra organização.' },
+          403
+        );
+      }
+
       if (callerRole !== 'super_admin') {
-        if (requestedOrgId !== callerOrgId) {
-          return jsonResponse(
-            { error: 'Isolamento multi-tenant: não é permitido criar usuário em outra organização.' },
-            403
-          );
-        }
         if (roleCode === 'super_admin') {
           return jsonResponse(
-            { error: 'Elevação de privilégio bloqueada: apenas super_admin pode criar super_admin.' },
+            { error: 'Elevação de privilégio bloqueada: papel super_admin é exclusivo.' },
             403
           );
         }
@@ -333,6 +467,20 @@ Deno.serve(async (req: Request) => {
           return jsonResponse(
             { error: 'Administrador de filial não pode cadastrar outros administradores.' },
             403
+          );
+        }
+      } else if (roleCode === 'super_admin') {
+        // Garantir unicidade de Super Admin na organização
+        const { data: existingSuper } = await adminClient
+          .from('user_profiles')
+          .select('id')
+          .eq('organization_id', requestedOrgId)
+          .eq('role_code', 'super_admin')
+          .maybeSingle();
+        if (existingSuper) {
+          return jsonResponse(
+            { error: 'Já existe um Super Administrador vinculado a esta organização.' },
+            409
           );
         }
       }
@@ -344,7 +492,7 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      // Verificar duplicidade na organização
+      // 1) Verificar duplicidade na mesma organização
       const { data: existingProfile } = await adminClient
         .from('user_profiles')
         .select('id')
@@ -354,16 +502,74 @@ Deno.serve(async (req: Request) => {
 
       if (existingProfile) {
         return jsonResponse(
-          { error: `Já existe um usuário cadastrado nesta clínica com o e-mail ${email}.` },
+          { error: `Já existe um usuário cadastrado nesta organização com o e-mail ${email}.` },
           409
         );
       }
 
-      // 1) Criar ou convidar no Supabase Auth
-      let authUserId: string | undefined;
-      let accountCreatedMode: 'invited' | 'created_with_password' = 'invited';
+      // 2) Verificar se a identidade já existe no sistema de autenticação antes de criar
+      const { user: existingAuthUser, error: lookupErr } = await findAuthUserByEmail(
+        adminClient,
+        email
+      );
+      if (lookupErr) {
+        return jsonResponse({ error: lookupErr }, 500);
+      }
 
-      if (authMode === 'password') {
+      let authUserId: string | undefined;
+      let createdNewAuthUser = false;
+      let accountCreatedMode: 'invited' | 'created_with_password' | 'reused_existing_auth' = 'invited';
+
+      if (existingAuthUser) {
+        // Verificar se essa conta já está vinculada a algum perfil
+        const { data: linkedProfile } = await adminClient
+          .from('user_profiles')
+          .select('id, organization_id')
+          .eq('user_id', existingAuthUser.id)
+          .maybeSingle();
+
+        if (linkedProfile) {
+          return jsonResponse(
+            {
+              error:
+                'Este e-mail já possui conta ativa vinculada a outro perfil no sistema.',
+            },
+            409
+          );
+        }
+
+        // Identidade órfã no Auth: reutiliza o UUID existente com segurança
+        authUserId = existingAuthUser.id;
+        accountCreatedMode = 'reused_existing_auth';
+
+        const updateAttrs: Record<string, unknown> = {
+          user_metadata: {
+            ...(existingAuthUser.user_metadata || {}),
+            full_name: fullName,
+            role_code: roleCode,
+            organization_id: requestedOrgId,
+          },
+          ban_duration: isActive ? 'none' : '876000h',
+        };
+        if (authMode === 'password' && !existingAuthUser.email_confirmed_at) {
+          updateAttrs.password = initialPassword;
+          updateAttrs.email_confirm = true;
+        }
+
+        const { error: reuseUpdateErr } = await adminClient.auth.admin.updateUserById(
+          authUserId,
+          updateAttrs
+        );
+        if (reuseUpdateErr) {
+          return jsonResponse({ error: reuseUpdateErr.message }, 400);
+        }
+
+        if (authMode === 'invite' && !existingAuthUser.email_confirmed_at) {
+          await adminClient.auth.admin.inviteUserByEmail(email, {
+            data: { full_name: fullName, role_code: roleCode, organization_id: requestedOrgId },
+          });
+        }
+      } else if (authMode === 'password') {
         const { data: createdAuth, error: createAuthErr } =
           await adminClient.auth.admin.createUser({
             email,
@@ -373,11 +579,12 @@ Deno.serve(async (req: Request) => {
           });
         if (createAuthErr || !createdAuth?.user) {
           return jsonResponse(
-            { error: createAuthErr?.message || 'Erro ao criar conta no Supabase Auth.' },
+            { error: createAuthErr?.message || 'Erro ao criar conta de acesso.' },
             400
           );
         }
         authUserId = createdAuth.user.id;
+        createdNewAuthUser = true;
         accountCreatedMode = 'created_with_password';
       } else {
         const { data: invitedAuth, error: inviteErr } =
@@ -386,20 +593,21 @@ Deno.serve(async (req: Request) => {
           });
         if (inviteErr || !invitedAuth?.user) {
           return jsonResponse(
-            { error: inviteErr?.message || 'Erro ao enviar convite pelo Supabase Auth.' },
+            { error: inviteErr?.message || 'Erro ao enviar convite por e-mail.' },
             400
           );
         }
         authUserId = invitedAuth.user.id;
+        createdNewAuthUser = true;
         accountCreatedMode = 'invited';
       }
 
-      // Se conta nascer desativada, bloquear no Auth
-      if (!isActive && authUserId) {
+      // Se conta nova nascer desativada, bloquear no Auth
+      if (!isActive && authUserId && createdNewAuthUser) {
         await adminClient.auth.admin.updateUserById(authUserId, { ban_duration: '876000h' });
       }
 
-      // 2) Criar perfil em public.user_profiles
+      // 3) Criar perfil em public.user_profiles
       const { data: insertedProfile, error: profErr } = await adminClient
         .from('user_profiles')
         .insert({
@@ -416,8 +624,8 @@ Deno.serve(async (req: Request) => {
         .single();
 
       if (profErr || !insertedProfile) {
-        // Rollback do usuário criado no Auth para não deixar órfão
-        if (authUserId) {
+        // Rollback apenas se uma nova conta de Auth acabou de ser criada nesta requisição
+        if (authUserId && createdNewAuthUser) {
           await adminClient.auth.admin.deleteUser(authUserId);
         }
         return jsonResponse(
@@ -426,7 +634,7 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      // 3) Filiais autorizadas
+      // 4) Filiais autorizadas
       const uniqueBranches = Array.from(
         new Set([...authorizedBranchIds, ...(defaultBranchId ? [defaultBranchId] : [])])
       );
@@ -441,7 +649,7 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      // 4) Exceções individuais de menu
+      // 5) Exceções individuais de menu
       const customPerms = menuPermissions.filter((p) => p.isCustomOverride);
       if (customPerms.length > 0) {
         await adminClient.from('user_menu_permissions').insert(
@@ -461,7 +669,7 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      // 5) Vincular profissional se informado
+      // 6) Vincular profissional se informado
       if (professionalId) {
         await adminClient
           .from('professionals')
@@ -470,7 +678,7 @@ Deno.serve(async (req: Request) => {
           .eq('organization_id', requestedOrgId);
       }
 
-      // 6) Auditoria
+      // 7) Auditoria
       await adminClient.from('audit_logs').insert({
         organization_id: requestedOrgId,
         user_id: callerAuthUser.id,
@@ -483,6 +691,7 @@ Deno.serve(async (req: Request) => {
           created_email: email,
           role_code: roleCode,
           auth_mode: accountCreatedMode,
+          reused_existing_auth: !createdNewAuthUser,
           authorized_branch_ids: uniqueBranches,
         },
       });
@@ -491,11 +700,12 @@ Deno.serve(async (req: Request) => {
         success: true,
         profile: insertedProfile,
         authMode: accountCreatedMode,
+        reusedExistingAuth: !createdNewAuthUser,
       });
     }
 
     // =========================================================================
-    // AÇÃO 3: ATUALIZAR STATUS/EMAIL NO AUTH + PERFIL
+    // AÇÃO 3: ATUALIZAR STATUS NO AUTH + PERFIL (BLOQUEIO / REATIVAÇÃO)
     // =========================================================================
     if (action === 'sync_auth_user_status') {
       if (!(await canManageUsers())) {
@@ -515,13 +725,12 @@ Deno.serve(async (req: Request) => {
         return jsonResponse({ error: 'Perfil não encontrado.' }, 404);
       }
 
-      if (callerRole !== 'super_admin') {
-        if (targetProf.organization_id !== callerOrgId) {
-          return jsonResponse({ error: 'Isolamento multi-tenant violado.' }, 403);
-        }
-        if (targetProf.role_code === 'super_admin') {
-          return jsonResponse({ error: 'Não é permitido alterar um Super Admin.' }, 403);
-        }
+      if (targetProf.organization_id !== callerOrgId) {
+        return jsonResponse({ error: 'Isolamento multi-tenant violado.' }, 403);
+      }
+
+      if (callerRole !== 'super_admin' && targetProf.role_code === 'super_admin') {
+        return jsonResponse({ error: 'Não é permitido alterar o Super Administrador.' }, 403);
       }
 
       if (targetProf.user_id) {
@@ -558,14 +767,37 @@ Deno.serve(async (req: Request) => {
         return jsonResponse({ error: 'Usuário não encontrado.' }, 404);
       }
 
-      if (callerRole !== 'super_admin' && targetProf.organization_id !== callerOrgId) {
+      if (targetProf.organization_id !== callerOrgId) {
         return jsonResponse({ error: 'Isolamento multi-tenant violado.' }, 403);
       }
 
+      let deliveredMode = mode;
+
       if (mode === 'invite') {
-        const { error: invErr } = await adminClient.auth.admin.inviteUserByEmail(targetProf.email);
-        if (invErr) {
-          return jsonResponse({ error: invErr.message }, 500);
+        let alreadyConfirmed = false;
+        if (targetProf.user_id) {
+          const { data: targetAuthData } = await adminClient.auth.admin.getUserById(targetProf.user_id);
+          alreadyConfirmed = Boolean(targetAuthData?.user?.email_confirmed_at);
+        }
+
+        if (!alreadyConfirmed) {
+          const { error: invErr } = await adminClient.auth.admin.inviteUserByEmail(targetProf.email);
+          if (invErr) {
+            // Se já registrado, envia link de definição/redefinição de senha como alternativa segura
+            const { error: recFallbackErr } = await adminClient.auth.resetPasswordForEmail(
+              targetProf.email
+            );
+            if (recFallbackErr) {
+              return jsonResponse({ error: invErr.message }, 500);
+            }
+            deliveredMode = 'recovery';
+          }
+        } else {
+          const { error: recErr } = await adminClient.auth.resetPasswordForEmail(targetProf.email);
+          if (recErr) {
+            return jsonResponse({ error: recErr.message }, 500);
+          }
+          deliveredMode = 'recovery';
         }
       } else {
         const { error: recErr } = await adminClient.auth.resetPasswordForEmail(targetProf.email);
@@ -578,13 +810,13 @@ Deno.serve(async (req: Request) => {
         organization_id: targetProf.organization_id,
         user_id: callerAuthUser.id,
         user_role: callerRole,
-        action: mode === 'invite' ? 'resend_invite' : 'send_password_recovery',
+        action: deliveredMode === 'invite' ? 'resend_invite' : 'send_password_recovery',
         entity: 'user_profiles',
         entity_id: targetProf.id,
         details: { target_email: targetProf.email, actor_name: callerProfile.full_name },
       });
 
-      return jsonResponse({ success: true });
+      return jsonResponse({ success: true, deliveredMode });
     }
 
     return jsonResponse({ error: `Ação desconhecida: ${action}` }, 400);

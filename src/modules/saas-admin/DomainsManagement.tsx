@@ -235,7 +235,7 @@ export const DomainsManagement: React.FC<DomainsManagementProps> = ({ onSimulate
             </h3>
             <p className="leading-relaxed">
               O MedSync SaaS identifica dinamicamente o cliente através do cabeçalho <code className="bg-white/80 px-1 py-0.5 rounded font-mono text-sky-800">Host</code> da requisição HTTP. 
-              Ao acessar <code className="bg-white/80 px-1 py-0.5 rounded font-mono text-slate-900 font-semibold">app.drnewtonmureb.com.br</code>, a aplicação restringe o carregamento ao portal administrativo protegido por autenticação e RLS. 
+              Ao acessar <code className="bg-white/80 px-1 py-0.5 rounded font-mono text-slate-900 font-semibold">app.drnewtonmureb.com.br</code>, a aplicação restringe o carregamento ao portal administrativo protegido por autenticação e controle de acesso por organização. 
               Ao acessar <code className="bg-white/80 px-1 py-0.5 rounded font-mono text-slate-900 font-semibold">www.drnewtonmureb.com.br</code>, o sistema renderiza apenas o site institucional e o agendamento público, sem expor prontuários, dados financeiros ou cadastros de outros pacientes.
             </p>
           </div>

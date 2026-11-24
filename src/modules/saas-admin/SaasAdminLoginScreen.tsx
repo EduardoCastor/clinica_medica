@@ -9,8 +9,10 @@ import {
   AlertTriangle,
   Loader2,
   CheckCircle2,
+  UserPlus,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { FirstAccessBootstrapPanel } from '../clinic/FirstAccessBootstrapPanel';
 
 interface SaasAdminLoginScreenProps {
   onSuccess?: () => void;
@@ -22,7 +24,9 @@ export const SaasAdminLoginScreen: React.FC<SaasAdminLoginScreenProps> = ({ onSu
     login,
     signInWithEmail,
     sendPasswordReset,
+    isSupabaseAuthMode,
     isDevSimulationMode,
+    bootstrapStatus,
     authError,
     clearAuthError,
   } = useAuth();
@@ -31,7 +35,23 @@ export const SaasAdminLoginScreen: React.FC<SaasAdminLoginScreenProps> = ({ onSu
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [resetSuccessMessage, setResetSuccessMessage] = useState<string | null>(null);
   const [isResetMode, setIsResetMode] = useState(false);
+  const [isFirstAccessView, setIsFirstAccessView] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const canShowFirstAccess = Boolean(
+    isSupabaseAuthMode &&
+      bootstrapStatus.checkedFromCloud &&
+      bootstrapStatus.needsBootstrap &&
+      !bootstrapStatus.alreadyInitialized
+  );
+
+  React.useEffect(() => {
+    if (canShowFirstAccess) {
+      setIsFirstAccessView(true);
+    } else {
+      setIsFirstAccessView(false);
+    }
+  }, [canShowFirstAccess]);
 
   const superAdminUser = usersList.find((u) => u.role === 'super_admin') || usersList[0];
 
@@ -60,7 +80,7 @@ export const SaasAdminLoginScreen: React.FC<SaasAdminLoginScreenProps> = ({ onSu
       if (!result.success) {
         setErrorMessage(
           result.error ||
-            'Credenciais inválidas. Este painel é restrito aos Super Administradores da plataforma MedSync SaaS.'
+            'Credenciais inválidas. Este painel é restrito aos Super Administradores da plataforma MedSync.'
         );
         return;
       }
@@ -91,7 +111,7 @@ export const SaasAdminLoginScreen: React.FC<SaasAdminLoginScreenProps> = ({ onSu
 
             <div>
               <h1 className="text-xl font-black text-white tracking-tight">
-                MedSync SaaS <span className="text-purple-400 font-semibold">Master Admin</span>
+                MedSync <span className="text-purple-400 font-semibold">Administração Geral</span>
               </h1>
               <p className="text-xs text-slate-400 mt-1 font-mono">
                 painelclinica.beaverstraining.com.br
@@ -105,7 +125,50 @@ export const SaasAdminLoginScreen: React.FC<SaasAdminLoginScreenProps> = ({ onSu
           </div>
 
           <div className="p-8 space-y-6">
-            {/* Form */}
+            {canShowFirstAccess && (
+              <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-800/90 rounded-xl text-xs border border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsFirstAccessView(true);
+                    setErrorMessage(null);
+                    clearAuthError();
+                  }}
+                  className={`py-2 px-3 rounded-lg font-bold transition flex items-center justify-center gap-1.5 ${
+                    isFirstAccessView
+                      ? 'bg-purple-600 text-white shadow-xs'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Primeiro acesso</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsFirstAccessView(false);
+                    setErrorMessage(null);
+                    clearAuthError();
+                  }}
+                  className={`py-2 px-3 rounded-lg font-bold transition ${
+                    !isFirstAccessView
+                      ? 'bg-purple-600 text-white shadow-xs'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Entrar
+                </button>
+              </div>
+            )}
+
+            {canShowFirstAccess && isFirstAccessView ? (
+              <FirstAccessBootstrapPanel
+                variant="dark"
+                onSwitchToLogin={() => setIsFirstAccessView(false)}
+                onSuccess={onSuccess}
+              />
+            ) : (
+            /* Form */
             <form onSubmit={handleFormSubmit} className="space-y-4 text-xs">
               {displayedError && (
                 <div className="p-3 bg-rose-500/20 border border-rose-500/40 text-rose-200 rounded-xl flex items-center gap-2">
@@ -205,8 +268,9 @@ export const SaasAdminLoginScreen: React.FC<SaasAdminLoginScreenProps> = ({ onSu
                 </button>
               )}
             </form>
+            )}
 
-            {/* Quick Demo Access Button ONLY in local dev simulation without Supabase */}
+            {/* Quick Demo Access Button ONLY in local dev simulation without cloud auth */}
             {isDevSimulationMode && superAdminUser && (
               <div className="pt-4 border-t border-slate-800 space-y-3">
                 <div className="flex items-center justify-between">

@@ -135,6 +135,10 @@ export const TeamManagement: React.FC = () => {
   const [newUserAuthMode, setNewUserAuthMode] = useState<'invite' | 'password'>('password');
   const [newUserPassword, setNewUserPassword] = useState('');
   const [newUserLinkedProfId, setNewUserLinkedProfId] = useState('');
+  const [showNewUserCustomPerms, setShowNewUserCustomPerms] = useState(false);
+  const [newUserCustomPerms, setNewUserCustomPerms] = useState<
+    Record<MenuKey, UserMenuPermissionRecord>
+  >(() => resolveEffectivePermissions('receptionist'));
 
   // Modal Editar Usuário
   const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
@@ -360,7 +364,7 @@ export const TeamManagement: React.FC = () => {
         });
 
         if (!res.success) {
-          setFeedbackError(res.error || 'Falha ao persistir profissional no Supabase.');
+          setFeedbackError(res.error || 'Não foi possível salvar os dados do profissional.');
           return;
         }
 
@@ -368,8 +372,8 @@ export const TeamManagement: React.FC = () => {
         setProfModalOpen(false);
         setFeedbackSuccess(
           editingProfId
-            ? `Profissional ${profName.trim()} atualizado no banco de dados.`
-            : `Profissional ${profName.trim()} cadastrado com sucesso no banco de dados.`
+            ? `Profissional ${profName.trim()} atualizado com sucesso.`
+            : `Profissional ${profName.trim()} cadastrado com sucesso.`
         );
       } else if (isDevSimulationMode) {
         const profObj: Professional = {
@@ -393,7 +397,7 @@ export const TeamManagement: React.FC = () => {
         setProfModalOpen(false);
         setFeedbackSuccess(`Profissional ${profObj.fullName} salvo no ambiente de desenvolvimento.`);
       } else {
-        setFeedbackError('Conexão Supabase obrigatória para cadastrar profissionais em produção.');
+        setFeedbackError('Conexão com o servidor necessária para cadastrar profissionais.');
       }
     } finally {
       setIsSaving(false);
@@ -444,7 +448,39 @@ export const TeamManagement: React.FC = () => {
     setNewUserAuthMode('password');
     setNewUserPassword('');
     setNewUserLinkedProfId('');
+    setShowNewUserCustomPerms(false);
+    setNewUserCustomPerms(resolveEffectivePermissions('receptionist', roleTemplates));
     setCreateUserModalOpen(true);
+  };
+
+  const toggleNewUserPermCell = (menuKey: MenuKey, action: PermissionAction) => {
+    const currentRow = newUserCustomPerms[menuKey];
+    const nextVal = !currentRow[action];
+
+    if (nextVal && currentRole !== 'super_admin' && !actorEffectivePermissions[menuKey]?.[action]) {
+      setFeedbackError('Você não pode conceder uma permissão maior do que o seu próprio acesso.');
+      return;
+    }
+
+    const updatedRow: UserMenuPermissionRecord = {
+      ...currentRow,
+      [action]: nextVal,
+      canView: action !== 'canView' && nextVal ? true : action === 'canView' ? nextVal : currentRow.canView,
+      isCustomOverride: true,
+    };
+
+    if (action === 'canView' && !nextVal) {
+      updatedRow.canConsult = false;
+      updatedRow.canCreate = false;
+      updatedRow.canEdit = false;
+      updatedRow.canDelete = false;
+      updatedRow.canAdmin = false;
+    }
+
+    setNewUserCustomPerms((prev) => ({
+      ...prev,
+      [menuKey]: updatedRow,
+    }));
   };
 
   const handleCreateUser = async (e: React.FormEvent) => {
@@ -474,9 +510,14 @@ export const TeamManagement: React.FC = () => {
       return;
     }
 
-    const defaultPerms = Object.values(
-      resolveEffectivePermissions(newUserRole, roleTemplates)
+    const sanitizedPerms = sanitizePermissionsForActor(
+      currentRole,
+      actorEffectivePermissions,
+      showNewUserCustomPerms
+        ? newUserCustomPerms
+        : resolveEffectivePermissions(newUserRole, roleTemplates)
     );
+    const initialPerms = Object.values(sanitizedPerms);
 
     setIsSaving(true);
     try {
@@ -493,13 +534,12 @@ export const TeamManagement: React.FC = () => {
           authMode: newUserAuthMode,
           password: newUserPassword,
           professionalId: newUserLinkedProfId || null,
-          menuPermissions: defaultPerms,
+          menuPermissions: initialPerms,
         });
 
         if (!res.success) {
           setFeedbackError(
-            res.error ||
-              'Falha ao criar conta real no Supabase Auth. Nenhum registro local falso foi criado.'
+            res.error || 'Não foi possível criar a conta de acesso para este usuário.'
           );
           return;
         }
@@ -507,9 +547,11 @@ export const TeamManagement: React.FC = () => {
         await loadTeamData();
         setCreateUserModalOpen(false);
         setFeedbackSuccess(
-          newUserAuthMode === 'invite'
-            ? `Usuário ${newUserName.trim()} criado no Supabase Auth e convite enviado para ${newUserEmail.trim()}.`
-            : `Usuário ${newUserName.trim()} criado com sucesso no Supabase Auth e vinculado à clínica.`
+          res.reusedExistingAuth
+            ? `Conta existente de ${newUserEmail.trim()} vinculada com sucesso à clínica ${organization.name}.`
+            : newUserAuthMode === 'invite'
+              ? `Usuário ${newUserName.trim()} cadastrado e convite de acesso enviado para ${newUserEmail.trim()}.`
+              : `Usuário ${newUserName.trim()} cadastrado com sucesso e vinculado à clínica ${organization.name}.`
         );
       } else if (isDevSimulationMode) {
         const newId = `usr_${Date.now()}`;
@@ -523,6 +565,7 @@ export const TeamManagement: React.FC = () => {
           phone: newUserPhone.trim(),
           role: newUserRole,
           isActive: newUserIsActive,
+          permissions: sanitizedPerms,
           createdAt: new Date().toISOString(),
         };
         StorageService.saveUser(localUser);
@@ -535,7 +578,7 @@ export const TeamManagement: React.FC = () => {
         setCreateUserModalOpen(false);
         setFeedbackSuccess(`Usuário ${localUser.fullName} criado no ambiente de desenvolvimento local.`);
       } else {
-        setFeedbackError('Conexão Supabase obrigatória para cadastrar usuários em produção.');
+        setFeedbackError('Conexão com o servidor necessária para cadastrar usuários.');
       }
     } finally {
       setIsSaving(false);
@@ -633,7 +676,55 @@ export const TeamManagement: React.FC = () => {
         setEditingUser(null);
         setFeedbackSuccess(`Usuário ${updated.fullName} atualizado no ambiente local.`);
       } else {
-        setFeedbackError('Conexão Supabase obrigatória para salvar usuários em produção.');
+        setFeedbackError('Conexão com o servidor necessária para salvar usuários.');
+      }
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleToggleUserActiveQuick = async (user: UserProfile) => {
+    clearFeedback();
+    if (user.id === currentUser.id) {
+      setFeedbackError('Você não pode desativar o próprio usuário em sessão ativa.');
+      return;
+    }
+    const nextActive = user.isActive === false;
+    setIsSaving(true);
+    try {
+      if (isSupabaseAuthMode && isUuid(user.id)) {
+        const perms = Object.values(
+          resolveEffectivePermissions(user.role, roleTemplates, user.permissions)
+        );
+        const res = await TeamCloudService.saveUserAndPermissionsToCloud({
+          targetProfileId: user.id,
+          fullName: user.fullName,
+          phone: user.phone,
+          role: user.role,
+          defaultBranchId: user.defaultBranchId || null,
+          authorizedBranchIds: user.authorizedBranchIds || [],
+          isActive: nextActive,
+          previousIsActive: user.isActive !== false,
+          menuPermissions: perms,
+        });
+        if (!res.success) {
+          setFeedbackError(res.error || 'Não foi possível alterar o status do usuário.');
+          return;
+        }
+        await loadTeamData();
+        setFeedbackSuccess(
+          nextActive
+            ? `Usuário ${user.fullName} reativado com sucesso.`
+            : `Usuário ${user.fullName} desativado e impedido de acessar o sistema.`
+        );
+      } else if (isDevSimulationMode) {
+        StorageService.saveUser({ ...user, isActive: nextActive, updatedAt: new Date().toISOString() });
+        setUsers(StorageService.getUsers());
+        setFeedbackSuccess(
+          nextActive
+            ? `Usuário ${user.fullName} reativado no ambiente local.`
+            : `Usuário ${user.fullName} desativado no ambiente local.`
+        );
       }
     } finally {
       setIsSaving(false);
@@ -650,9 +741,9 @@ export const TeamManagement: React.FC = () => {
         return;
       }
       setFeedbackSuccess(
-        mode === 'invite'
-          ? `Convite reenviado para ${user.email}.`
-          : `Link de redefinição de senha enviado para ${user.email}.`
+        res.deliveredMode === 'recovery'
+          ? `Link de definição/redefinição de senha enviado para ${user.email}.`
+          : `Convite enviado para ${user.email}.`
       );
     } finally {
       setIsSaving(false);
@@ -760,7 +851,7 @@ export const TeamManagement: React.FC = () => {
           await refreshSessionProfile();
         }
         setFeedbackSuccess(
-          `Permissões e papel de ${selectedPermUser.fullName} salvos e auditados no banco de dados.`
+          `Permissões e papel de ${selectedPermUser.fullName} salvos e registrados na auditoria.`
         );
       } else if (isDevSimulationMode) {
         const updated: UserProfile = {
@@ -780,7 +871,7 @@ export const TeamManagement: React.FC = () => {
         setAuditLogs(StorageService.getAuditLogs());
         setFeedbackSuccess(`Permissões de ${updated.fullName} atualizadas no ambiente local.`);
       } else {
-        setFeedbackError('Conexão Supabase obrigatória para salvar permissões em produção.');
+        setFeedbackError('Conexão com o servidor necessária para salvar permissões.');
       }
     } finally {
       setIsSaving(false);
@@ -833,12 +924,12 @@ export const TeamManagement: React.FC = () => {
           roleTemplateDraft
         );
         if (!res.success) {
-          setFeedbackError(res.error || 'Erro ao salvar modelo de papel no Supabase.');
+          setFeedbackError(res.error || 'Erro ao salvar modelo padrão do papel.');
           return;
         }
         await loadTeamData();
         setFeedbackSuccess(
-          `Modelo padrão do papel "${ROLE_METADATA[selectedRoleForTemplate].label}" atualizado na nuvem.`
+          `Modelo padrão do papel "${ROLE_METADATA[selectedRoleForTemplate].label}" atualizado com sucesso.`
         );
       } else if (isDevSimulationMode) {
         const nextTemplates = {
@@ -851,7 +942,7 @@ export const TeamManagement: React.FC = () => {
           `Modelo padrão de "${ROLE_METADATA[selectedRoleForTemplate].label}" salvo localmente.`
         );
       } else {
-        setFeedbackError('Conexão Supabase obrigatória para salvar papéis em produção.');
+        setFeedbackError('Conexão com o servidor necessária para salvar papéis.');
       }
     } finally {
       setIsSaving(false);
@@ -994,7 +1085,7 @@ export const TeamManagement: React.FC = () => {
                 {stats.inactiveUsers}
               </div>
               <span className="text-[11px] text-slate-500 block mt-1">
-                Bloqueados no login e RLS
+                Bloqueados no acesso ao sistema
               </span>
             </div>
 
@@ -1395,9 +1486,25 @@ export const TeamManagement: React.FC = () => {
                                 disabled={isSaving}
                                 onClick={() => void handleResendLink(u, 'recovery')}
                                 className="p-1.5 text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-lg border border-amber-200"
-                                title="Enviar link de redefinição de senha"
+                                title="Enviar link de definição/redefinição de senha"
                               >
                                 <Send className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+
+                            {canEditTeam && !isRestrictedSuper && !isSelf && (
+                              <button
+                                type="button"
+                                disabled={isSaving}
+                                onClick={() => void handleToggleUserActiveQuick(u)}
+                                className={`p-1.5 rounded-lg border ${
+                                  u.isActive !== false
+                                    ? 'text-rose-700 bg-rose-50 hover:bg-rose-100 border-rose-200'
+                                    : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border-emerald-200'
+                                }`}
+                                title={u.isActive !== false ? 'Desativar usuário' : 'Reativar usuário'}
+                              >
+                                <Power className="w-3.5 h-3.5" />
                               </button>
                             )}
                           </div>
@@ -1443,7 +1550,7 @@ export const TeamManagement: React.FC = () => {
               </button>
             </div>
             <span className="text-[11px] text-slate-500">
-              Todas as alterações são auditadas e validadas no PostgreSQL (RLS + Trigger).
+              Todas as alterações são registradas e validadas com segurança pelo sistema.
             </span>
           </div>
 
@@ -2094,11 +2201,11 @@ export const TeamManagement: React.FC = () => {
       )}
 
       {/* =====================================================================
-          MODAL: CADASTRAR NOVO USUÁRIO (COM SUPABASE AUTH)
+          MODAL: CADASTRAR NOVO USUÁRIO
           ===================================================================== */}
       {createUserModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 my-6">
+          <div className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 my-6">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h3 className="text-base font-bold text-slate-900">Cadastrar Novo Usuário do Sistema</h3>
@@ -2116,6 +2223,21 @@ export const TeamManagement: React.FC = () => {
             </div>
 
             <form onSubmit={handleCreateUser} className="space-y-3 text-xs">
+              <div className="p-2.5 rounded-xl bg-sky-50/70 border border-sky-200 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Building2 className="w-4 h-4 text-sky-700 shrink-0" />
+                  <div>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-sky-800 block">
+                      Organização / Clínica Autorizada
+                    </span>
+                    <span className="font-bold text-slate-900 text-xs">{organization.name}</span>
+                  </div>
+                </div>
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-white border border-sky-200 text-sky-800">
+                  Isolamento Ativo
+                </span>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">Nome Completo *</label>
@@ -2153,7 +2275,11 @@ export const TeamManagement: React.FC = () => {
                   <label className="block font-semibold text-slate-700 mb-1">Papel / Perfil *</label>
                   <select
                     value={newUserRole}
-                    onChange={(e) => setNewUserRole(e.target.value as UserRole)}
+                    onChange={(e) => {
+                      const nextRole = e.target.value as UserRole;
+                      setNewUserRole(nextRole);
+                      setNewUserCustomPerms(resolveEffectivePermissions(nextRole, roleTemplates));
+                    }}
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg font-semibold"
                   >
                     {ALL_USER_ROLES.filter((r) => canActorAssignRole(currentRole, r)).map((r) => (
@@ -2276,6 +2402,74 @@ export const TeamManagement: React.FC = () => {
                 )}
               </div>
 
+              {canAdminTeam && (
+                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setShowNewUserCustomPerms((prev) => !prev)}
+                    className="w-full px-3 py-2.5 bg-slate-50 hover:bg-slate-100 flex items-center justify-between text-left font-semibold text-slate-800"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Sliders className="w-3.5 h-3.5 text-purple-600" />
+                      <span>Personalizar permissões individuais por menu (opcional)</span>
+                    </span>
+                    <span className="text-[11px] text-sky-700">
+                      {showNewUserCustomPerms ? 'Ocultar matriz' : 'Ajustar permissões'}
+                    </span>
+                  </button>
+
+                  {showNewUserCustomPerms && (
+                    <div className="p-3 bg-white overflow-x-auto max-h-60 overflow-y-auto border-t border-slate-200">
+                      <table className="w-full text-[11px]">
+                        <thead>
+                          <tr className="border-b border-slate-200 text-slate-600">
+                            <th className="py-1.5 px-2 text-left">Menu</th>
+                            {PERM_COLUMNS.map((col) => (
+                              <th key={col.key} className="py-1.5 px-1.5 text-center">
+                                {col.short}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {MENU_DEFINITIONS.map((def) => {
+                            const row = newUserCustomPerms[def.key];
+                            return (
+                              <tr key={def.key}>
+                                <td className="py-1.5 px-2 font-semibold text-slate-800">{def.label}</td>
+                                {PERM_COLUMNS.map((col) => {
+                                  const supported =
+                                    (col.key === 'canDelete' ? def.supportsDelete : true) &&
+                                    (col.key === 'canAdmin' ? def.supportsAdmin : true);
+                                  const actorAllowed =
+                                    currentRole === 'super_admin' ||
+                                    Boolean(actorEffectivePermissions[def.key]?.[col.key]);
+                                  return (
+                                    <td key={col.key} className="py-1.5 px-1.5 text-center">
+                                      {supported ? (
+                                        <input
+                                          type="checkbox"
+                                          checked={Boolean(row?.[col.key])}
+                                          disabled={!row?.[col.key] && !actorAllowed}
+                                          onChange={() => toggleNewUserPermCell(def.key, col.key)}
+                                          className="rounded text-sky-600 disabled:opacity-40"
+                                        />
+                                      ) : (
+                                        <span className="text-slate-300">—</span>
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <label className="flex items-center gap-2 p-2.5 rounded-lg bg-slate-50 border border-slate-200 cursor-pointer">
                 <input
                   type="checkbox"
@@ -2329,6 +2523,24 @@ export const TeamManagement: React.FC = () => {
             </div>
 
             <form onSubmit={handleSaveEditedUser} className="space-y-3 text-xs">
+              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-2">
+                <div>
+                  <span className="text-[10px] font-bold uppercase text-slate-500 block">
+                    Organização / Clínica
+                  </span>
+                  <span className="font-bold text-slate-900">{organization.name}</span>
+                </div>
+                <button
+                  type="button"
+                  disabled={isSaving}
+                  onClick={() => void handleResendLink(editingUser, 'recovery')}
+                  className="px-2.5 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-semibold flex items-center gap-1"
+                >
+                  <Send className="w-3 h-3" />
+                  <span>Enviar link de senha</span>
+                </button>
+              </div>
+
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Nome Completo</label>
                 <input

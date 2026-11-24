@@ -489,7 +489,7 @@ export async function updatePlanInSupabase(plan: Plan): Promise<boolean> {
     }
 
     if (!data || data.length === 0) {
-      lastPlanSyncError = 'O Supabase não retornou registros atualizados (possível bloqueio de RLS para INSERT/UPDATE na tabela public.plans).';
+      lastPlanSyncError = 'Não foi possível confirmar a gravação do plano. Verifique suas permissões de administrador.';
       console.error(lastPlanSyncError);
       return false;
     }

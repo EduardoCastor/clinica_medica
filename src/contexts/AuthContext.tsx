@@ -14,14 +14,24 @@ import {
   PermissionAction,
   resolveEffectivePermissions,
 } from '../services/rbacConfig';
-import { TeamCloudService } from '../services/teamCloudService';
+import { BootstrapStatus, TeamCloudService } from '../services/teamCloudService';
 
 export type SimplePermAction = 'view' | 'consult' | 'create' | 'edit' | 'delete' | 'admin';
+
+export const AUTHORIZED_FIRST_ACCESS_EMAIL = 'admin@drnewtonmureb.com.br';
+const PENDING_BOOTSTRAP_NAME_KEY = 'medsync_pending_bootstrap_name';
 
 interface SignInResult {
   success: boolean;
   error?: string;
   role?: UserRole;
+}
+
+interface FirstAccessRegistrationResult {
+  success: boolean;
+  requiresEmailConfirmation?: boolean;
+  autoActivated?: boolean;
+  error?: string;
 }
 
 interface AuthContextType {
@@ -33,6 +43,16 @@ interface AuthContextType {
   isDevSimulationMode: boolean;
   authError: string | null;
   clearAuthError: () => void;
+  bootstrapStatus: BootstrapStatus;
+  isCheckingBootstrap: boolean;
+  refreshBootstrapStatus: () => Promise<BootstrapStatus>;
+  registerFirstAccessSuperAdmin: (params: {
+    fullName: string;
+    email: string;
+    password: string;
+    confirmPassword: string;
+  }) => Promise<FirstAccessRegistrationResult>;
+  resendFirstAccessConfirmation: (email: string) => Promise<{ success: boolean; error?: string }>;
   signInWithEmail: (email: string, password: string, expectedScope?: 'saas_admin' | 'clinic') => Promise<SignInResult>;
   sendPasswordReset: (email: string) => Promise<{ success: boolean; error?: string }>;
   refreshSessionProfile: () => Promise<void>;
@@ -84,6 +104,14 @@ const FALLBACK_GUEST_USER: UserProfile = {
   isActive: false,
 };
 
+const INITIAL_BOOTSTRAP_STATUS: BootstrapStatus = {
+  needsBootstrap: false,
+  alreadyInitialized: false,
+  organizationFound: false,
+  organizationName: 'Clínica Dr Newton Mureb',
+  checkedFromCloud: false,
+};
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const isSupabaseAuthMode = getSupabaseCredentials().isConfigured;
   const isDevSimulationMode = Boolean(
@@ -103,6 +131,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [activeUserId, setActiveUserId] = useState<string>(() => StorageService.getActiveUserId());
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(isSupabaseAuthMode);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [bootstrapStatus, setBootstrapStatus] = useState<BootstrapStatus>(INITIAL_BOOTSTRAP_STATUS);
+  const [isCheckingBootstrap, setIsCheckingBootstrap] = useState<boolean>(isSupabaseAuthMode);
+
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     if (isSupabaseAuthMode) return false;
     if (!import.meta.env.DEV) return false;
@@ -113,6 +144,83 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     DomainResolver.getImpersonatedClinicId()
   );
 
+  const refreshBootstrapStatus = useCallback(async (): Promise<BootstrapStatus> => {
+    if (!isSupabaseAuthMode) {
+      const localStatus: BootstrapStatus = {
+        needsBootstrap: false,
+        alreadyInitialized: true,
+        organizationFound: true,
+        organizationName: 'Clínica Dr Newton Mureb',
+        checkedFromCloud: false,
+      };
+      setBootstrapStatus(localStatus);
+      setIsCheckingBootstrap(false);
+      return localStatus;
+    }
+
+    setIsCheckingBootstrap(true);
+    try {
+      const status = await TeamCloudService.fetchBootstrapStatus();
+      setBootstrapStatus(status);
+      return status;
+    } finally {
+      setIsCheckingBootstrap(false);
+    }
+  }, [isSupabaseAuthMode]);
+
+  const attemptAuthorizedFirstAccessBootstrap = useCallback(async (): Promise<{
+    bootstrapped: boolean;
+    error?: string;
+  }> => {
+    const supabase = getSupabase();
+    if (!supabase) return { bootstrapped: false };
+
+    const { data: userRes } = await supabase.auth.getUser();
+    const authUser = userRes?.user;
+    if (!authUser) return { bootstrapped: false };
+
+    const authEmail = (authUser.email || '').trim().toLowerCase();
+    if (authEmail !== AUTHORIZED_FIRST_ACCESS_EMAIL) {
+      return { bootstrapped: false };
+    }
+
+    if (!authUser.email_confirmed_at) {
+      return {
+        bootstrapped: false,
+        error: 'Confirme seu e-mail antes de concluir o primeiro acesso.',
+      };
+    }
+
+    const status = await TeamCloudService.fetchBootstrapStatus();
+    setBootstrapStatus(status);
+    if (!status.checkedFromCloud || !status.needsBootstrap) {
+      return {
+        bootstrapped: false,
+        error: status.alreadyInitialized
+          ? 'O administrador principal da Clínica Dr Newton Mureb já foi inicializado.'
+          : undefined,
+      };
+    }
+
+    const pendingName =
+      (typeof window !== 'undefined' && sessionStorage.getItem(PENDING_BOOTSTRAP_NAME_KEY)) ||
+      (typeof authUser.user_metadata?.full_name === 'string'
+        ? authUser.user_metadata.full_name
+        : '') ||
+      'Administrador Clínica Dr Newton Mureb';
+
+    const res = await TeamCloudService.bootstrapFirstSuperAdmin(pendingName);
+    if (!res.success) {
+      return { bootstrapped: false, error: res.error };
+    }
+
+    if (typeof window !== 'undefined') {
+      sessionStorage.removeItem(PENDING_BOOTSTRAP_NAME_KEY);
+    }
+    await refreshBootstrapStatus();
+    return { bootstrapped: true };
+  }, [refreshBootstrapStatus]);
+
   const applySessionContextToTenant = useCallback(async () => {
     const supabase = getSupabase();
     if (!supabase) {
@@ -121,12 +229,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     try {
-      const ctx = await TeamCloudService.fetchCurrentUserSessionContext();
+      let ctx = await TeamCloudService.fetchCurrentUserSessionContext();
       if (!ctx.authenticated) {
         setCloudUser(null);
         setCloudEffectivePerms(null);
         setIsAuthenticated(false);
         return;
+      }
+
+      if (!ctx.profileFound || !ctx.profile) {
+        const bootAttempt = await attemptAuthorizedFirstAccessBootstrap();
+        if (bootAttempt.bootstrapped) {
+          ctx = await TeamCloudService.fetchCurrentUserSessionContext();
+        } else if (bootAttempt.error) {
+          await supabase.auth.signOut();
+          setCloudUser(null);
+          setCloudEffectivePerms(null);
+          setIsAuthenticated(false);
+          setAuthError(bootAttempt.error);
+          return;
+        }
       }
 
       if (!ctx.profileFound || !ctx.profile) {
@@ -183,6 +305,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setActiveUserId(ctx.profile.id);
       setIsAuthenticated(true);
       setAuthError(null);
+      setBootstrapStatus((prev) => ({
+        ...prev,
+        needsBootstrap: false,
+        alreadyInitialized: true,
+      }));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setAuthError(`Erro ao restaurar sessão: ${msg}`);
@@ -190,7 +317,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } finally {
       setIsAuthLoading(false);
     }
-  }, []);
+  }, [attemptAuthorizedFirstAccessBootstrap]);
 
   useEffect(() => {
     const handleStorageUpdate = () => {
@@ -211,10 +338,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const supabase = getSupabase();
     if (!supabase) {
       setIsAuthLoading(false);
+      setIsCheckingBootstrap(false);
       return;
     }
 
     let mounted = true;
+    void refreshBootstrapStatus();
     void applySessionContextToTenant();
 
     const { data: listener } = supabase.auth.onAuthStateChange((event) => {
@@ -235,7 +364,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       mounted = false;
       listener.subscription.unsubscribe();
     };
-  }, [applySessionContextToTenant]);
+  }, [applySessionContextToTenant, refreshBootstrapStatus]);
 
   const currentUser: UserProfile = useMemo(() => {
     if (isSupabaseAuthMode) {
@@ -261,6 +390,153 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return resolveEffectivePermissions(currentRole, roleTemplates, currentUser.permissions);
   }, [isSupabaseAuthMode, cloudEffectivePerms, currentRole, roleTemplates, currentUser.permissions]);
 
+  const registerFirstAccessSuperAdmin = async ({
+    fullName,
+    email,
+    password,
+    confirmPassword,
+  }: {
+    fullName: string;
+    email: string;
+    password: string;
+    confirmPassword: string;
+  }): Promise<FirstAccessRegistrationResult> => {
+    setAuthError(null);
+    const cleanName = fullName.trim();
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (cleanName.length < 3) {
+      return { success: false, error: 'Informe o nome completo do responsável pela clínica.' };
+    }
+
+    if (cleanEmail !== AUTHORIZED_FIRST_ACCESS_EMAIL) {
+      return {
+        success: false,
+        error: `Somente o e-mail oficial autorizado (${AUTHORIZED_FIRST_ACCESS_EMAIL}) pode realizar o primeiro acesso.`,
+      };
+    }
+
+    if (password.length < 8) {
+      return {
+        success: false,
+        error: 'A senha deve conter no mínimo 8 caracteres.',
+      };
+    }
+
+    if (password !== confirmPassword) {
+      return {
+        success: false,
+        error: 'A senha e a confirmação de senha não coincidem.',
+      };
+    }
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      return {
+        success: false,
+        error: 'Conexão com o serviço de autenticação não configurada neste ambiente.',
+      };
+    }
+
+    const freshStatus = await refreshBootstrapStatus();
+    if (!freshStatus.checkedFromCloud || !freshStatus.needsBootstrap || freshStatus.alreadyInitialized) {
+      return {
+        success: false,
+        error:
+          'O primeiro acesso da Clínica Dr Newton Mureb já foi concluído ou não está disponível. Utilize a tela de login.',
+      };
+    }
+
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem(PENDING_BOOTSTRAP_NAME_KEY, cleanName);
+    }
+
+    const emailRedirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
+    const { data, error } = await supabase.auth.signUp({
+      email: cleanEmail,
+      password,
+      options: {
+        emailRedirectTo,
+        data: {
+          full_name: cleanName,
+        },
+      },
+    });
+
+    if (error) {
+      const lower = error.message.toLowerCase();
+      if (lower.includes('already registered') || lower.includes('already exists')) {
+        return {
+          success: false,
+          error:
+            'Este e-mail já possui uma conta iniciada. Se você ainda não confirmou o e-mail, utilize "Reenviar e-mail de confirmação" ou entre com sua senha.',
+        };
+      }
+      return { success: false, error: error.message };
+    }
+
+    // Se o projeto retornou identidade sem identidades novas (e-mail já cadastrado)
+    if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+      return {
+        success: false,
+        error:
+          'Já existe um cadastro para este e-mail. Confirme seu e-mail ou utilize a aba de login para concluir o acesso.',
+      };
+    }
+
+    if (data.session && data.user?.email_confirmed_at) {
+      const boot = await TeamCloudService.bootstrapFirstSuperAdmin(cleanName);
+      if (!boot.success) {
+        await supabase.auth.signOut();
+        return {
+          success: false,
+          error: boot.error || 'Não foi possível concluir a ativação do administrador principal.',
+        };
+      }
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem(PENDING_BOOTSTRAP_NAME_KEY);
+      }
+      await refreshBootstrapStatus();
+      await applySessionContextToTenant();
+      return { success: true, autoActivated: true };
+    }
+
+    if (data.session && !data.user?.email_confirmed_at) {
+      await supabase.auth.signOut();
+    }
+
+    return {
+      success: true,
+      requiresEmailConfirmation: true,
+    };
+  };
+
+  const resendFirstAccessConfirmation = async (
+    email: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    const cleanEmail = email.trim().toLowerCase();
+    if (cleanEmail !== AUTHORIZED_FIRST_ACCESS_EMAIL) {
+      return {
+        success: false,
+        error: `Reenvio permitido apenas para ${AUTHORIZED_FIRST_ACCESS_EMAIL}.`,
+      };
+    }
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { success: false, error: 'Serviço de autenticação indisponível neste ambiente.' };
+    }
+    const emailRedirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
+    const { error } = await supabase.auth.resend({
+      type: 'signup',
+      email: cleanEmail,
+      options: { emailRedirectTo },
+    });
+    if (error) {
+      return { success: false, error: error.message };
+    }
+    return { success: true };
+  };
+
   const signInWithEmail = async (
     email: string,
     password: string,
@@ -285,20 +561,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
 
         if (error || !data.session) {
+          const msgLower = (error?.message || '').toLowerCase();
           const friendly =
-            error?.message === 'Invalid login credentials'
+            msgLower.includes('invalid login credentials')
               ? 'E-mail ou senha inválidos. Verifique suas credenciais ou utilize "Esqueci minha senha".'
+              : msgLower.includes('email not confirmed')
+              ? 'Confirme seu e-mail através do link enviado antes de entrar no sistema.'
               : error?.message || 'Não foi possível autenticar no sistema.';
           setAuthError(friendly);
           setIsAuthLoading(false);
           return { success: false, error: friendly };
         }
 
-        const ctx = await TeamCloudService.fetchCurrentUserSessionContext();
+        let ctx = await TeamCloudService.fetchCurrentUserSessionContext();
+        if (!ctx.profileFound || !ctx.profile) {
+          const bootAttempt = await attemptAuthorizedFirstAccessBootstrap();
+          if (bootAttempt.bootstrapped) {
+            ctx = await TeamCloudService.fetchCurrentUserSessionContext();
+          } else if (bootAttempt.error) {
+            await supabase.auth.signOut();
+            setAuthError(bootAttempt.error);
+            setIsAuthLoading(false);
+            return { success: false, error: bootAttempt.error };
+          }
+        }
+
         if (!ctx.profileFound || !ctx.profile) {
           await supabase.auth.signOut();
           const msg =
-            ctx.error || 'Conta autenticada sem perfil ativo vinculado a uma clínica no banco de dados.';
+            ctx.error || 'Conta autenticada sem perfil ativo vinculado à clínica.';
           setAuthError(msg);
           setIsAuthLoading(false);
           return { success: false, error: msg };
@@ -314,7 +605,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         if (expectedScope === 'saas_admin' && ctx.profile.role !== 'super_admin') {
           await supabase.auth.signOut();
-          const msg = 'Acesso restrito: este painel é exclusivo para Super Administradores (SaaS).';
+          const msg = 'Acesso restrito: este painel é exclusivo para Super Administradores.';
           setAuthError(msg);
           setIsAuthLoading(false);
           return { success: false, error: msg };
@@ -338,10 +629,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    // Sem Supabase configurado: bloqueado em produção, permitido apenas em modo dev local controlado
+    // Sem conexão em nuvem configurada: bloqueado em produção, permitido apenas em modo dev local controlado
     if (!isDevSimulationMode) {
       const msg =
-        'Autenticação indisponível: configure a conexão Supabase (VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY) para autenticar usuários.';
+        'Autenticação indisponível: a conexão com o servidor de autenticação não está configurada neste ambiente.';
       setAuthError(msg);
       return { success: false, error: msg };
     }
@@ -381,7 +672,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!supabase) {
       return {
         success: false,
-        error: 'Envio de e-mail de recuperação requer conexão ativa com o Supabase Auth.',
+        error: 'Envio de e-mail de recuperação requer conexão ativa com o serviço de autenticação.',
       };
     }
 
@@ -394,7 +685,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const switchUser = (userId: string) => {
-    // Segurança: nunca permite troca livre de perfil em produção ou quando Supabase Auth está ativo
+    // Segurança: nunca permite troca livre de perfil em produção ou quando autenticação em nuvem está ativa
     if (!isDevSimulationMode) {
       return;
     }
@@ -491,6 +782,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isDevSimulationMode,
         authError,
         clearAuthError: () => setAuthError(null),
+        bootstrapStatus,
+        isCheckingBootstrap,
+        refreshBootstrapStatus,
+        registerFirstAccessSuperAdmin,
+        resendFirstAccessConfirmation,
         signInWithEmail,
         sendPasswordReset,
         refreshSessionProfile: applySessionContextToTenant,

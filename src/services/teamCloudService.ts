@@ -30,10 +30,10 @@ function formatPgError(err: unknown, fallback: string): string {
   if (!err || typeof err !== 'object') return fallback;
   const e = err as { code?: string; message?: string; details?: string; hint?: string };
   if (e.code === '23505') {
-    return 'Registro duplicado detectado pelo banco de dados (verifique e-mail ou número do conselho).';
+    return 'Registro duplicado detectado (verifique o e-mail ou registro no conselho).';
   }
   if (e.code === '42501') {
-    return 'Acesso negado pelas políticas de segurança (RLS) do banco de dados.';
+    return 'Acesso negado: você não possui permissão para realizar esta operação.';
   }
   if (e.message) {
     return e.details ? `${e.message} (${e.details})` : e.message;
@@ -77,6 +77,15 @@ export interface SuperAdminCandidateInfo {
   emailConfirmedAt?: string | null;
   roleCode: string;
   isActive: boolean;
+}
+
+export interface BootstrapStatus {
+  needsBootstrap: boolean;
+  alreadyInitialized: boolean;
+  organizationFound: boolean;
+  organizationName: string;
+  checkedFromCloud: boolean;
+  error?: string;
 }
 
 function mapBranchRow(row: Record<string, unknown>): Branch {
@@ -257,12 +266,53 @@ async function resolveOrganizationUuid(
     .maybeSingle();
 
   if (firstErr) {
-    return { error: formatPgError(firstErr, 'Não foi possível localizar a organização no Supabase.') };
+    return { error: formatPgError(firstErr, 'Não foi possível localizar os dados da organização.') };
   }
   if (!firstOrg?.id) {
-    return { error: 'Nenhuma organização encontrada no Supabase.' };
+    return { error: 'Nenhuma organização cadastrada foi encontrada.' };
   }
   return { orgId: String(firstOrg.id), organization: mapOrganizationRow(firstOrg as Record<string, unknown>) };
+}
+
+async function invokeAnonEdgeFunction<T = Record<string, unknown>>(
+  body: Record<string, unknown>
+): Promise<{ data?: T; error?: string; status?: number }> {
+  const { url, anonKey } = getSupabaseCredentials();
+  if (!url || !anonKey) {
+    return { error: 'Conexão com o servidor de contas não configurada.' };
+  }
+
+  try {
+    const response = await fetch(`${url}/functions/v1/admin-team-management`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: anonKey,
+        Authorization: `Bearer ${anonKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = (await response.json()) as Record<string, unknown>;
+    } catch {
+      // ignore non-json
+    }
+
+    if (!response.ok) {
+      const msg =
+        (parsed.error ? String(parsed.error) : '') ||
+        `Não foi possível consultar o servidor (HTTP ${response.status}).`;
+      return { data: parsed as T, error: msg, status: response.status };
+    }
+
+    return { data: parsed as T, status: response.status };
+  } catch {
+    return {
+      error: 'Serviço de verificação temporariamente indisponível. Tente novamente em instantes.',
+    };
+  }
 }
 
 async function invokeAdminEdgeFunction<T = Record<string, unknown>>(
@@ -272,12 +322,12 @@ async function invokeAdminEdgeFunction<T = Record<string, unknown>>(
   const { data: sessionRes } = await supabase.auth.getSession();
   const accessToken = sessionRes?.session?.access_token;
   if (!accessToken) {
-    return { error: 'Sessão expirada ou usuário não autenticado no Supabase Auth.', status: 401 };
+    return { error: 'Sessão expirada. Faça login novamente para continuar.', status: 401 };
   }
 
   const { url, anonKey } = getSupabaseCredentials();
   if (!url || !anonKey) {
-    return { error: 'Credenciais do Supabase não configuradas.' };
+    return { error: 'Conexão com o servidor de contas não configurada.' };
   }
 
   try {
@@ -309,12 +359,106 @@ async function invokeAdminEdgeFunction<T = Record<string, unknown>>(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {
-      error: `Edge Function admin-team-management inacessível (${msg}). Verifique se a função foi implantada no Supabase.`,
+      error: `Serviço administrativo temporariamente indisponível (${msg}). Tente novamente em instantes.`,
     };
   }
 }
 
 export const TeamCloudService = {
+  async fetchBootstrapStatus(): Promise<BootstrapStatus> {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return {
+        needsBootstrap: false,
+        alreadyInitialized: false,
+        organizationFound: false,
+        organizationName: 'Clínica Dr Newton Mureb',
+        checkedFromCloud: false,
+      };
+    }
+
+    try {
+      const { data, error } = await supabase.rpc('medsync_get_bootstrap_status');
+      if (!error && data && typeof data === 'object') {
+        const d = data as Record<string, unknown>;
+        return {
+          needsBootstrap: Boolean(d.needs_bootstrap),
+          alreadyInitialized: Boolean(d.already_initialized),
+          organizationFound: Boolean(d.organization_found),
+          organizationName: String(d.organization_name || 'Clínica Dr Newton Mureb'),
+          checkedFromCloud: true,
+        };
+      }
+    } catch {
+      // fallback para verificação via serviço administrativo
+    }
+
+    const fnRes = await invokeAnonEdgeFunction<{
+      success?: boolean;
+      needsBootstrap?: boolean;
+      alreadyInitialized?: boolean;
+      organizationFound?: boolean;
+      organizationName?: string;
+    }>({ action: 'get_bootstrap_status' });
+
+    if (fnRes.error || !fnRes.data?.success) {
+      return {
+        needsBootstrap: false,
+        alreadyInitialized: false,
+        organizationFound: false,
+        organizationName: 'Clínica Dr Newton Mureb',
+        checkedFromCloud: false,
+        error: fnRes.error,
+      };
+    }
+
+    return {
+      needsBootstrap: Boolean(fnRes.data.needsBootstrap),
+      alreadyInitialized: Boolean(fnRes.data.alreadyInitialized),
+      organizationFound: Boolean(fnRes.data.organizationFound),
+      organizationName: String(fnRes.data.organizationName || 'Clínica Dr Newton Mureb'),
+      checkedFromCloud: true,
+    };
+  },
+
+  async bootstrapFirstSuperAdmin(fullName: string): Promise<{
+    success: boolean;
+    idempotent?: boolean;
+    profileId?: string;
+    organizationId?: string;
+    error?: string;
+  }> {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { success: false, error: 'Conexão com o servidor de autenticação indisponível.' };
+    }
+
+    const res = await invokeAdminEdgeFunction<{
+      success?: boolean;
+      idempotent?: boolean;
+      profileId?: string;
+      organizationId?: string;
+      roleCode?: string;
+    }>(supabase, {
+      action: 'bootstrap_super_admin',
+      fullName: fullName.trim(),
+    });
+
+    if (res.error || !res.data?.success) {
+      return {
+        success: false,
+        error: res.error || 'Não foi possível concluir a inicialização do Super Administrador.',
+      };
+    }
+
+    return {
+      success: true,
+      idempotent: Boolean(res.data.idempotent),
+      profileId: res.data.profileId,
+      organizationId: res.data.organizationId,
+    };
+  },
+
   async fetchCurrentUserSessionContext(): Promise<SessionContextPayload> {
     const supabase = getSupabase();
     if (!supabase) {
@@ -327,7 +471,6 @@ export const TeamCloudService = {
       return { authenticated: false, profileFound: false };
     }
 
-    // 1. Tenta RPC segura medsync_get_my_session_context
     try {
       const { data: rpcData, error: rpcErr } = await supabase.rpc('medsync_get_my_session_context');
       if (!rpcErr && rpcData && typeof rpcData === 'object') {
@@ -339,7 +482,7 @@ export const TeamCloudService = {
           return {
             authenticated: true,
             profileFound: false,
-            error: 'Sua conta autenticada não possui perfil vinculado em public.user_profiles.',
+            error: 'Sua conta ainda não possui perfil de acesso vinculado à clínica.',
           };
         }
 
@@ -641,7 +784,7 @@ export const TeamCloudService = {
     } catch (err) {
       return {
         ...localResult,
-        error: formatPgError(err, 'Erro ao carregar equipe e permissões do Supabase.'),
+        error: formatPgError(err, 'Erro ao carregar equipe e permissões do servidor.'),
       };
     }
   },
@@ -671,7 +814,7 @@ export const TeamCloudService = {
 
     const { orgId, error: orgErr } = await resolveOrganizationUuid(supabase, input.organizationId);
     if (!orgId) {
-      return { success: false, error: orgErr || 'Organização não encontrada no Supabase.' };
+      return { success: false, error: orgErr || 'Organização não encontrada.' };
     }
 
     const normalizedCouncil = input.councilNumber.trim();
@@ -828,10 +971,10 @@ export const TeamCloudService = {
     password?: string;
     professionalId?: string | null;
     menuPermissions: UserMenuPermissionRecord[];
-  }): Promise<{ success: boolean; error?: string; authMode?: string }> {
+  }): Promise<{ success: boolean; error?: string; authMode?: string; reusedExistingAuth?: boolean }> {
     const supabase = getSupabase();
     if (!supabase) {
-      return { success: false, error: 'Supabase não configurado neste ambiente.' };
+      return { success: false, error: 'Conexão com o servidor indisponível neste ambiente.' };
     }
 
     const { orgId, error: orgErr } = await resolveOrganizationUuid(supabase, payload.organizationId);
@@ -839,7 +982,11 @@ export const TeamCloudService = {
       return { success: false, error: orgErr || 'Organização não localizada.' };
     }
 
-    const { error } = await invokeAdminEdgeFunction(supabase, {
+    const res = await invokeAdminEdgeFunction<{
+      success?: boolean;
+      authMode?: string;
+      reusedExistingAuth?: boolean;
+    }>(supabase, {
       action: 'create_user',
       organizationId: orgId,
       fullName: payload.fullName.trim(),
@@ -855,10 +1002,14 @@ export const TeamCloudService = {
       menuPermissions: payload.menuPermissions,
     });
 
-    if (error) {
-      return { success: false, error };
+    if (res.error) {
+      return { success: false, error: res.error };
     }
-    return { success: true, authMode: payload.authMode };
+    return {
+      success: true,
+      authMode: res.data?.authMode || payload.authMode,
+      reusedExistingAuth: Boolean(res.data?.reusedExistingAuth),
+    };
   },
 
   async saveUserAndPermissionsToCloud(payload: {
@@ -874,7 +1025,7 @@ export const TeamCloudService = {
   }): Promise<{ success: boolean; error?: string; warning?: string }> {
     const supabase = getSupabase();
     if (!supabase || !isUuid(payload.targetProfileId)) {
-      return { success: false, error: 'Usuário inválido ou conexão Supabase indisponível.' };
+      return { success: false, error: 'Usuário inválido ou conexão com o servidor indisponível.' };
     }
 
     const { error } = await supabase.rpc('medsync_save_user_rbac', {
@@ -891,11 +1042,10 @@ export const TeamCloudService = {
     if (error) {
       return {
         success: false,
-        error: formatPgError(error, 'Falha ao persistir usuário e permissões no banco de dados.'),
+        error: formatPgError(error, 'Falha ao salvar alterações do usuário e permissões.'),
       };
     }
 
-    // Sincronizar bloqueio/desbloqueio no Supabase Auth quando isActive mudou
     let warning: string | undefined;
     if (payload.isActive !== payload.previousIsActive) {
       const authRes = await invokeAdminEdgeFunction(supabase, {
@@ -904,7 +1054,7 @@ export const TeamCloudService = {
         isActive: payload.isActive,
       });
       if (authRes.error) {
-        warning = `Perfil atualizado no banco, mas o bloqueio/desbloqueio no Auth retornou aviso: ${authRes.error}`;
+        warning = `Perfil atualizado, mas a sincronização de bloqueio retornou aviso: ${authRes.error}`;
       }
     }
 
@@ -918,7 +1068,7 @@ export const TeamCloudService = {
   ): Promise<{ success: boolean; error?: string }> {
     const supabase = getSupabase();
     if (!supabase) {
-      return { success: false, error: 'Supabase não configurado neste ambiente.' };
+      return { success: false, error: 'Conexão com o servidor indisponível neste ambiente.' };
     }
 
     const { orgId, error: orgErr } = await resolveOrganizationUuid(supabase, organizationId);
@@ -959,27 +1109,26 @@ export const TeamCloudService = {
     targetProfileId: string,
     email: string,
     mode: 'invite' | 'recovery'
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{ success: boolean; deliveredMode?: string; error?: string }> {
     const supabase = getSupabase();
     if (!supabase) {
-      return { success: false, error: 'Supabase não configurado neste ambiente.' };
+      return { success: false, error: 'Conexão com o servidor indisponível neste ambiente.' };
     }
 
     if (isUuid(targetProfileId)) {
-      const fnRes = await invokeAdminEdgeFunction(supabase, {
+      const fnRes = await invokeAdminEdgeFunction<{ deliveredMode?: string }>(supabase, {
         action: 'resend_invite_or_recovery',
         targetProfileId,
         mode,
       });
       if (!fnRes.error) {
-        return { success: true };
+        return { success: true, deliveredMode: fnRes.data?.deliveredMode || mode };
       }
       if (mode === 'invite') {
         return { success: false, error: fnRes.error };
       }
     }
 
-    // Fallback padrão seguro para recuperação de senha
     if (mode === 'recovery') {
       const redirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
       const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
@@ -988,12 +1137,12 @@ export const TeamCloudService = {
       if (error) {
         return { success: false, error: error.message };
       }
-      return { success: true };
+      return { success: true, deliveredMode: 'recovery' };
     }
 
     return {
       success: false,
-      error: 'Não foi possível reenviar o convite. Verifique a implantação da Edge Function.',
+      error: 'Não foi possível reenviar o convite no momento. Tente novamente em instantes.',
     };
   },
 
@@ -1005,7 +1154,7 @@ export const TeamCloudService = {
   }> {
     const supabase = getSupabase();
     if (!supabase) {
-      return { success: false, error: 'Supabase não configurado neste ambiente.' };
+      return { success: false, error: 'Conexão com o servidor indisponível neste ambiente.' };
     }
 
     const res = await invokeAdminEdgeFunction<{
@@ -1040,7 +1189,7 @@ export const TeamCloudService = {
   }> {
     const supabase = getSupabase();
     if (!supabase) {
-      return { success: false, error: 'Supabase não configurado neste ambiente.' };
+      return { success: false, error: 'Conexão com o servidor indisponível neste ambiente.' };
     }
 
     const res = await invokeAdminEdgeFunction<{

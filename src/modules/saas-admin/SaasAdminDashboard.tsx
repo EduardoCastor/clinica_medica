@@ -82,20 +82,20 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
     try {
       const res = await TeamCloudService.auditSuperAdminAccount();
       if (!res.success) {
-        setErrorMessage(res.error || 'Falha ao auditar conta Super Admin no Supabase.');
+        setErrorMessage(res.error || 'Falha ao consultar a conta do Administrador Principal.');
         return;
       }
       setSuperAdminCandidates(res.candidates || []);
       if ((res.candidates?.length || 0) > 1) {
         setErrorMessage(
-          'Mais de um candidato com papel super_admin encontrado. Identificação manual necessária antes de atualizar e-mail.'
+          'Mais de um candidato com papel de Super Admin encontrado. Identificação manual necessária antes de atualizar e-mail.'
         );
       } else if ((res.candidates?.length || 0) === 1) {
         setFeedbackMessage(
-          `Super Admin localizado com segurança: UUID ${res.candidates![0].authUserId || res.candidates![0].profileId} (${res.candidates![0].authEmail || res.candidates![0].profileEmail}).`
+          `Super Admin localizado com segurança: ${res.candidates![0].fullName} (${res.candidates![0].authEmail || res.candidates![0].profileEmail}).`
         );
       } else {
-        setErrorMessage('Nenhum usuário super_admin encontrado em public.user_profiles.');
+        setErrorMessage('Nenhum usuário Super Administrador localizado na organização.');
       }
     } finally {
       setIsAuditingSuperAdmin(false);
@@ -136,19 +136,19 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
     try {
       const success = await updatePlanInSupabase(editingPlan);
       if (!success) {
-        const errorDetail = getLastPlanSyncError() || 'Erro desconhecido ao persistir plano no Supabase.';
-        setErrorMessage(`Erro ao salvar alterações no Supabase: ${errorDetail}`);
+        const errorDetail = getLastPlanSyncError() || 'Erro desconhecido ao salvar o plano.';
+        setErrorMessage(`Erro ao salvar alterações: ${errorDetail}`);
         return;
       }
 
       const freshPlans = await syncPlansFromSupabase();
       setPlans(freshPlans);
       setEditingPlan(null);
-      setFeedbackMessage('Plano comercial atualizado no Supabase e publicado na Landing Page com sucesso!');
+      setFeedbackMessage('Plano comercial atualizado e publicado na página inicial com sucesso!');
       setTimeout(() => setFeedbackMessage(null), 5000);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setErrorMessage(`Erro inesperado ao salvar plano no Supabase: ${message}`);
+      setErrorMessage(`Erro inesperado ao salvar plano: ${message}`);
     } finally {
       setIsSavingPlan(false);
     }
@@ -254,7 +254,7 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
                   <span>Auditoria e Migração de E-mail do Super Administrador</span>
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Atualiza o login do Super Admin via Supabase Auth Admin API preservando UUID, senha, papel super_admin e relacionamentos (com trava contra ambiguidade).
+                  Atualiza o e-mail de login do Super Administrador preservando identidade, senha, permissões e vínculos com a clínica.
                 </p>
               </div>
               <button
@@ -742,7 +742,7 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
                   className="px-5 py-2 text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-60 rounded-xl shadow-md transition flex items-center gap-1.5"
                 >
                   <Sparkles className="w-3.5 h-3.5" />
-                  <span>{isSavingPlan ? 'Salvando no Supabase...' : 'Salvar e Publicar na Landing Page'}</span>
+                  <span>{isSavingPlan ? 'Salvando alterações...' : 'Salvar e Publicar na Página Inicial'}</span>
                 </button>
               </div>
             </form>

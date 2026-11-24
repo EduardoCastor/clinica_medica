@@ -355,12 +355,12 @@ export const CommunicationModule: React.FC = () => {
       setTemplatesSyncSource('cloud');
       setTemplateFeedback({
         type: 'success',
-        text: `Modelo "${res.template.name}" salvo e sincronizado com sucesso no Supabase (public.message_templates)!`,
+        text: `Modelo "${res.template.name}" salvo e sincronizado com sucesso!`,
       });
     } else {
       setTemplateFeedback({
         type: 'error',
-        text: `Alteração salva localmente, mas falhou ao gravar em public.message_templates no Supabase: ${res.error || 'verifique as credenciais ou permissões RLS do banco.'}`,
+        text: `Alteração salva localmente, mas não foi possível sincronizar na nuvem: ${res.error || 'verifique sua conexão ou permissões de acesso.'}`,
       });
     }
   };
@@ -419,7 +419,7 @@ export const CommunicationModule: React.FC = () => {
     setCustomText('');
     setDispatchFeedback({
       type: 'success',
-      text: `Envio de teste (simulação) concluído para ${selectedPatient.fullName} (${simResult.cleanPhone}) e gravado ${simResult.syncedSupabase ? 'na tabela public.messages do Supabase' : 'no histórico local'}!`,
+      text: `Envio de teste (simulação) concluído para ${selectedPatient.fullName} (${simResult.cleanPhone}) e registrado ${simResult.syncedSupabase ? 'na nuvem' : 'no histórico local'}!`,
     });
   };
 
@@ -483,7 +483,7 @@ export const CommunicationModule: React.FC = () => {
     setCustomText('');
     setDispatchFeedback({
       type: 'success',
-      text: `Mensagem enviada via Megaapi para ${selectedPatient.fullName} (${result.cleanPhone}) e registrada ${result.syncedSupabase ? 'na tabela public.messages do Supabase' : 'no histórico'}!`,
+      text: `Mensagem enviada via Megaapi para ${selectedPatient.fullName} (${result.cleanPhone}) e registrada ${result.syncedSupabase ? 'na nuvem' : 'no histórico'}!`,
     });
   };
 
@@ -711,7 +711,7 @@ export const CommunicationModule: React.FC = () => {
                   className="w-full py-1.5 px-3 text-[11px] font-bold text-amber-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded-lg transition inline-flex items-center justify-center gap-1.5"
                 >
                   <FlaskConical className="w-3.5 h-3.5" />
-                  <span>Simular Envio e Gravar em public.messages</span>
+                  <span>Simular Envio e Registrar no Histórico</span>
                 </button>
               )}
             </div>
@@ -793,7 +793,7 @@ export const CommunicationModule: React.FC = () => {
                 <div>
                   <span className="font-bold text-amber-950 block">Modo Simulação / Teste</span>
                   <span className="text-[10px] text-amber-800">
-                    Grava o log no Supabase sem depender de CORS externo
+                    Registra o disparo no histórico sem envio externo real
                   </span>
                 </div>
               </div>
@@ -827,7 +827,7 @@ export const CommunicationModule: React.FC = () => {
                     {isSending
                       ? 'Processando...'
                       : isSimulationMode
-                        ? 'Disparar Teste (Gravar no Supabase)'
+                        ? 'Disparar Teste (Registrar no Histórico)'
                         : 'Enviar Mensagem Agora'}
                   </span>
                 </button>
@@ -968,12 +968,12 @@ export const CommunicationModule: React.FC = () => {
                         }`}
                       >
                         {templatesSyncSource === 'cloud'
-                          ? 'Sincronizado (Supabase)'
+                          ? 'Sincronizado na Nuvem'
                           : 'Cache Local'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Personalize mensagens com variáveis dinâmicas, quebras de linha e emojis, com gravação direta em <code className="font-mono">public.message_templates</code>.
+                      Personalize mensagens com variáveis dinâmicas, quebras de linha e emojis sincronizados na nuvem.
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">

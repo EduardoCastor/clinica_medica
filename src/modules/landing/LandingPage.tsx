@@ -93,7 +93,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onAccessClinic, onAcce
     },
     {
       q: 'O sistema cumpre com os requisitos da LGPD para dados sensíveis de saúde?',
-      a: 'Sim, 100%. Utilizamos Row Level Security (RLS) no PostgreSQL/Supabase, trilha imutável de auditoria com autor/data/hora e controle estrito de RBAC onde recepcionistas e administradores do SaaS não acessam prontuários médicos.',
+      a: 'Sim, 100%. Utilizamos isolamento estrito por clínica, trilha imutável de auditoria com autor/data/hora e controle granular de perfis onde recepcionistas e administradores gerais não acessam prontuários médicos.',
     },
     {
       q: 'Como funciona a integração com o WhatsApp Business?',

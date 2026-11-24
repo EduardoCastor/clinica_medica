@@ -62,7 +62,7 @@ const formatPgError = (err: unknown, fallback: string): string => {
     return 'Já existe um registro cadastrado com este CPF nesta clínica (unicidade garantida pelo banco de dados).';
   }
   if (e.code === '42501') {
-    return 'Permissão negada pelas políticas de segurança (RLS) do banco de dados.';
+    return 'Permissão negada para realizar esta operação nesta clínica.';
   }
   if (e.message) {
     return e.details ? `${e.message} (${e.details})` : e.message;

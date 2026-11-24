@@ -126,7 +126,7 @@ const MainAppContent: React.FC = () => {
                   <button
                     onClick={() => setIsSupabaseModalOpen(true)}
                     className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition border border-slate-700"
-                    title="Configurar Supabase / PostgreSQL"
+                    title="Configurar conexão na nuvem"
                   >
                     <Database className="w-4 h-4 text-emerald-400" />
                   </button>
