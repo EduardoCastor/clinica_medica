@@ -24,7 +24,7 @@ export const DomainSimulatorBanner: React.FC<DomainSimulatorBannerProps> = ({
   tenantContext,
   onDomainChange,
 }) => {
-  const { switchUser, usersList, isImpersonating, stopImpersonation } = useAuth();
+  const { switchUser, usersList, isImpersonating, stopImpersonation, isDevSimulationMode } = useAuth();
 
   // If running in true production environment, completely hide simulation bar
   if (!DomainResolver.isSimulationAllowed()) {
@@ -33,8 +33,9 @@ export const DomainSimulatorBanner: React.FC<DomainSimulatorBannerProps> = ({
 
   const handleSelectDomain = (domain: string, targetRole?: 'super_admin' | 'clinic_admin' | 'doctor') => {
     onDomainChange(domain);
-    
-    // Auto-adjust default authenticated user for smooth testing when switching modes
+
+    // Somente em desenvolvimento local sem Supabase Auth configurado
+    if (!isDevSimulationMode) return;
     if (targetRole === 'super_admin') {
       const superAdmin = usersList.find(u => u.role === 'super_admin');
       if (superAdmin) switchUser(superAdmin.id);

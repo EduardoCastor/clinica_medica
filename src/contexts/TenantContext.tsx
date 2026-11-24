@@ -37,6 +37,9 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   useEffect(() => {
+    if (typeof window !== 'undefined' && import.meta.env.PROD) {
+      localStorage.removeItem('medsync_is_logged_in');
+    }
     window.addEventListener('medsync_storage_update', refreshData);
     window.addEventListener('medsync-plans-updated', refreshData);
     window.addEventListener('medsync_domain_simulation_changed', refreshData);

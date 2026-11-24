@@ -27,7 +27,12 @@ interface ClinicDashboardProps {
 
 export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({ onNavigateTab }) => {
   const { activeBranchId, branches } = useTenant();
-  const { currentUser, currentRole } = useAuth();
+  const { currentUser, currentRole, canViewMenu, canConsultMenu, canEditInMenu } = useAuth();
+  const canOpenAppointments = canViewMenu('appointments');
+  const canEditAppointments = canEditInMenu('appointments');
+  const canOpenMedicalRecords = canViewMenu('medical_records') || canConsultMenu('medical_records');
+  const canOpenFinancial = canViewMenu('financial');
+  const canOpenSettings = canViewMenu('settings');
 
   const appointments = StorageService.getAppointments(activeBranchId);
   const patients = StorageService.getPatients(activeBranchId);
@@ -86,15 +91,17 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({ onNavigateTab 
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => onNavigateTab('appointments')}
-            className="px-3.5 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5"
-          >
-            <Calendar className="w-3.5 h-3.5" />
-            <span>Ver Agenda Completa</span>
-          </button>
-        </div>
+        {canOpenAppointments && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onNavigateTab('appointments')}
+              className="px-3.5 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5"
+            >
+              <Calendar className="w-3.5 h-3.5" />
+              <span>Ver Agenda Completa</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* KPI Metric Cards */}
@@ -150,15 +157,28 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({ onNavigateTab 
             <span className="text-xs font-medium">Recebimentos do Dia</span>
             <DollarSign className="w-4 h-4 text-emerald-600" />
           </div>
-          <div className="mt-2 flex items-baseline gap-1">
-            <span className="text-sm font-semibold text-slate-600">R$</span>
-            <span className="text-2xl font-extrabold text-slate-900 tabular-nums">
-              {totalReceivablesToday.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-            </span>
-          </div>
-          <div className="mt-2 text-[11px] text-emerald-600 font-medium">
-            Via Pix & Cartão de Crédito
-          </div>
+          {canOpenFinancial ? (
+            <>
+              <div className="mt-2 flex items-baseline gap-1">
+                <span className="text-sm font-semibold text-slate-600">R$</span>
+                <span className="text-2xl font-extrabold text-slate-900 tabular-nums">
+                  {totalReceivablesToday.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </span>
+              </div>
+              <div className="mt-2 text-[11px] text-emerald-600 font-medium">
+                Via Pix & Cartão de Crédito
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="mt-2 flex items-baseline gap-1">
+                <span className="text-sm font-bold text-slate-400">Acesso Restrito</span>
+              </div>
+              <div className="mt-2 text-[11px] text-slate-400">
+                Disponível para perfil financeiro
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -172,13 +192,15 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({ onNavigateTab 
               <Clock className="w-4 h-4 text-sky-600" />
               <h2 className="text-sm font-bold text-slate-900">Consultas e Atendimentos do Dia</h2>
             </div>
-            <button
-              onClick={() => onNavigateTab('appointments')}
-              className="text-xs font-semibold text-sky-600 hover:text-sky-700 flex items-center gap-1"
-            >
-              <span>Gerenciar</span>
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
+            {canOpenAppointments && (
+              <button
+                onClick={() => onNavigateTab('appointments')}
+                className="text-xs font-semibold text-sky-600 hover:text-sky-700 flex items-center gap-1"
+              >
+                <span>Gerenciar</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
           <div className="divide-y divide-slate-100">
@@ -214,7 +236,7 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({ onNavigateTab 
 
                   {/* Quick Workflow Actions */}
                   <div className="flex items-center gap-1.5 shrink-0">
-                    {apt.status === 'confirmed' && (
+                    {canEditAppointments && apt.status === 'confirmed' && (
                       <button
                         onClick={() => handleUpdateStatus(apt.id, 'waiting_room')}
                         className="px-2.5 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg transition"
@@ -222,7 +244,7 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({ onNavigateTab 
                         Chegou na Clínica
                       </button>
                     )}
-                    {apt.status === 'waiting_room' && (
+                    {canEditAppointments && apt.status === 'waiting_room' && (
                       <button
                         onClick={() => handleUpdateStatus(apt.id, 'in_consultation')}
                         className="px-2.5 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition"
@@ -230,7 +252,7 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({ onNavigateTab 
                         Iniciar Consulta
                       </button>
                     )}
-                    {apt.status === 'in_consultation' && (
+                    {canEditAppointments && apt.status === 'in_consultation' && (
                       <button
                         onClick={() => handleUpdateStatus(apt.id, 'completed')}
                         className="px-2.5 py-1.5 text-xs font-medium text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-lg transition"
@@ -238,7 +260,7 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({ onNavigateTab 
                         Finalizar Consulta
                       </button>
                     )}
-                    {apt.status === 'scheduled' && (
+                    {canEditAppointments && apt.status === 'scheduled' && (
                       <button
                         onClick={() => handleUpdateStatus(apt.id, 'confirmed')}
                         className="px-2.5 py-1.5 text-xs font-medium text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-lg transition"
@@ -246,13 +268,15 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({ onNavigateTab 
                         Confirmar
                       </button>
                     )}
-                    <button
-                      onClick={() => onNavigateTab('medical_records')}
-                      className="px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition"
-                      title="Abrir Prontuário"
-                    >
-                      Prontuário
-                    </button>
+                    {canOpenMedicalRecords && (
+                      <button
+                        onClick={() => onNavigateTab('medical_records')}
+                        className="px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition"
+                        title="Abrir Prontuário"
+                      >
+                        Prontuário
+                      </button>
+                    )}
                   </div>
                 </div>
               ))
@@ -270,12 +294,14 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({ onNavigateTab 
                 <Building2 className="w-4 h-4 text-sky-600" />
                 <h3 className="text-xs font-bold text-slate-900">Unidades da Rede</h3>
               </div>
-              <button 
-                onClick={() => onNavigateTab('settings')}
-                className="text-[11px] font-semibold text-sky-600 hover:text-sky-700"
-              >
-                Gerenciar
-              </button>
+              {canOpenSettings && (
+                <button 
+                  onClick={() => onNavigateTab('settings')}
+                  className="text-[11px] font-semibold text-sky-600 hover:text-sky-700"
+                >
+                  Gerenciar
+                </button>
+              )}
             </div>
 
             <div className="space-y-2.5">

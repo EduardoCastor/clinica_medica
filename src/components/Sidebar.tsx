@@ -31,12 +31,7 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {
-  const { 
-    canViewMedicalRecords, 
-    canManageFinances, 
-    canManageClinicSettings,
-    currentRole 
-  } = useAuth();
+  const { canViewMenu } = useAuth();
 
   const navItems: Array<{
     id: ClinicTab;
@@ -49,58 +44,58 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {
       id: 'dashboard',
       label: 'Dashboard',
       icon: <LayoutDashboard className="w-4 h-4" />,
-      visible: true,
+      visible: canViewMenu('dashboard'),
     },
     {
       id: 'appointments',
       label: 'Agenda de Consultas',
       icon: <CalendarDays className="w-4 h-4" />,
       badge: 'Prioritário',
-      visible: true,
+      visible: canViewMenu('appointments'),
     },
     {
       id: 'patients',
       label: 'Gestão de Pacientes',
       icon: <Users className="w-4 h-4" />,
-      visible: true,
+      visible: canViewMenu('patients'),
     },
     {
       id: 'medical_records',
       label: 'Prontuário Eletrônico',
       icon: <FileText className="w-4 h-4" />,
-      visible: canViewMedicalRecords,
+      visible: canViewMenu('medical_records'),
     },
     {
       id: 'communication',
       label: 'Central WhatsApp',
       icon: <MessageSquare className="w-4 h-4" />,
       badge: 'Automações',
-      visible: true,
+      visible: canViewMenu('communication'),
     },
     {
       id: 'financial',
       label: 'Módulo Financeiro',
       icon: <DollarSign className="w-4 h-4" />,
-      visible: canManageFinances,
+      visible: canViewMenu('financial'),
     },
     {
       id: 'users',
       label: 'Equipe & Permissões',
       icon: <UserCog className="w-4 h-4" />,
-      visible: canManageClinicSettings,
+      visible: canViewMenu('users'),
     },
     {
       id: 'settings',
       label: 'Clínica & Filiais',
       icon: <Building2 className="w-4 h-4" />,
-      visible: canManageClinicSettings,
+      visible: canViewMenu('settings'),
     },
     {
       id: 'website_builder',
       label: 'Site Institucional',
       icon: <Globe className="w-4 h-4" />,
       badge: '5 Cores',
-      visible: canManageClinicSettings,
+      visible: canViewMenu('website_builder'),
     },
   ];
 

@@ -31,7 +31,10 @@ import {
   AutomationExecutionRecord,
   AutomationTriggerStatus,
   AutomationTriggerSettings,
+  UserRole,
+  RolePermissionTemplate,
 } from '../types';
+import { DEFAULT_ROLE_PERMISSIONS } from './rbacConfig';
 
 import {
   INITIAL_PLANS,
@@ -92,10 +95,11 @@ const STORAGE_KEYS = {
   CLINIC_DOMAINS: 'medsync_clinic_domains',
   ACTIVE_BRANCH_ID: 'medsync_active_branch',
   ACTIVE_USER_ID: 'medsync_active_user',
+  ROLE_PERMISSIONS: 'medsync_role_permissions',
   DATA_VERSION: 'medsync_data_version',
 };
 
-export const MEDSYNC_DATA_VERSION = '2026.11.13-newton-mureb-n8n-agenda';
+export const MEDSYNC_DATA_VERSION = '2026.11.24-rbac-teams-auth';
 
 let migrationChecked = false;
 
@@ -167,6 +171,21 @@ export function runDataMigrationIfNeeded(): void {
           }
         } catch {
           localStorage.setItem(STORAGE_KEYS.CLINIC_DOMAINS, JSON.stringify(INITIAL_CLINIC_DOMAINS));
+        }
+      }
+
+      const rawUsers = localStorage.getItem(STORAGE_KEYS.USERS);
+      if (rawUsers && rawUsers.includes('admin@medsync.io')) {
+        try {
+          const parsedUsers = JSON.parse(rawUsers) as UserProfile[];
+          const migratedUsers = parsedUsers.map((u) =>
+            u.role === 'super_admin' && u.email.toLowerCase() === 'admin@medsync.io'
+              ? { ...u, email: 'admin@drnewtonmureb.com.br' }
+              : u
+          );
+          localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(migratedUsers));
+        } catch {
+          localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(INITIAL_USERS));
         }
       }
 
@@ -911,6 +930,11 @@ export const StorageService = {
     }
   },
 
+  // Organization cache setter
+  updateOrganizationCache: (org: Organization): void => {
+    setStored(STORAGE_KEYS.ORGANIZATION, org);
+  },
+
   // Branches
   getBranches: (): Branch[] => getStored<Branch[]>(STORAGE_KEYS.BRANCHES, INITIAL_BRANCHES),
   saveBranch: (branch: Branch): void => {
@@ -922,6 +946,9 @@ export const StorageService = {
       list.push(branch);
     }
     setStored(STORAGE_KEYS.BRANCHES, list);
+  },
+  replaceBranchesCache: (branches: Branch[]): void => {
+    setStored(STORAGE_KEYS.BRANCHES, branches);
   },
 
   // Rooms
@@ -949,6 +976,19 @@ export const StorageService = {
     }
     setStored(STORAGE_KEYS.USERS, list);
   },
+  replaceUsersCache: (users: UserProfile[]): void => {
+    setStored(STORAGE_KEYS.USERS, users);
+  },
+
+  // Role Permission Templates
+  getRolePermissions: (): Record<UserRole, RolePermissionTemplate> =>
+    getStored<Record<UserRole, RolePermissionTemplate>>(
+      STORAGE_KEYS.ROLE_PERMISSIONS,
+      DEFAULT_ROLE_PERMISSIONS
+    ),
+  saveRolePermissions: (templates: Record<UserRole, RolePermissionTemplate>): void => {
+    setStored(STORAGE_KEYS.ROLE_PERMISSIONS, templates);
+  },
 
   // Specialties
   getSpecialties: (): Specialty[] => getStored<Specialty[]>(STORAGE_KEYS.SPECIALTIES, INITIAL_SPECIALTIES),
@@ -962,6 +1002,9 @@ export const StorageService = {
     }
     setStored(STORAGE_KEYS.SPECIALTIES, list);
   },
+  replaceSpecialtiesCache: (specialties: Specialty[]): void => {
+    setStored(STORAGE_KEYS.SPECIALTIES, specialties);
+  },
 
   // Professionals
   getProfessionals: (): Professional[] => getStored<Professional[]>(STORAGE_KEYS.PROFESSIONALS, INITIAL_PROFESSIONALS),
@@ -974,6 +1017,9 @@ export const StorageService = {
       list.push(professional);
     }
     setStored(STORAGE_KEYS.PROFESSIONALS, list);
+  },
+  replaceProfessionalsCache: (professionals: Professional[]): void => {
+    setStored(STORAGE_KEYS.PROFESSIONALS, professionals);
   },
 
   // Services
@@ -3130,7 +3176,7 @@ export const StorageService = {
 
     const log: AuditLog = {
       id: `aud_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      organizationId: 'org_mureb_01',
+      organizationId: StorageService.getOrganization().id || 'org_mureb_01',
       userId: currentUser.id,
       userName: currentUser.fullName,
       userRole: currentUser.role,

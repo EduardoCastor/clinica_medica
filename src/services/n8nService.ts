@@ -328,84 +328,102 @@ export async function submitBookingToN8nAndSupabase(
   const supabase = getSupabase();
   if (supabase) {
     try {
-      // Look up real UUIDs in Supabase so FK constraints succeed cleanly
-      const { data: orgRow } = await supabase
-        .from('organizations')
-        .select('id')
-        .limit(1)
-        .maybeSingle();
-
-      const supaOrgId = orgRow?.id;
-      if (supaOrgId) {
-        const { data: branchRow } = await supabase
-          .from('branches')
-          .select('id')
-          .eq('organization_id', supaOrgId)
-          .limit(1)
-          .maybeSingle();
-
-        const { data: profRow } = await supabase
-          .from('professionals')
-          .select('id')
-          .eq('organization_id', supaOrgId)
-          .limit(1)
-          .maybeSingle();
-
-        const { data: srvRow } = await supabase
-          .from('services')
-          .select('id')
-          .eq('organization_id', supaOrgId)
-          .limit(1)
-          .maybeSingle();
-
-        // Upsert or find patient by formatted or clean CPF
-        const { data: existingPatient } = await supabase
-          .from('patients')
-          .select('id')
-          .eq('organization_id', supaOrgId)
-          .or(`document_cpf.eq.${formattedCpf},document_cpf.eq.${cleanCpf}`)
-          .limit(1)
-          .maybeSingle();
-
-        let supaPatientId = existingPatient?.id as string | undefined;
-
-        if (!supaPatientId && branchRow?.id) {
-          const { data: insertedPatient } = await supabase
-            .from('patients')
-            .insert({
-              organization_id: supaOrgId,
-              origin_branch_id: branchRow.id,
-              full_name: savedPatient.fullName,
-              document_cpf: formattedCpf,
-              phone: input.celularFormatted,
-              whatsapp: input.celularFormatted,
-              email: input.email || null,
-              lgpd_consent: true,
-              lgpd_consent_date: nowIso,
-              sharing_mode: 'model_b_shared',
-              administrative_notes: newPatientRecord.administrativeNotes || null,
-            })
-            .select('id')
-            .single();
-
-          supaPatientId = insertedPatient?.id;
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData?.session) {
+        // Portal público anônimo: utiliza RPC SECURITY DEFINER sem expor SELECT público em patients/appointments
+        const { data: rpcRes, error: rpcErr } = await supabase.rpc('medsync_public_book_appointment', {
+          p_org_slug: tenantSlug,
+          p_full_name: savedPatient.fullName,
+          p_document_cpf: cleanCpf,
+          p_phone: input.celularFormatted,
+          p_email: input.email || '',
+          p_start_time: startIso,
+          p_end_time: endIso,
+          p_notes: newAppointment.notes || '',
+        });
+        if (!rpcErr && (rpcRes as Record<string, unknown> | null)?.success) {
+          syncedSupabase = true;
         }
+      } else {
+        // Sessão autenticada: look up real UUIDs in Supabase so FK constraints succeed cleanly
+        const { data: orgRow } = await supabase
+          .from('organizations')
+          .select('id')
+          .limit(1)
+          .maybeSingle();
 
-        if (supaPatientId && branchRow?.id && profRow?.id) {
-          const { error: aptError } = await supabase.from('appointments').insert({
-            organization_id: supaOrgId,
-            branch_id: branchRow.id,
-            patient_id: supaPatientId,
-            professional_id: profRow.id,
-            service_id: srvRow?.id || null,
-            start_time: startIso,
-            end_time: endIso,
-            status: 'scheduled',
-            appointment_type: 'presencial',
-            notes: newAppointment.notes,
-          });
-          if (!aptError) {
-            syncedSupabase = true;
+        const supaOrgId = orgRow?.id;
+        if (supaOrgId) {
+          const { data: branchRow } = await supabase
+            .from('branches')
+            .select('id')
+            .eq('organization_id', supaOrgId)
+            .limit(1)
+            .maybeSingle();
+
+          const { data: profRow } = await supabase
+            .from('professionals')
+            .select('id')
+            .eq('organization_id', supaOrgId)
+            .limit(1)
+            .maybeSingle();
+
+          const { data: srvRow } = await supabase
+            .from('services')
+            .select('id')
+            .eq('organization_id', supaOrgId)
+            .limit(1)
+            .maybeSingle();
+
+          // Upsert or find patient by formatted or clean CPF
+          const { data: existingPatient } = await supabase
+            .from('patients')
+            .select('id')
+            .eq('organization_id', supaOrgId)
+            .or(`document_cpf.eq.${formattedCpf},document_cpf.eq.${cleanCpf}`)
+            .limit(1)
+            .maybeSingle();
+
+          let supaPatientId = existingPatient?.id as string | undefined;
+
+          if (!supaPatientId && branchRow?.id) {
+            const { data: insertedPatient } = await supabase
+              .from('patients')
+              .insert({
+                organization_id: supaOrgId,
+                origin_branch_id: branchRow.id,
+                full_name: savedPatient.fullName,
+                document_cpf: formattedCpf,
+                phone: input.celularFormatted,
+                whatsapp: input.celularFormatted,
+                email: input.email || null,
+                lgpd_consent: true,
+                lgpd_consent_date: nowIso,
+                sharing_mode: 'model_b_shared',
+                administrative_notes: newPatientRecord.administrativeNotes || null,
+              })
+              .select('id')
+              .single();
+
+            supaPatientId = insertedPatient?.id;
+          }
+
+          if (supaPatientId && branchRow?.id && profRow?.id) {
+            const { error: aptError } = await supabase.from('appointments').insert({
+              organization_id: supaOrgId,
+              branch_id: branchRow.id,
+              patient_id: supaPatientId,
+              professional_id: profRow.id,
+              service_id: srvRow?.id || null,
+              start_time: startIso,
+              end_time: endIso,
+              status: 'scheduled',
+              appointment_type: 'presencial',
+              notes: newAppointment.notes,
+            });
+            if (!aptError) {
+              syncedSupabase = true;
+            }
           }
         }
       }

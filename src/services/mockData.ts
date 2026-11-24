@@ -337,7 +337,7 @@ export const INITIAL_USERS: UserProfile[] = [
     id: 'usr_superadmin',
     organizationId: 'org_mureb_01',
     fullName: 'Equipe MedSync (Super Admin)',
-    email: 'admin@medsync.io',
+    email: 'admin@drnewtonmureb.com.br',
     phone: '(22) 99908-9122',
     role: 'super_admin',
     isActive: true,

@@ -62,7 +62,16 @@ const DOC_TYPE_LABELS: Record<MedicalDocumentType, string> = {
 };
 
 export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ initialPatient }) => {
-  const { currentUser, canEditMedicalRecords } = useAuth();
+  const {
+    currentUser,
+    canEditMedicalRecords,
+    canCreateInMenu,
+    canEditInMenu,
+    canDeleteInMenu,
+  } = useAuth();
+  const canCreateClinicalDoc = canCreateInMenu('medical_records');
+  const canEditClinicalDoc = canEditInMenu('medical_records');
+  const canDeleteClinicalDoc = canDeleteInMenu('medical_records') || canEditInMenu('medical_records');
   const { organization, activeBranchId, branches } = useTenant();
 
   const [patients, setPatients] = useState<Patient[]>(() => {
@@ -491,7 +500,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
           </p>
         </div>
 
-        {canEditMedicalRecords && (
+        {canCreateClinicalDoc ? (
           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => {
@@ -528,6 +537,11 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
               <span>Pedir Exames</span>
             </button>
           </div>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-600 bg-slate-100 border border-slate-200 rounded-xl">
+            <Eye className="w-3.5 h-3.5 text-slate-500" />
+            <span>Modo Consulta Clínica (Somente Leitura)</span>
+          </span>
         )}
       </div>
 
@@ -1052,7 +1066,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
                       </div>
                     )}
 
-                    {rec.status === 'draft' && (
+                    {rec.status === 'draft' && canEditClinicalDoc && (
                       <button
                         onClick={() => handleEditDraft(rec)}
                         className="px-2.5 py-1 text-xs font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg border border-sky-200 transition"
@@ -1061,7 +1075,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
                       </button>
                     )}
 
-                    {rec.status === 'signed' && (
+                    {rec.status === 'signed' && (canEditClinicalDoc || canCreateClinicalDoc) && (
                       <button
                         onClick={() => {
                           setSelectedRecordForAddendum(rec);
@@ -1213,13 +1227,15 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
             <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
               Histórico de Receituários Emitidos ({prescriptions.length})
             </h3>
-            <button
-              onClick={() => setIsRxModalOpen(true)}
-              className="px-3.5 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Emitir Nova Receita</span>
-            </button>
+            {canCreateClinicalDoc && (
+              <button
+                onClick={() => setIsRxModalOpen(true)}
+                className="px-3.5 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Emitir Nova Receita</span>
+              </button>
+            )}
           </div>
 
           {prescriptions.length === 0 ? (
@@ -1293,13 +1309,15 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
             <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
               Histórico de Atestados e Declarações ({certificates.length})
             </h3>
-            <button
-              onClick={() => setIsCertModalOpen(true)}
-              className="px-3.5 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Emitir Novo Atestado</span>
-            </button>
+            {canCreateClinicalDoc && (
+              <button
+                onClick={() => setIsCertModalOpen(true)}
+                className="px-3.5 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Emitir Novo Atestado</span>
+              </button>
+            )}
           </div>
 
           {certificates.length === 0 ? (
@@ -1374,22 +1392,24 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
             <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
               Solicitações e Resultados de Exames Laboratoriais e Imagem
             </h3>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setIsLabOrderModalOpen(true)}
-                className="px-3.5 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Nova Solicitação de Exames</span>
-              </button>
-              <button
-                onClick={() => setIsExamResultModalOpen(true)}
-                className="px-3.5 py-1.5 text-xs font-semibold text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-xl transition flex items-center gap-1.5"
-              >
-                <FileCheck className="w-4 h-4" />
-                <span>Registrar Laudo / Resultado</span>
-              </button>
-            </div>
+            {(canCreateClinicalDoc || canEditClinicalDoc) && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsLabOrderModalOpen(true)}
+                  className="px-3.5 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Nova Solicitação de Exames</span>
+                </button>
+                <button
+                  onClick={() => setIsExamResultModalOpen(true)}
+                  className="px-3.5 py-1.5 text-xs font-semibold text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-xl transition flex items-center gap-1.5"
+                >
+                  <FileCheck className="w-4 h-4" />
+                  <span>Registrar Laudo / Resultado</span>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Pedidos de Exames Emitidos */}
@@ -1668,7 +1688,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
                         )}
                         <span>Visualizar</span>
                       </button>
-                      {canEditMedicalRecords && (
+                      {canDeleteClinicalDoc && canEditMedicalRecords && (
                         <button
                           type="button"
                           onClick={() => void handleDeleteDocument(doc)}

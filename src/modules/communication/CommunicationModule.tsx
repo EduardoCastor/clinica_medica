@@ -27,6 +27,7 @@ import {
 import { MessageTemplate, MessageLog, AutomationTriggerSettings } from '../../types';
 import { StorageService } from '../../services/storage';
 import { useTenant } from '../../contexts/TenantContext';
+import { useAuth } from '../../contexts/AuthContext';
 import {
   sendWhatsAppMessage,
   simulateWhatsAppMessage,
@@ -95,6 +96,11 @@ function renderFormattedWhatsAppText(text: string): React.ReactNode {
 
 export const CommunicationModule: React.FC = () => {
   const { activeBranchId, branches, clinic, organization, updateClinic } = useTenant();
+  const { canCreateInMenu, canEditInMenu, canAdminMenu } = useAuth();
+  const canDispatchWhatsapp = canCreateInMenu('communication') || canEditInMenu('communication');
+  const canEditCommunication = canEditInMenu('communication') || canAdminMenu('communication');
+  const canConfigureMegaapi = canAdminMenu('communication') || canEditInMenu('communication');
+
   const [messages, setMessages] = useState<MessageLog[]>(() => StorageService.getMessages());
   const [templates, setTemplates] = useState<MessageTemplate[]>(() =>
     StorageService.getTemplates()
@@ -628,18 +634,20 @@ export const CommunicationModule: React.FC = () => {
           >
             Automações WhatsApp
           </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('config')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition inline-flex items-center gap-1 ${
-              activeTab === 'config'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Settings className="w-3.5 h-3.5" />
-            <span>Configuração Megaapi</span>
-          </button>
+          {canConfigureMegaapi && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('config')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition inline-flex items-center gap-1 ${
+                activeTab === 'config'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Settings className="w-3.5 h-3.5" />
+              <span>Configuração Megaapi</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -797,44 +805,50 @@ export const CommunicationModule: React.FC = () => {
               />
             </label>
 
-            <div className="flex flex-col gap-2">
-              <button
-                type="submit"
-                disabled={isSending || !selectedPatient}
-                className={`w-full py-2.5 px-4 text-xs font-semibold text-white disabled:opacity-60 rounded-xl shadow-xs transition flex items-center justify-center gap-2 ${
-                  isSimulationMode
-                    ? 'bg-amber-600 hover:bg-amber-700'
-                    : 'bg-emerald-600 hover:bg-emerald-700'
-                }`}
-              >
-                {isSending ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : isSimulationMode ? (
-                  <FlaskConical className="w-3.5 h-3.5" />
-                ) : (
-                  <Send className="w-3.5 h-3.5" />
-                )}
-                <span>
-                  {isSending
-                    ? 'Processando...'
-                    : isSimulationMode
-                      ? 'Disparar Teste (Gravar no Supabase)'
-                      : 'Enviar Mensagem Agora'}
-                </span>
-              </button>
-
-              {!isSimulationMode && (
+            {canDispatchWhatsapp ? (
+              <div className="flex flex-col gap-2">
                 <button
-                  type="button"
-                  onClick={() => void handleSimulateTestDispatch()}
+                  type="submit"
                   disabled={isSending || !selectedPatient}
-                  className="w-full py-2 px-3 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-60 rounded-xl transition inline-flex items-center justify-center gap-1.5"
+                  className={`w-full py-2.5 px-4 text-xs font-semibold text-white disabled:opacity-60 rounded-xl shadow-xs transition flex items-center justify-center gap-2 ${
+                    isSimulationMode
+                      ? 'bg-amber-600 hover:bg-amber-700'
+                      : 'bg-emerald-600 hover:bg-emerald-700'
+                  }`}
                 >
-                  <FlaskConical className="w-3.5 h-3.5 text-amber-600" />
-                  <span>Disparar Mensagem de Teste (Simulação)</span>
+                  {isSending ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : isSimulationMode ? (
+                    <FlaskConical className="w-3.5 h-3.5" />
+                  ) : (
+                    <Send className="w-3.5 h-3.5" />
+                  )}
+                  <span>
+                    {isSending
+                      ? 'Processando...'
+                      : isSimulationMode
+                        ? 'Disparar Teste (Gravar no Supabase)'
+                        : 'Enviar Mensagem Agora'}
+                  </span>
                 </button>
-              )}
-            </div>
+
+                {!isSimulationMode && (
+                  <button
+                    type="button"
+                    onClick={() => void handleSimulateTestDispatch()}
+                    disabled={isSending || !selectedPatient}
+                    className="w-full py-2 px-3 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-60 rounded-xl transition inline-flex items-center justify-center gap-1.5"
+                  >
+                    <FlaskConical className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Disparar Mensagem de Teste (Simulação)</span>
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-600 text-center">
+                Seu perfil possui acesso somente leitura para envios na Central de WhatsApp.
+              </div>
+            )}
           </form>
         </div>
 
@@ -975,14 +989,16 @@ export const CommunicationModule: React.FC = () => {
                       />
                       <span>Recarregar</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={handleCreateNewTemplate}
-                      className="px-3.5 py-2 text-xs font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-xl transition inline-flex items-center gap-1.5"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Novo Modelo</span>
-                    </button>
+                    {canEditCommunication && (
+                      <button
+                        type="button"
+                        onClick={handleCreateNewTemplate}
+                        className="px-3.5 py-2 text-xs font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-xl transition inline-flex items-center gap-1.5"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Novo Modelo</span>
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -1171,18 +1187,20 @@ export const CommunicationModule: React.FC = () => {
                         >
                           Usar no Disparador
                         </button>
-                        <button
-                          type="submit"
-                          disabled={isSavingTemplate}
-                          className="px-4 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 disabled:opacity-60 rounded-xl shadow-xs transition inline-flex items-center gap-1.5"
-                        >
-                          {isSavingTemplate ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <Save className="w-3.5 h-3.5" />
-                          )}
-                          <span>{isSavingTemplate ? 'Salvando...' : 'Salvar Modelo'}</span>
-                        </button>
+                        {canEditCommunication && (
+                          <button
+                            type="submit"
+                            disabled={isSavingTemplate}
+                            className="px-4 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 disabled:opacity-60 rounded-xl shadow-xs transition inline-flex items-center gap-1.5"
+                          >
+                            {isSavingTemplate ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Save className="w-3.5 h-3.5" />
+                            )}
+                            <span>{isSavingTemplate ? 'Salvando...' : 'Salvar Modelo'}</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1246,7 +1264,7 @@ export const CommunicationModule: React.FC = () => {
           )}
 
           {/* TAB 4: Megaapi Credentials & Connection Status */}
-          {activeTab === 'config' && (
+          {activeTab === 'config' && canConfigureMegaapi && (
             <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 space-y-5">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
                 <div>

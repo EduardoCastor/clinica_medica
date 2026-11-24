@@ -28,6 +28,8 @@ import {
 import { useTenant } from '../../contexts/TenantContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { DomainsManagement } from './DomainsManagement';
+import { TeamManagement } from '../clinic/TeamManagement';
+import { SuperAdminCandidateInfo, TeamCloudService } from '../../services/teamCloudService';
 
 interface SaasAdminDashboardProps {
   onSimulateDomain?: (domain: string) => void;
@@ -35,12 +37,20 @@ interface SaasAdminDashboardProps {
 
 export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimulateDomain }) => {
   const { organization, updateOrganization } = useTenant();
-  const { impersonateClinic } = useAuth();
-  const [activeTab, setActiveTab] = useState<'overview' | 'domains'>('domains');
+  const { impersonateClinic, refreshSessionProfile } = useAuth();
+  const [activeTab, setActiveTab] = useState<'overview' | 'domains' | 'team'>('domains');
   const [plans, setPlans] = useState<Plan[]>([]);
   const [editingPlan, setEditingPlan] = useState<Plan | null>(null);
   const [isSavingPlan, setIsSavingPlan] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Super Admin Email Audit & Migration state
+  const [superAdminCandidates, setSuperAdminCandidates] = useState<SuperAdminCandidateInfo[]>([]);
+  const [isAuditingSuperAdmin, setIsAuditingSuperAdmin] = useState(false);
+  const [isUpdatingSuperAdminEmail, setIsUpdatingSuperAdminEmail] = useState(false);
+  const [targetSuperAdminEmail, setTargetSuperAdminEmail] = useState('admin@drnewtonmureb.com.br');
+  const [requireEmailConfirmation, setRequireEmailConfirmation] = useState(false);
 
   // Sync plans from Supabase on mount and whenever updated
   useEffect(() => {
@@ -65,16 +75,69 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
   const mrr = (14 * (advancedPlan?.priceMonthly || 589)) + (4 * (basicPlan?.priceMonthly || 249));
   const trialConversionRate = 72;
 
+  const handleAuditSuperAdmin = async () => {
+    setErrorMessage(null);
+    setFeedbackMessage(null);
+    setIsAuditingSuperAdmin(true);
+    try {
+      const res = await TeamCloudService.auditSuperAdminAccount();
+      if (!res.success) {
+        setErrorMessage(res.error || 'Falha ao auditar conta Super Admin no Supabase.');
+        return;
+      }
+      setSuperAdminCandidates(res.candidates || []);
+      if ((res.candidates?.length || 0) > 1) {
+        setErrorMessage(
+          'Mais de um candidato com papel super_admin encontrado. Identificação manual necessária antes de atualizar e-mail.'
+        );
+      } else if ((res.candidates?.length || 0) === 1) {
+        setFeedbackMessage(
+          `Super Admin localizado com segurança: UUID ${res.candidates![0].authUserId || res.candidates![0].profileId} (${res.candidates![0].authEmail || res.candidates![0].profileEmail}).`
+        );
+      } else {
+        setErrorMessage('Nenhum usuário super_admin encontrado em public.user_profiles.');
+      }
+    } finally {
+      setIsAuditingSuperAdmin(false);
+    }
+  };
+
+  const handleUpdateSuperAdminEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setFeedbackMessage(null);
+    setIsUpdatingSuperAdminEmail(true);
+    try {
+      const res = await TeamCloudService.updateSuperAdminEmailInCloud(
+        targetSuperAdminEmail,
+        requireEmailConfirmation
+      );
+      if (!res.success) {
+        if (res.candidates) setSuperAdminCandidates(res.candidates);
+        setErrorMessage(res.error || 'Não foi possível atualizar o e-mail do Super Admin.');
+        return;
+      }
+      await handleAuditSuperAdmin();
+      await refreshSessionProfile();
+      setFeedbackMessage(
+        `E-mail do Super Admin atualizado com sucesso de ${res.previousEmail} para ${res.newEmail} preservando UUID ${res.authUserId}, senha e papel super_admin.`
+      );
+    } finally {
+      setIsUpdatingSuperAdminEmail(false);
+    }
+  };
+
   const handleSavePlan = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingPlan || isSavingPlan) return;
 
+    setErrorMessage(null);
     setIsSavingPlan(true);
     try {
       const success = await updatePlanInSupabase(editingPlan);
       if (!success) {
         const errorDetail = getLastPlanSyncError() || 'Erro desconhecido ao persistir plano no Supabase.';
-        alert(`Erro ao salvar alterações no Supabase:\n\n${errorDetail}`);
+        setErrorMessage(`Erro ao salvar alterações no Supabase: ${errorDetail}`);
         return;
       }
 
@@ -85,7 +148,7 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
       setTimeout(() => setFeedbackMessage(null), 5000);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      alert(`Erro inesperado ao salvar plano no Supabase:\n\n${message}`);
+      setErrorMessage(`Erro inesperado ao salvar plano no Supabase: ${message}`);
     } finally {
       setIsSavingPlan(false);
     }
@@ -124,23 +187,35 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
         </div>
       )}
 
+      {errorMessage && (
+        <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-semibold flex items-center justify-between shadow-xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{errorMessage}</span>
+          </div>
+          <button onClick={() => setErrorMessage(null)} className="text-rose-600 hover:text-rose-900 font-bold text-sm">
+            ×
+          </button>
+        </div>
+      )}
+
       {/* Sub-tab Navigation */}
-      <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-2 overflow-x-auto">
         <button
           onClick={() => setActiveTab('domains')}
-          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition ${
+          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition whitespace-nowrap ${
             activeTab === 'domains'
               ? 'bg-purple-600 text-white shadow-xs'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
           }`}
         >
           <Globe className="w-4 h-4" />
-          <span>Domínios & Sites (Novo)</span>
+          <span>Domínios & Sites</span>
         </button>
 
         <button
           onClick={() => setActiveTab('overview')}
-          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition ${
+          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition whitespace-nowrap ${
             activeTab === 'overview'
               ? 'bg-purple-600 text-white shadow-xs'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -149,11 +224,120 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
           <Building2 className="w-4 h-4" />
           <span>Visão Geral & Planos Comerciais</span>
         </button>
+
+        <button
+          onClick={() => setActiveTab('team')}
+          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition whitespace-nowrap ${
+            activeTab === 'team'
+              ? 'bg-purple-600 text-white shadow-xs'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <Users className="w-4 h-4" />
+          <span>Super Admin & Equipe Clínica</span>
+        </button>
       </div>
 
       {/* TAB 1: Domains & Sites */}
       {activeTab === 'domains' && (
         <DomainsManagement onSimulateDomain={onSimulateDomain} />
+      )}
+
+      {/* TAB 3: Super Admin Email Migration & Team RBAC */}
+      {activeTab === 'team' && (
+        <div className="space-y-6">
+          <div className="bg-white rounded-2xl border border-purple-200 shadow-xs p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-purple-600" />
+                  <span>Auditoria e Migração de E-mail do Super Administrador</span>
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Atualiza o login do Super Admin via Supabase Auth Admin API preservando UUID, senha, papel super_admin e relacionamentos (com trava contra ambiguidade).
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={isAuditingSuperAdmin}
+                onClick={() => void handleAuditSuperAdmin()}
+                className="px-3.5 py-2 text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl transition"
+              >
+                {isAuditingSuperAdmin ? 'Auditando...' : 'Auditar Conta Super Admin'}
+              </button>
+            </div>
+
+            {superAdminCandidates.length > 0 && (
+              <div className="space-y-2">
+                {superAdminCandidates.map((cand) => (
+                  <div
+                    key={cand.profileId}
+                    className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                  >
+                    <div>
+                      <p className="font-bold text-slate-900">
+                        {cand.fullName} · <span className="text-purple-700">{cand.roleCode}</span>
+                      </p>
+                      <p className="text-[11px] text-slate-600 font-mono">
+                        Auth E-mail: {cand.authEmail || '—'} · Perfil E-mail: {cand.profileEmail}
+                      </p>
+                      <p className="text-[10px] text-slate-400 font-mono">
+                        Auth UUID: {cand.authUserId || 'Não vinculado'} · Profile ID: {cand.profileId}
+                      </p>
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                        cand.isActive
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : 'bg-rose-50 text-rose-700 border-rose-200'
+                      }`}
+                    >
+                      {cand.isActive ? 'Ativo' : 'Inativo'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <form
+              onSubmit={handleUpdateSuperAdminEmail}
+              className="flex flex-col sm:flex-row items-stretch sm:items-end gap-3 pt-2"
+            >
+              <div className="flex-1">
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Novo E-mail do Super Administrador
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={targetSuperAdminEmail}
+                  onChange={(e) => setTargetSuperAdminEmail(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl font-mono"
+                />
+              </div>
+
+              <label className="flex items-center gap-2 text-xs text-slate-600 pb-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={requireEmailConfirmation}
+                  onChange={(e) => setRequireEmailConfirmation(e.target.checked)}
+                  className="rounded text-purple-600"
+                />
+                <span>Exigir confirmação por e-mail</span>
+              </label>
+
+              <button
+                type="submit"
+                disabled={isUpdatingSuperAdminEmail}
+                className="px-4 py-2 text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-60 rounded-xl shadow-xs"
+              >
+                {isUpdatingSuperAdminEmail ? 'Atualizando...' : 'Atualizar E-mail do Super Admin'}
+              </button>
+            </form>
+          </div>
+
+          <TeamManagement />
+        </div>
       )}
 
       {/* TAB 2: Overview & Commercial Plans */}

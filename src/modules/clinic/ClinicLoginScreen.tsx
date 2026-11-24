@@ -1,15 +1,17 @@
 import React, { useState } from 'react';
-import { 
-  Building2, 
-  Stethoscope, 
-  Users, 
-  DollarSign, 
-  ShieldCheck, 
-  ArrowRight, 
-  Lock, 
-  Mail, 
+import {
+  Building2,
+  Stethoscope,
+  Users,
+  DollarSign,
+  ShieldCheck,
+  ArrowRight,
+  Lock,
+  Mail,
   KeyRound,
-  Sparkles
+  Sparkles,
+  Loader2,
+  CheckCircle2,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTenant } from '../../contexts/TenantContext';
@@ -21,41 +23,72 @@ interface ClinicLoginScreenProps {
 
 export const ClinicLoginScreen: React.FC<ClinicLoginScreenProps> = ({ onSuccess }) => {
   const { clinic } = useTenant();
-  const { usersList, login } = useAuth();
+  const {
+    usersList,
+    login,
+    signInWithEmail,
+    sendPasswordReset,
+    isDevSimulationMode,
+    authError,
+    clearAuthError,
+  } = useAuth();
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [resetSuccessMessage, setResetSuccessMessage] = useState<string | null>(null);
+  const [isResetMode, setIsResetMode] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Clinic staff users
+  // Clinic staff users (rendered exclusively in local dev simulation without Supabase)
   const staffUsers = usersList.filter(
-    u => u.role !== 'super_admin' && u.role !== 'patient' && u.role !== 'physiotherapist'
+    (u) => u.role !== 'super_admin' && u.role !== 'patient' && u.role !== 'physiotherapist' && u.isActive
   );
 
-  const handleFormSubmit = (e: React.FormEvent) => {
+  const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
+    setResetSuccessMessage(null);
+    clearAuthError();
+    setIsSubmitting(true);
 
-    const found = staffUsers.find(u => u.email.toLowerCase() === emailInput.trim().toLowerCase());
-    if (found) {
-      login(found.id);
+    try {
+      if (isResetMode) {
+        const res = await sendPasswordReset(emailInput);
+        if (!res.success) {
+          setErrorMessage(res.error || 'Não foi possível enviar o link de recuperação.');
+        } else {
+          setResetSuccessMessage(
+            `Instruções de redefinição enviadas para ${emailInput.trim().toLowerCase()}. Verifique sua caixa de entrada.`
+          );
+          setIsResetMode(false);
+        }
+        return;
+      }
+
+      const result = await signInWithEmail(emailInput, passwordInput, 'clinic');
+      if (!result.success) {
+        setErrorMessage(result.error || 'Falha na autenticação.');
+        return;
+      }
       if (onSuccess) onSuccess();
-    } else {
-      setErrorMessage('Usuário não encontrado. Selecione um dos perfis autorizados da clínica abaixo para acesso demonstrativo.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const handleQuickLogin = (userId: string) => {
+    if (!isDevSimulationMode) return;
     login(userId);
     if (onSuccess) onSuccess();
   };
 
+  const displayedError = errorMessage || authError;
+
   return (
     <div className="min-h-[85vh] flex items-center justify-center p-4 bg-gradient-to-br from-slate-50 via-sky-50/40 to-teal-50/30">
       <div className="w-full max-w-xl space-y-6">
-        
         {/* White-Label Card */}
         <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xl overflow-hidden">
-          
           {/* Header with Clinic Branding (Dark Marbled & Gold) */}
           <div
             className="p-8 pb-6 border-b border-[#D4AF37]/30 text-center space-y-4 text-white"
@@ -81,7 +114,9 @@ export const ClinicLoginScreen: React.FC<ClinicLoginScreenProps> = ({ onSuccess 
                 CNPJ: {clinic.documentNumber || CLINIC_OFFICIAL_DATA.cnpj} · {CLINIC_OFFICIAL_DATA.crm}
               </p>
               <p className="text-[11px] text-slate-400 mt-0.5">
-                {CLINIC_OFFICIAL_DATA.street}, {CLINIC_OFFICIAL_DATA.number}, {CLINIC_OFFICIAL_DATA.complement} · {CLINIC_OFFICIAL_DATA.city} - {CLINIC_OFFICIAL_DATA.state}
+                {CLINIC_OFFICIAL_DATA.street}, {CLINIC_OFFICIAL_DATA.number},{' '}
+                {CLINIC_OFFICIAL_DATA.complement} · {CLINIC_OFFICIAL_DATA.city} -{' '}
+                {CLINIC_OFFICIAL_DATA.state}
               </p>
             </div>
 
@@ -92,22 +127,31 @@ export const ClinicLoginScreen: React.FC<ClinicLoginScreenProps> = ({ onSuccess 
           </div>
 
           <div className="p-8 space-y-6">
-            
-            {/* Direct Login Form */}
+            {/* Real Email/Password Login & Password Recovery Form */}
             <form onSubmit={handleFormSubmit} className="space-y-4">
-              {errorMessage && (
+              {displayedError && (
                 <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-xl">
-                  {errorMessage}
+                  {displayedError}
+                </div>
+              )}
+
+              {resetSuccessMessage && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-xl flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{resetSuccessMessage}</span>
                 </div>
               )}
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">E-mail Profissional</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  E-mail Profissional
+                </label>
                 <div className="relative">
                   <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                   <input
                     type="email"
                     required
+                    autoComplete="email"
                     placeholder={CLINIC_OFFICIAL_DATA.email}
                     value={emailInput}
                     onChange={(e) => setEmailInput(e.target.value)}
@@ -116,81 +160,125 @@ export const ClinicLoginScreen: React.FC<ClinicLoginScreenProps> = ({ onSuccess 
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">Senha de Acesso</label>
-                <div className="relative">
-                  <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                  <input
-                    type="password"
-                    placeholder="••••••••••••"
-                    value={passwordInput}
-                    onChange={(e) => setPasswordInput(e.target.value)}
-                    className="w-full pl-10 pr-3 py-2.5 text-xs border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500"
-                  />
+              {!isResetMode && (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-bold text-slate-700">
+                      Senha de Acesso
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsResetMode(true);
+                        setErrorMessage(null);
+                        setResetSuccessMessage(null);
+                      }}
+                      className="text-[11px] font-semibold text-sky-700 hover:text-sky-900"
+                    >
+                      Esqueci minha senha
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                    <input
+                      type="password"
+                      required
+                      autoComplete="current-password"
+                      placeholder="••••••••••••"
+                      value={passwordInput}
+                      onChange={(e) => setPasswordInput(e.target.value)}
+                      className="w-full pl-10 pr-3 py-2.5 text-xs border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500"
+                    />
+                  </div>
                 </div>
-              </div>
+              )}
 
               <button
                 type="submit"
-                className="w-full py-2.5 px-4 bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold rounded-xl shadow-md transition flex items-center justify-center gap-2"
+                disabled={isSubmitting}
+                className="w-full py-2.5 px-4 bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-xs font-bold rounded-xl shadow-md transition flex items-center justify-center gap-2"
               >
-                <span>Entrar no Sistema</span>
-                <ArrowRight className="w-4 h-4" />
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>{isResetMode ? 'Enviando link...' : 'Autenticando...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <span>{isResetMode ? 'Enviar link de redefinição' : 'Entrar no Sistema'}</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
               </button>
+
+              {isResetMode && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsResetMode(false);
+                    setErrorMessage(null);
+                  }}
+                  className="w-full text-center text-xs font-semibold text-slate-500 hover:text-slate-800"
+                >
+                  Voltar para o login com senha
+                </button>
+              )}
             </form>
 
-            {/* Quick Demo Access by Role */}
-            <div className="pt-4 border-t border-slate-100 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                  Acesso Rápido de Demonstração (1 Clique)
-                </span>
-                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-              </div>
+            {/* Quick Demo Access ONLY in local dev without Supabase */}
+            {isDevSimulationMode && (
+              <div className="pt-4 border-t border-slate-100 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                    Simulação Local de Desenvolvimento (Sem Banco Conectado)
+                  </span>
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {staffUsers.map((u) => {
-                  const roleBadge = 
-                    u.role === 'clinic_admin' ? { label: 'Admin Clínica', icon: <Building2 className="w-3 h-3 text-sky-600" /> } :
-                    u.role === 'doctor' ? { label: 'Médico · CRM/RJ', icon: <Stethoscope className="w-3 h-3 text-blue-600" /> } :
-                    u.role === 'receptionist' ? { label: 'Recepção', icon: <Users className="w-3 h-3 text-amber-600" /> } :
-                    { label: 'Financeiro', icon: <DollarSign className="w-3 h-3 text-emerald-600" /> };
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {staffUsers.map((u) => {
+                    const roleBadge =
+                      u.role === 'clinic_admin'
+                        ? { label: 'Admin Clínica', icon: <Building2 className="w-3 h-3 text-sky-600" /> }
+                        : u.role === 'doctor'
+                        ? { label: 'Médico · CRM/RJ', icon: <Stethoscope className="w-3 h-3 text-blue-600" /> }
+                        : u.role === 'receptionist'
+                        ? { label: 'Recepção', icon: <Users className="w-3 h-3 text-amber-600" /> }
+                        : { label: 'Financeiro', icon: <DollarSign className="w-3 h-3 text-emerald-600" /> };
 
-                  return (
-                    <button
-                      key={u.id}
-                      type="button"
-                      onClick={() => handleQuickLogin(u.id)}
-                      className="text-left p-2.5 rounded-xl border border-slate-200 hover:border-sky-300 hover:bg-sky-50/50 transition group flex items-center justify-between"
-                    >
-                      <div className="truncate pr-2">
-                        <div className="flex items-center gap-1.5">
-                          {roleBadge.icon}
-                          <span className="text-xs font-bold text-slate-800 group-hover:text-sky-700 truncate">
-                            {u.fullName}
+                    return (
+                      <button
+                        key={u.id}
+                        type="button"
+                        onClick={() => handleQuickLogin(u.id)}
+                        className="text-left p-2.5 rounded-xl border border-slate-200 hover:border-sky-300 hover:bg-sky-50/50 transition group flex items-center justify-between"
+                      >
+                        <div className="truncate pr-2">
+                          <div className="flex items-center gap-1.5">
+                            {roleBadge.icon}
+                            <span className="text-xs font-bold text-slate-800 group-hover:text-sky-700 truncate">
+                              {u.fullName}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-slate-400 block mt-0.5 truncate">
+                            {roleBadge.label} · {u.email}
                           </span>
                         </div>
-                        <span className="text-[10px] text-slate-400 block mt-0.5 truncate">
-                          {roleBadge.label} · {u.email}
-                        </span>
-                      </div>
-                      <ArrowRight className="w-3.5 h-3.5 text-slate-300 group-hover:text-sky-600 shrink-0" />
-                    </button>
-                  );
-                })}
+                        <ArrowRight className="w-3.5 h-3.5 text-slate-300 group-hover:text-sky-600 shrink-0" />
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-
+            )}
           </div>
 
           {/* Footer Security Notice */}
           <div className="p-4 bg-slate-50 border-t border-slate-100 text-center text-[11px] text-slate-500 flex items-center justify-center gap-1.5">
             <Lock className="w-3.5 h-3.5 text-slate-400" />
-            <span>Conformidade CFM nº 1.821/2007 · LGPD Dados Sensíveis · RLS PostgreSQL</span>
+            <span>Conformidade CFM nº 1.821/2007 · LGPD Dados Sensíveis · Acesso Autenticado</span>
           </div>
-
         </div>
-
       </div>
     </div>
   );

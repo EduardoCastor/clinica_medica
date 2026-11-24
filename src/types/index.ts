@@ -124,17 +124,50 @@ export interface Room {
   isActive: boolean;
 }
 
+export type MenuKey =
+  | 'dashboard'
+  | 'appointments'
+  | 'patients'
+  | 'medical_records'
+  | 'communication'
+  | 'financial'
+  | 'users'
+  | 'settings'
+  | 'website_builder';
+
+export interface MenuPermissionSet {
+  canView: boolean;
+  canConsult: boolean;
+  canCreate: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
+  canAdmin: boolean;
+}
+
+export interface UserMenuPermissionRecord extends MenuPermissionSet {
+  menuKey: MenuKey;
+  isCustomOverride: boolean;
+}
+
+export type RolePermissionTemplate = Record<MenuKey, MenuPermissionSet>;
+
 export interface UserProfile {
   id: string;
   userId?: string;
   organizationId: string;
   defaultBranchId?: string;
+  authorizedBranchIds?: string[];
   fullName: string;
   email: string;
   phone: string;
   avatarUrl?: string;
   role: UserRole;
   isActive: boolean;
+  permissions?: Partial<Record<MenuKey, UserMenuPermissionRecord>>;
+  createdAt?: string;
+  updatedAt?: string;
+  lastSignInAt?: string;
+  emailConfirmedAt?: string;
 }
 
 export interface Specialty {
@@ -161,6 +194,8 @@ export interface Professional {
   color: string;
   avatarUrl?: string;
   isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface Service {

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { TenantProvider, useTenant } from './contexts/TenantContext';
 import { Navbar } from './components/Navbar';
@@ -24,29 +24,50 @@ import { SaasAdminLoginScreen } from './modules/saas-admin/SaasAdminLoginScreen'
 import { ClinicLoginScreen } from './modules/clinic/ClinicLoginScreen';
 import { DomainSimulatorBanner } from './components/DomainSimulatorBanner';
 import { DomainResolver, PRODUCTION_DOMAINS } from './services/domainResolver';
+import { MENU_DEFINITIONS } from './services/rbacConfig';
 
 import { Patient } from './types';
-import { ShieldCheck, LogOut, Database, X } from 'lucide-react';
+import { ShieldCheck, LogOut, Database, X, Lock, Loader2 } from 'lucide-react';
 
 const MainAppContent: React.FC = () => {
   const { tenantContext } = useTenant();
-  const { isAuthenticated, isSuperAdmin, logout } = useAuth();
-  
+  const { isAuthenticated, isAuthLoading, isSuperAdmin, logout, canViewMenu, currentUser } = useAuth();
+
   const [activeClinicTab, setActiveClinicTab] = useState<ClinicTab>('dashboard');
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
   const [targetPatientForRecord, setTargetPatientForRecord] = useState<Patient | null>(null);
   const [isWebsitePreviewModalOpen, setIsWebsitePreviewModalOpen] = useState(false);
 
+  const firstAllowedTab = useMemo<ClinicTab>(() => {
+    const first = MENU_DEFINITIONS.find((m) => canViewMenu(m.key));
+    return (first?.key as ClinicTab) || 'dashboard';
+  }, [canViewMenu]);
+
+  useEffect(() => {
+    if (isAuthenticated && !canViewMenu(activeClinicTab)) {
+      setActiveClinicTab(firstAllowedTab);
+    }
+  }, [isAuthenticated, activeClinicTab, canViewMenu, firstAllowedTab, currentUser.id]);
+
+  const handleTabChange = (tab: ClinicTab) => {
+    if (!canViewMenu(tab)) return;
+    setActiveClinicTab(tab);
+    setTargetPatientForRecord(null);
+  };
+
   const handleNavigateToRecord = (patient: Patient) => {
+    if (!canViewMenu('medical_records')) return;
     setTargetPatientForRecord(patient);
     setActiveClinicTab('medical_records');
   };
 
   const handleNavigateToSchedule = (_patient: Patient) => {
+    if (!canViewMenu('appointments')) return;
     setActiveClinicTab('appointments');
   };
 
   const currentMode = tenantContext.mode;
+  const isCurrentTabAuthorized = canViewMenu(activeClinicTab);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
@@ -76,7 +97,12 @@ const MainAppContent: React.FC = () => {
           ========================================================================= */}
       {currentMode === 'SAAS_ADMIN' && (
         <main className="flex-1 flex flex-col">
-          {(!isAuthenticated || !isSuperAdmin) ? (
+          {isAuthLoading ? (
+            <div className="min-h-[85vh] flex items-center justify-center bg-slate-950 text-slate-300 text-xs gap-2">
+              <Loader2 className="w-5 h-5 animate-spin text-purple-400" />
+              <span>Verificando sessão autenticada...</span>
+            </div>
+          ) : (!isAuthenticated || !isSuperAdmin) ? (
             <SaasAdminLoginScreen />
           ) : (
             <div className="flex-1 flex flex-col">
@@ -106,7 +132,9 @@ const MainAppContent: React.FC = () => {
                   </button>
 
                   <button
-                    onClick={logout}
+                    onClick={() => {
+                      void logout();
+                    }}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-300 hover:text-rose-100 hover:bg-rose-950/40 rounded-lg border border-rose-900 transition"
                   >
                     <LogOut className="w-3.5 h-3.5" />
@@ -129,7 +157,12 @@ const MainAppContent: React.FC = () => {
           ========================================================================= */}
       {currentMode === 'CLINIC_APP' && (
         <main className="flex-1 flex flex-col">
-          {!isAuthenticated ? (
+          {isAuthLoading ? (
+            <div className="min-h-[85vh] flex items-center justify-center bg-slate-50 text-slate-600 text-xs gap-2">
+              <Loader2 className="w-5 h-5 animate-spin text-sky-600" />
+              <span>Validando sessão e permissões de acesso...</span>
+            </div>
+          ) : !isAuthenticated ? (
             <ClinicLoginScreen />
           ) : (
             <div className="flex-1 flex flex-col">
@@ -142,42 +175,55 @@ const MainAppContent: React.FC = () => {
               <div className="flex-1 flex flex-col md:flex-row">
                 <Sidebar
                   activeTab={activeClinicTab}
-                  onTabChange={(tab) => {
-                    setActiveClinicTab(tab);
-                    setTargetPatientForRecord(null);
-                  }}
+                  onTabChange={handleTabChange}
                 />
 
                 <section className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
-                  {activeClinicTab === 'dashboard' && (
-                    <ClinicDashboard onNavigateTab={(tab) => setActiveClinicTab(tab)} />
-                  )}
-                  {activeClinicTab === 'appointments' && (
-                    <AppointmentsModule onNavigateToRecord={handleNavigateToRecord} />
-                  )}
-                  {activeClinicTab === 'patients' && (
-                    <PatientsModule
-                      onNavigateToRecord={handleNavigateToRecord}
-                      onNavigateToSchedule={handleNavigateToSchedule}
-                    />
-                  )}
-                  {activeClinicTab === 'medical_records' && (
-                    <MedicalRecordsModule initialPatient={targetPatientForRecord} />
-                  )}
-                  {activeClinicTab === 'communication' && (
-                    <CommunicationModule />
-                  )}
-                  {activeClinicTab === 'financial' && (
-                    <FinancialModule />
-                  )}
-                  {activeClinicTab === 'users' && (
-                    <TeamManagement />
-                  )}
-                  {activeClinicTab === 'settings' && (
-                    <ClinicSettings />
-                  )}
-                  {activeClinicTab === 'website_builder' && (
-                    <WebsiteEditor onOpenPreview={() => setIsWebsitePreviewModalOpen(true)} />
+                  {!isCurrentTabAuthorized ? (
+                    <div className="max-w-lg mx-auto mt-12 p-8 bg-white rounded-2xl border border-slate-200 shadow-xs text-center space-y-3">
+                      <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto">
+                        <Lock className="w-6 h-6" />
+                      </div>
+                      <h2 className="text-base font-bold text-slate-900">
+                        Acesso não autorizado a este módulo
+                      </h2>
+                      <p className="text-xs text-slate-500">
+                        Seu perfil ({currentUser.fullName}) não possui permissão de visualização para esta área. Solicite ao administrador da clínica caso precise de acesso.
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      {activeClinicTab === 'dashboard' && (
+                        <ClinicDashboard onNavigateTab={handleTabChange} />
+                      )}
+                      {activeClinicTab === 'appointments' && (
+                        <AppointmentsModule onNavigateToRecord={handleNavigateToRecord} />
+                      )}
+                      {activeClinicTab === 'patients' && (
+                        <PatientsModule
+                          onNavigateToRecord={handleNavigateToRecord}
+                          onNavigateToSchedule={handleNavigateToSchedule}
+                        />
+                      )}
+                      {activeClinicTab === 'medical_records' && (
+                        <MedicalRecordsModule initialPatient={targetPatientForRecord} />
+                      )}
+                      {activeClinicTab === 'communication' && (
+                        <CommunicationModule />
+                      )}
+                      {activeClinicTab === 'financial' && (
+                        <FinancialModule />
+                      )}
+                      {activeClinicTab === 'users' && (
+                        <TeamManagement />
+                      )}
+                      {activeClinicTab === 'settings' && (
+                        <ClinicSettings />
+                      )}
+                      {activeClinicTab === 'website_builder' && (
+                        <WebsiteEditor onOpenPreview={() => setIsWebsitePreviewModalOpen(true)} />
+                      )}
+                    </>
                   )}
                 </section>
               </div>

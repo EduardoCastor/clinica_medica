@@ -27,6 +27,7 @@ import {
 import { StorageService } from '../../services/storage';
 import { ClinicalCloudService } from '../../services/clinicalCloudService';
 import { useTenant } from '../../contexts/TenantContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { calculateBmi, calculateAge } from '../../services/brazilianFormatters';
 import { DocumentPrintModal, PrintableDocumentType } from '../../components/medical-documents/DocumentPrintModal';
 
@@ -34,8 +35,8 @@ interface PatientDetailsModalProps {
   isOpen: boolean;
   onClose: () => void;
   patient: Patient | null;
-  onNewAppointment: (patient: Patient) => void;
-  onOpenRecord: (patient: Patient) => void;
+  onNewAppointment?: (patient: Patient) => void;
+  onOpenRecord?: (patient: Patient) => void;
   onEdit?: (patient: Patient) => void;
 }
 
@@ -48,6 +49,10 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
   onEdit,
 }) => {
   const { branches } = useTenant();
+  const { canViewMenu, canConsultMenu } = useAuth();
+  const canViewClinicalTabs = canViewMenu('medical_records') || canConsultMenu('medical_records');
+  const canViewFinancialTab = canViewMenu('financial');
+
   const [activeTab, setActiveTab] = useState<'profile' | 'clinical' | 'timeline' | 'records' | 'prescriptions' | 'certificates' | 'exams' | 'financial'>('profile');
   const [printableDoc, setPrintableDoc] = useState<PrintableDocumentType | null>(null);
   const [medicalRecords, setMedicalRecords] = useState<MedicalRecordEntry[]>([]);
@@ -64,6 +69,18 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
     if (!isOpen || !patient) return;
     let cancelled = false;
     setSignedError('');
+    setActiveTab('profile');
+
+    if (!canViewClinicalTabs) {
+      setMedicalRecords([]);
+      setPrescriptions([]);
+      setCertificates([]);
+      setLabOrders([]);
+      setExamResults([]);
+      setMedicalDocuments([]);
+      setIsLoadingCloud(false);
+      return;
+    }
 
     setMedicalRecords(StorageService.getMedicalRecords(patient.id));
     setPrescriptions(StorageService.getPrescriptions(patient.id));
@@ -90,12 +107,13 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, patient]);
+  }, [isOpen, patient, canViewClinicalTabs]);
 
   if (!isOpen || !patient) return null;
 
-  const appointments: Appointment[] = StorageService.getAppointments().filter(a => a.patientId === patient.id);
-  const financial: FinancialTransaction[] = StorageService.getFinancial().filter(f => f.patientId === patient.id);
+  const financial: FinancialTransaction[] = canViewFinancialTab
+    ? StorageService.getFinancial().filter(f => f.patientId === patient.id)
+    : [];
 
   const originBranch = branches.find(b => b.id === patient.originBranchId);
   const age = calculateAge(patient.birthDate);
@@ -181,27 +199,31 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
                 <span>Editar Cadastro</span>
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => {
-                onClose();
-                onOpenRecord(patient);
-              }}
-              className="px-3 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-lg shadow-xs transition flex items-center gap-1.5"
-            >
-              <Stethoscope className="w-4 h-4" />
-              <span>Abrir no PEP</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                onClose();
-                onNewAppointment(patient);
-              }}
-              className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 rounded-lg shadow-xs transition"
-            >
-              Novo Agendamento
-            </button>
+            {onOpenRecord && canViewClinicalTabs && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenRecord(patient);
+                }}
+                className="px-3 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-lg shadow-xs transition flex items-center gap-1.5"
+              >
+                <Stethoscope className="w-4 h-4" />
+                <span>Abrir no PEP</span>
+              </button>
+            )}
+            {onNewAppointment && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onNewAppointment(patient);
+                }}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 rounded-lg shadow-xs transition"
+              >
+                Novo Agendamento
+              </button>
+            )}
             <button
               type="button"
               onClick={onClose}
@@ -236,77 +258,83 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
           >
             Cadastro & LGPD
           </button>
-          <button
-            onClick={() => setActiveTab('clinical')}
-            className={`pb-3 border-b-2 transition whitespace-nowrap ${
-              activeTab === 'clinical' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            Triagem & Alergias
-          </button>
-          <button
-            onClick={() => setActiveTab('timeline')}
-            className={`pb-3 border-b-2 transition whitespace-nowrap ${
-              activeTab === 'timeline' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            Linha do Tempo Clínica
-          </button>
-          <button
-            onClick={() => setActiveTab('records')}
-            className={`pb-3 border-b-2 transition flex items-center gap-1.5 whitespace-nowrap ${
-              activeTab === 'records' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <span>Evoluções PEP</span>
-            <span className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded-full text-[10px]">
-              {medicalRecords.length}
-            </span>
-          </button>
-          <button
-            onClick={() => setActiveTab('prescriptions')}
-            className={`pb-3 border-b-2 transition flex items-center gap-1.5 whitespace-nowrap ${
-              activeTab === 'prescriptions' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <span>Receituários</span>
-            <span className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded-full text-[10px]">
-              {prescriptions.length}
-            </span>
-          </button>
-          <button
-            onClick={() => setActiveTab('certificates')}
-            className={`pb-3 border-b-2 transition flex items-center gap-1.5 whitespace-nowrap ${
-              activeTab === 'certificates' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <span>Atestados</span>
-            <span className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded-full text-[10px]">
-              {certificates.length}
-            </span>
-          </button>
-          <button
-            onClick={() => setActiveTab('exams')}
-            className={`pb-3 border-b-2 transition flex items-center gap-1.5 whitespace-nowrap ${
-              activeTab === 'exams' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <span>Exames & Docs</span>
-            <span className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded-full text-[10px]">
-              {labOrders.length + examResults.length + medicalDocuments.length}
-            </span>
-          </button>
-          <button
-            onClick={() => setActiveTab('financial')}
-            className={`pb-3 border-b-2 transition flex items-center gap-1.5 whitespace-nowrap ${
-              activeTab === 'financial' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <span>Financeiro</span>
-            <span className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded-full text-[10px]">
-              {financial.length}
-            </span>
-          </button>
+          {canViewClinicalTabs && (
+            <>
+              <button
+                onClick={() => setActiveTab('clinical')}
+                className={`pb-3 border-b-2 transition whitespace-nowrap ${
+                  activeTab === 'clinical' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Triagem & Alergias
+              </button>
+              <button
+                onClick={() => setActiveTab('timeline')}
+                className={`pb-3 border-b-2 transition whitespace-nowrap ${
+                  activeTab === 'timeline' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Linha do Tempo Clínica
+              </button>
+              <button
+                onClick={() => setActiveTab('records')}
+                className={`pb-3 border-b-2 transition flex items-center gap-1.5 whitespace-nowrap ${
+                  activeTab === 'records' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <span>Evoluções PEP</span>
+                <span className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded-full text-[10px]">
+                  {medicalRecords.length}
+                </span>
+              </button>
+              <button
+                onClick={() => setActiveTab('prescriptions')}
+                className={`pb-3 border-b-2 transition flex items-center gap-1.5 whitespace-nowrap ${
+                  activeTab === 'prescriptions' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <span>Receituários</span>
+                <span className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded-full text-[10px]">
+                  {prescriptions.length}
+                </span>
+              </button>
+              <button
+                onClick={() => setActiveTab('certificates')}
+                className={`pb-3 border-b-2 transition flex items-center gap-1.5 whitespace-nowrap ${
+                  activeTab === 'certificates' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <span>Atestados</span>
+                <span className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded-full text-[10px]">
+                  {certificates.length}
+                </span>
+              </button>
+              <button
+                onClick={() => setActiveTab('exams')}
+                className={`pb-3 border-b-2 transition flex items-center gap-1.5 whitespace-nowrap ${
+                  activeTab === 'exams' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <span>Exames & Docs</span>
+                <span className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded-full text-[10px]">
+                  {labOrders.length + examResults.length + medicalDocuments.length}
+                </span>
+              </button>
+            </>
+          )}
+          {canViewFinancialTab && (
+            <button
+              onClick={() => setActiveTab('financial')}
+              className={`pb-3 border-b-2 transition flex items-center gap-1.5 whitespace-nowrap ${
+                activeTab === 'financial' ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <span>Financeiro</span>
+              <span className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded-full text-[10px]">
+                {financial.length}
+              </span>
+            </button>
+          )}
         </div>
 
         {/* Tab Contents */}
@@ -507,17 +535,19 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
           {/* TAB 4: MEDICAL RECORDS (PEP) */}
           {activeTab === 'records' && (
             <div className="space-y-4">
-              <div className="flex justify-end">
-                <button
-                  onClick={() => {
-                    onClose();
-                    onOpenRecord(patient);
-                  }}
-                  className="px-3.5 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition"
-                >
-                  Abrir Prontuário Completo
-                </button>
-              </div>
+              {onOpenRecord && canViewClinicalTabs && (
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => {
+                      onClose();
+                      onOpenRecord(patient);
+                    }}
+                    className="px-3.5 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition"
+                  >
+                    Abrir Prontuário Completo
+                  </button>
+                </div>
+              )}
 
               {medicalRecords.length === 0 ? (
                 <p className="text-xs text-slate-500 text-center py-8">Nenhuma evolução clínica registrada até o momento.</p>
