@@ -30,6 +30,14 @@ import { useTenant } from '../../contexts/TenantContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { calculateBmi, calculateAge } from '../../services/brazilianFormatters';
 import { DocumentPrintModal, PrintableDocumentType } from '../../components/medical-documents/DocumentPrintModal';
+import { FinancialCloudService } from '../../services/financialCloudService';
+import {
+  PAYMENT_METHOD_LABELS,
+  computeFinancialEffectiveStatus,
+  formatCurrencyPtBr,
+  formatDatePtBr,
+  getFinancialStatusLabel,
+} from '../../services/financialDateUtils';
 
 interface PatientDetailsModalProps {
   isOpen: boolean;
@@ -61,6 +69,7 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
   const [labOrders, setLabOrders] = useState<LabOrder[]>([]);
   const [examResults, setExamResults] = useState<ExamResult[]>([]);
   const [medicalDocuments, setMedicalDocuments] = useState<MedicalDocument[]>([]);
+  const [patientFinancial, setPatientFinancial] = useState<FinancialTransaction[]>([]);
   const [isLoadingCloud, setIsLoadingCloud] = useState(false);
   const [signedError, setSignedError] = useState('');
   const [previewDoc, setPreviewDoc] = useState<{ title: string; url: string; mimeType?: string } | null>(null);
@@ -71,6 +80,15 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
     setSignedError('');
     setActiveTab('profile');
 
+    if (canViewFinancialTab) {
+      FinancialCloudService.fetchFinancialFromCloud('all', patient.organizationId).then((res) => {
+        if (cancelled) return;
+        setPatientFinancial(res.transactions.filter((f) => f.patientId === patient.id));
+      });
+    } else {
+      setPatientFinancial([]);
+    }
+
     if (!canViewClinicalTabs) {
       setMedicalRecords([]);
       setPrescriptions([]);
@@ -79,7 +97,9 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
       setExamResults([]);
       setMedicalDocuments([]);
       setIsLoadingCloud(false);
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
 
     setMedicalRecords(StorageService.getMedicalRecords(patient.id));
@@ -107,13 +127,11 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, patient, canViewClinicalTabs]);
+  }, [isOpen, patient, canViewClinicalTabs, canViewFinancialTab]);
 
   if (!isOpen || !patient) return null;
 
-  const financial: FinancialTransaction[] = canViewFinancialTab
-    ? StorageService.getFinancial().filter(f => f.patientId === patient.id)
-    : [];
+  const financial: FinancialTransaction[] = canViewFinancialTab ? patientFinancial : [];
 
   const originBranch = branches.find(b => b.id === patient.originBranchId);
   const age = calculateAge(patient.birthDate);
@@ -773,24 +791,41 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
               {financial.length === 0 ? (
                 <p className="text-xs text-slate-500 text-center py-8">Nenhum lançamento financeiro para este paciente.</p>
               ) : (
-                financial.map(f => (
-                  <div key={f.id} className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between text-xs">
-                    <div>
-                      <span className="font-bold text-slate-900 block">{f.description}</span>
-                      <span className="text-slate-500 text-[11px]">
-                        {new Date(f.createdAt).toLocaleDateString('pt-BR')} &bull; Forma: {f.paymentMethod.toUpperCase()} &bull; Recibo: {f.receiptNumber || 'N/A'}
-                      </span>
+                financial.map(f => {
+                  const effStatus = computeFinancialEffectiveStatus(f);
+                  return (
+                    <div key={f.id} className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between text-xs">
+                      <div>
+                        <span className="font-bold text-slate-900 block">{f.description}</span>
+                        <span className="text-slate-500 text-[11px]">
+                          Venc.: {formatDatePtBr(f.dueDate)}
+                          {f.paymentDate ? ` • Receb.: ${formatDatePtBr(f.paymentDate)}` : ''}
+                          {f.categoryName ? ` • ${f.categoryName}` : ''}
+                          {' • '}Forma: {PAYMENT_METHOD_LABELS[f.paymentMethod] || f.paymentMethod}
+                          {f.receiptNumber ? ` • ${f.receiptNumber}` : ''}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-sm font-bold text-slate-900 block tabular-nums">
+                          {formatCurrencyPtBr(f.amount)}
+                        </span>
+                        <span
+                          className={`text-[10px] font-semibold px-2 py-0.5 rounded uppercase ${
+                            effStatus === 'paid'
+                              ? 'text-emerald-700 bg-emerald-50'
+                              : effStatus === 'overdue'
+                                ? 'text-rose-700 bg-rose-50'
+                                : effStatus === 'pending'
+                                  ? 'text-amber-700 bg-amber-50'
+                                  : 'text-slate-500 bg-slate-200/70'
+                          }`}
+                        >
+                          {getFinancialStatusLabel(effStatus, f.type)}
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <span className="text-sm font-bold text-slate-900 block tabular-nums">
-                        R$ {f.amount.toFixed(2)}
-                      </span>
-                      <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded">
-                        {f.status.toUpperCase()}
-                      </span>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           )}

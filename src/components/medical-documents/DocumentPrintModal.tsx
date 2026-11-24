@@ -17,6 +17,10 @@ import {
   MedicalDocumentFooter,
   CLINIC_OFFICIAL_DATA,
 } from '../ClinicBrandLogo';
+import {
+  PAYMENT_METHOD_LABELS,
+  formatDatePtBr,
+} from '../../services/financialDateUtils';
 
 export type PrintableDocumentType =
   | { type: 'prescription'; data: Prescription }
@@ -923,7 +927,8 @@ const FinancialReceiptCanvas: React.FC<{
   const displayCnpj = branch?.documentNumber || clinic?.documentNumber || CLINIC_OFFICIAL_DATA.cnpj;
   const displayPhone = branch?.phone || clinic?.phone || CLINIC_OFFICIAL_DATA.phone;
   const displayPhysician = transaction.professionalName || CLINIC_OFFICIAL_DATA.physicianName;
-  const receiptDate = transaction.paidAt || transaction.createdAt;
+  const receiptDate = transaction.paymentDate || transaction.paidAt || transaction.issueDate || transaction.createdAt;
+  const formattedReceiptDate = formatDatePtBr(receiptDate);
 
   return (
     <div className="flex flex-col justify-between h-full min-h-[235mm] print:h-auto print:min-h-0 space-y-6">
@@ -964,7 +969,7 @@ const FinancialReceiptCanvas: React.FC<{
             <div>
               <span className="text-slate-500 block text-[11px]">Data do Pagamento / Emissão</span>
               <span className="font-semibold text-slate-900">
-                {new Date(receiptDate).toLocaleDateString('pt-BR')}
+                {formattedReceiptDate}
               </span>
             </div>
             <div>
@@ -973,8 +978,8 @@ const FinancialReceiptCanvas: React.FC<{
             </div>
             <div>
               <span className="text-slate-500 block text-[11px]">Forma de Pagamento</span>
-              <span className="uppercase font-semibold text-slate-900">
-                {transaction.paymentMethod}
+              <span className="font-semibold text-slate-900">
+                {PAYMENT_METHOD_LABELS[transaction.paymentMethod] || transaction.paymentMethod}
                 {transaction.installments && transaction.installments > 1
                   ? ` (${transaction.installments}x)`
                   : ' (À vista)'}
@@ -1006,7 +1011,7 @@ const FinancialReceiptCanvas: React.FC<{
 
       <MedicalDocumentFooter
         dateLabel="Emissão"
-        dateValue={new Date(receiptDate).toLocaleDateString('pt-BR')}
+        dateValue={formattedReceiptDate}
         extraLeftText={`CNPJ ${displayCnpj} · ${displayPhone}`}
         roleSubtitle="Médico Responsável Técnico"
         professionalName={displayPhysician}

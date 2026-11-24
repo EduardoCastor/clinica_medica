@@ -12,7 +12,7 @@ import { AppointmentsModule } from './modules/appointments/AppointmentsModule';
 import { PatientsModule } from './modules/patients/PatientsModule';
 import { MedicalRecordsModule } from './modules/medical-records/MedicalRecordsModule';
 import { CommunicationModule } from './modules/communication/CommunicationModule';
-import { FinancialModule } from './modules/financial/FinancialModule';
+import { FinancialDeepLink, FinancialModule } from './modules/financial/FinancialModule';
 import { ClinicSettings } from './modules/clinic/ClinicSettings';
 import { TeamManagement } from './modules/clinic/TeamManagement';
 import { WebsiteEditor } from './modules/website-builder/WebsiteEditor';
@@ -36,6 +36,7 @@ const MainAppContent: React.FC = () => {
   const [activeClinicTab, setActiveClinicTab] = useState<ClinicTab>('dashboard');
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
   const [targetPatientForRecord, setTargetPatientForRecord] = useState<Patient | null>(null);
+  const [targetFinancialDeepLink, setTargetFinancialDeepLink] = useState<FinancialDeepLink | null>(null);
   const [isWebsitePreviewModalOpen, setIsWebsitePreviewModalOpen] = useState(false);
 
   const firstAllowedTab = useMemo<ClinicTab>(() => {
@@ -53,6 +54,9 @@ const MainAppContent: React.FC = () => {
     if (!canViewMenu(tab)) return;
     setActiveClinicTab(tab);
     setTargetPatientForRecord(null);
+    if (tab !== 'financial') {
+      setTargetFinancialDeepLink(null);
+    }
   };
 
   const handleNavigateToRecord = (patient: Patient) => {
@@ -64,6 +68,12 @@ const MainAppContent: React.FC = () => {
   const handleNavigateToSchedule = (_patient: Patient) => {
     if (!canViewMenu('appointments')) return;
     setActiveClinicTab('appointments');
+  };
+
+  const handleOpenFinancialTransaction = (link: FinancialDeepLink) => {
+    if (!canViewMenu('financial')) return;
+    setTargetFinancialDeepLink(link);
+    setActiveClinicTab('financial');
   };
 
   const currentMode = tenantContext.mode;
@@ -197,6 +207,7 @@ const MainAppContent: React.FC = () => {
                         <ClinicDashboard
                           onNavigateTab={handleTabChange}
                           onNavigateToRecord={handleNavigateToRecord}
+                          onOpenFinancialTransaction={handleOpenFinancialTransaction}
                         />
                       )}
                       {activeClinicTab === 'appointments' && (
@@ -215,7 +226,10 @@ const MainAppContent: React.FC = () => {
                         <CommunicationModule />
                       )}
                       {activeClinicTab === 'financial' && (
-                        <FinancialModule />
+                        <FinancialModule
+                          initialDeepLink={targetFinancialDeepLink}
+                          onClearDeepLink={() => setTargetFinancialDeepLink(null)}
+                        />
                       )}
                       {activeClinicTab === 'users' && (
                         <TeamManagement />

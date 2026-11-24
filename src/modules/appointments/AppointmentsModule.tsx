@@ -18,10 +18,19 @@ import {
   FileText,
   RotateCcw,
   ExternalLink,
+  DollarSign,
+  CheckCircle2,
 } from 'lucide-react';
-import { Appointment, AppointmentStatus, Patient } from '../../types';
+import {
+  Appointment,
+  AppointmentStatus,
+  FinancialCategory,
+  Patient,
+  Service,
+} from '../../types';
 import { StorageService } from '../../services/storage';
 import { ClinicalCloudService } from '../../services/clinicalCloudService';
+import { FinancialCloudService } from '../../services/financialCloudService';
 import { useTenant } from '../../contexts/TenantContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { getSupabase } from '../../services/supabaseClient';
@@ -29,6 +38,7 @@ import { PRODUCTION_DOMAINS, DomainResolver } from '../../services/domainResolve
 import { sendWhatsAppMessage, resolveMegaapiCredentials } from '../../services/megaApiService';
 import { AppointmentFormModal } from './AppointmentFormModal';
 import { WaitlistModal } from './WaitlistModal';
+import { BillClinicalOriginModal } from '../financial/BillClinicalOriginModal';
 
 interface AppointmentsModuleProps {
   onNavigateToRecord?: (patient: Patient) => void;
@@ -81,7 +91,7 @@ function isUuid(value?: string): boolean {
 }
 
 export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNavigateToRecord }) => {
-  const { activeBranchId, branches, clinic } = useTenant();
+  const { activeBranchId, branches, clinic, organization } = useTenant();
   const {
     currentUser,
     currentRole,
@@ -96,6 +106,8 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
   const canDeleteAppointment = canDeleteInMenu('appointments');
   const canCreateCommunication = canCreateInMenu('communication');
   const canOpenMedicalRecords = canViewMenu('medical_records') || canConsultMenu('medical_records');
+  const canSeeFinancialStatus = canViewMenu('financial') || canConsultMenu('financial');
+  const canBillAppointment = canSeeFinancialStatus && canCreateInMenu('financial');
 
   const shouldFilterByBranch = Boolean(
     activeBranchId && activeBranchId !== 'all' && isUuid(activeBranchId)
@@ -138,12 +150,35 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
   const [cancellationReason, setCancellationReason] = useState(
     'Desistência do paciente comunicada por WhatsApp'
   );
+  const [billingAppointment, setBillingAppointment] = useState<Appointment | null>(null);
+  const [billedAppointmentIds, setBilledAppointmentIds] = useState<Set<string>>(new Set());
+  const [financialCategories, setFinancialCategories] = useState<FinancialCategory[]>([]);
+  const [clinicServices, setClinicServices] = useState<Service[]>([]);
+  const [clinicPatients, setClinicPatients] = useState<Patient[]>([]);
 
   const clinicDomains = StorageService.getDomainsByClinic(clinic.id);
   const bookingDomain =
     clinicDomains.find((d) => d.domainType === 'clinic_booking' || d.domainType === 'booking')
       ?.domain || PRODUCTION_DOMAINS.CLINIC_BOOKING;
   const bookingUrl = `https://${bookingDomain}`;
+
+  const loadBillingMetadata = useCallback(async () => {
+    if (!canSeeFinancialStatus) return;
+    const [finRes, catRes, srvRes] = await Promise.all([
+      FinancialCloudService.fetchFinancialFromCloud(activeBranchId, organization.id),
+      FinancialCloudService.fetchFinancialCategoriesFromCloud(organization.id),
+      FinancialCloudService.fetchServicesFromCloud(organization.id),
+    ]);
+    const billedSet = new Set<string>();
+    for (const tx of finRes.transactions) {
+      if (tx.appointmentId && tx.status !== 'cancelled') {
+        billedSet.add(tx.appointmentId);
+      }
+    }
+    setBilledAppointmentIds(billedSet);
+    setFinancialCategories(catRes.categories);
+    setClinicServices(srvRes.services);
+  }, [canSeeFinancialStatus, activeBranchId, organization.id]);
 
   const loadAppointments = useCallback(
     async (silent = false) => {
@@ -156,12 +191,13 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
         : res.appointments;
 
       setAppointments(filteredByBranch);
+      void loadBillingMetadata();
       setLastSyncedAt(
         new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       );
       if (!silent) setIsSyncing(false);
     },
-    [activeBranchId, shouldFilterByBranch]
+    [activeBranchId, shouldFilterByBranch, loadBillingMetadata]
   );
 
   useEffect(() => {
@@ -1050,6 +1086,39 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
                             </button>
                           )}
 
+                          {/* Financial Billing Badge / Action (only for authorized users) */}
+                          {canSeeFinancialStatus && apt.status !== 'cancelled' && (
+                            billedAppointmentIds.has(apt.id) ? (
+                              <span
+                                className="px-2 py-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg inline-flex items-center gap-1"
+                                title="Consulta já possui conta a receber gerada no Financeiro"
+                              >
+                                <CheckCircle2 className="w-3 h-3" />
+                                <span>Faturado</span>
+                              </span>
+                            ) : (
+                              canBillAppointment && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    if (clinicPatients.length === 0) {
+                                      const patRes = await ClinicalCloudService.fetchPatientsFromCloud(
+                                        activeBranchId
+                                      ).catch(() => ({ patients: [] as Patient[] }));
+                                      setClinicPatients(patRes.patients);
+                                    }
+                                    setBillingAppointment(apt);
+                                  }}
+                                  className="px-2 py-1 text-[11px] font-bold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-lg transition inline-flex items-center gap-1"
+                                  title="Gerar Conta a Receber para esta consulta"
+                                >
+                                  <DollarSign className="w-3 h-3" />
+                                  <span>Cobrar</span>
+                                </button>
+                              )
+                            )
+                          )}
+
                           {/* Edit button */}
                           {canEditAppointment && (
                             <button
@@ -1143,6 +1212,23 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
           setIsFormOpen(true);
         }}
       />
+
+      {/* Consultation Billing Modal */}
+      {canBillAppointment && (
+        <BillClinicalOriginModal
+          isOpen={Boolean(billingAppointment)}
+          onClose={() => setBillingAppointment(null)}
+          organizationId={organization.id}
+          activeBranchId={activeBranchId}
+          branches={branches}
+          categories={financialCategories}
+          patients={clinicPatients}
+          professionals={professionals}
+          services={clinicServices}
+          preselectedAppointment={billingAppointment}
+          onBilled={loadBillingMetadata}
+        />
+      )}
     </div>
   );
 };

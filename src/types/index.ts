@@ -715,27 +715,65 @@ export interface MessageLog {
   sentAt: string;
 }
 
+export type FinancialTransactionType = 'receivable' | 'payable';
+
+export type FinancialOriginType = 'appointment' | 'treatment' | 'manual' | 'expense';
+
+export type FinancialPaymentMethod =
+  | 'pix'
+  | 'credit_card'
+  | 'debit_card'
+  | 'cash'
+  | 'transfer'
+  | 'boleto';
+
+export type FinancialComputedStatus = 'pending' | 'paid' | 'overdue' | 'cancelled';
+
+export interface FinancialCategory {
+  id: string;
+  organizationId: string;
+  name: string;
+  normalizedName: string;
+  categoryType: FinancialTransactionType;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface FinancialTransaction {
   id: string;
   organizationId: string;
   branchId: string;
   branchName: string;
+  categoryId?: string;
+  categoryName?: string;
+  originType?: FinancialOriginType;
   patientId?: string;
   patientName?: string;
   appointmentId?: string;
+  medicalRecordId?: string;
   professionalId?: string;
   professionalName?: string;
   serviceId?: string;
+  treatmentName?: string;
+  supplierName?: string;
   description: string;
   amount: number;
-  type: 'receivable' | 'payable';
-  paymentMethod: 'pix' | 'credit_card' | 'debit_card' | 'cash' | 'transfer';
+  type: FinancialTransactionType;
+  paymentMethod: FinancialPaymentMethod;
   installments: number;
   status: 'paid' | 'pending' | 'cancelled';
-  dueDate: string;
+  issueDate: string; // YYYY-MM-DD (America/Sao_Paulo)
+  dueDate: string; // YYYY-MM-DD (America/Sao_Paulo)
+  paymentDate?: string; // YYYY-MM-DD (America/Sao_Paulo)
   paidAt?: string;
   receiptNumber?: string;
+  notes?: string;
+  idempotencyKey?: string;
+  cancelledAt?: string;
+  cancellationReason?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface WebsiteConfig {

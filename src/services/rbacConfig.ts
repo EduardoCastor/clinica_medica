@@ -63,8 +63,8 @@ export const MENU_DEFINITIONS: MenuDefinition[] = [
   {
     key: 'financial',
     label: 'Módulo Financeiro',
-    description: 'Honorários, recebimentos, pagamentos e emissão de recibos.',
-    supportsDelete: false,
+    description: 'Contas a receber, contas a pagar, categorias, recibos e exportação Excel.',
+    supportsDelete: true,
     supportsAdmin: true,
   },
   {

@@ -10,11 +10,29 @@ import {
   ChevronRight,
   Loader2,
   RefreshCw,
+  ArrowDownLeft,
+  ArrowUpRight,
+  AlertTriangle,
+  CheckCircle2,
+  ExternalLink,
 } from 'lucide-react';
 import { useTenant } from '../../contexts/TenantContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { StorageService } from '../../services/storage';
 import { ClinicalCloudService } from '../../services/clinicalCloudService';
+import { FinancialCloudService } from '../../services/financialCloudService';
+import {
+  addDaysToYmdSaoPaulo,
+  computeFinancialEffectiveStatus,
+  formatCurrencyPtBr,
+  formatDatePtBr,
+  getMonthStartEndYmd,
+  getSaoPauloTodayYmd,
+  isYmdWithinRange,
+  normalizeDateToSaoPauloYmd,
+} from '../../services/financialDateUtils';
+import { FinancialSettleModal } from '../financial/FinancialSettleAndCancelModals';
+import { FinancialDeepLink } from '../financial/FinancialModule';
 import {
   Appointment,
   AppointmentStatus,
@@ -28,6 +46,7 @@ import { ClinicTab } from '../../components/Sidebar';
 interface ClinicDashboardProps {
   onNavigateTab: (tab: ClinicTab) => void;
   onNavigateToRecord?: (patient: Patient) => void;
+  onOpenFinancialTransaction?: (link: FinancialDeepLink) => void;
 }
 
 type PeriodFilter = 'today' | '7d' | 'month' | 'all';
@@ -69,13 +88,15 @@ function isInPeriod(isoOrYmd: string | undefined, period: PeriodFilter): boolean
 export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
   onNavigateTab,
   onNavigateToRecord,
+  onOpenFinancialTransaction,
 }) => {
   const { activeBranchId, branches, organization } = useTenant();
   const { currentUser, currentRole, canViewMenu, canConsultMenu, canEditInMenu } = useAuth();
   const canOpenAppointments = canViewMenu('appointments');
   const canEditAppointments = canEditInMenu('appointments');
   const canOpenMedicalRecords = canViewMenu('medical_records') || canConsultMenu('medical_records');
-  const canOpenFinancial = canViewMenu('financial');
+  const canOpenFinancial = canViewMenu('financial') || canConsultMenu('financial');
+  const canEditFinancial = canEditInMenu('financial');
   const canOpenSettings = canViewMenu('settings');
   const canViewAuditTrail =
     currentRole === 'super_admin' ||
@@ -90,6 +111,7 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [waitlist, setWaitlist] = useState<WaitlistEntry[]>([]);
   const [financial, setFinancial] = useState<FinancialTransaction[]>([]);
+  const [financialError, setFinancialError] = useState('');
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
 
   const [isLoading, setIsLoading] = useState(true);
@@ -97,17 +119,22 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
   const [actionError, setActionError] = useState('');
   const [updatingAptId, setUpdatingAptId] = useState<string | null>(null);
   const [openingRecordAptId, setOpeningRecordAptId] = useState<string | null>(null);
+  const [settlingTx, setSettlingTx] = useState<FinancialTransaction | null>(null);
 
   const loadDashboardData = useCallback(async () => {
     setIsLoading(true);
     setLoadError('');
+    setFinancialError('');
     try {
       const [aptRes, waitRes, finRes, auditRes] = await Promise.all([
         StorageService.fetchAppointmentsFromCloudDetailed(),
         StorageService.fetchWaitlistFromCloudDetailed(activeBranchId),
         canOpenFinancial
-          ? StorageService.fetchFinancialFromCloud(activeBranchId, organization.id)
-          : Promise.resolve({ transactions: [] as FinancialTransaction[] }),
+          ? FinancialCloudService.fetchFinancialFromCloud(activeBranchId, organization.id)
+          : Promise.resolve({ transactions: [] as FinancialTransaction[] } as {
+              transactions: FinancialTransaction[];
+              error?: string;
+            }),
         canViewAuditTrail
           ? StorageService.fetchAuditLogsFromCloud(6, organization.id)
           : Promise.resolve({ logs: [] as AuditLog[] }),
@@ -116,7 +143,10 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
       const errors: string[] = [];
       if (aptRes.error) errors.push(`Agenda: ${aptRes.error}`);
       if (waitRes.error) errors.push(`Lista de espera: ${waitRes.error}`);
-      if ('error' in finRes && finRes.error) errors.push(`Financeiro: ${finRes.error}`);
+      if ('error' in finRes && finRes.error) {
+        setFinancialError(finRes.error);
+        errors.push(`Financeiro: ${finRes.error}`);
+      }
 
       setAppointments(aptRes.appointments);
       setWaitlist(waitRes.waitlist);
@@ -146,13 +176,99 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
       .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
   }, [appointments, activeBranchId, professionalFilter, periodFilter]);
 
-  const filteredFinancialPaid = useMemo(() => {
-    return financial.filter((f) => {
-      if (f.status !== 'paid') return false;
-      if (professionalFilter !== 'all' && f.professionalId !== professionalFilter) return false;
-      return isInPeriod(f.paidAt || f.dueDate || f.createdAt, periodFilter);
-    });
-  }, [financial, professionalFilter, periodFilter]);
+  const todaySpYmd = getSaoPauloTodayYmd();
+
+  const financialOverview = useMemo(() => {
+    const start7d = addDaysToYmdSaoPaulo(todaySpYmd, -6);
+    const monthRange = getMonthStartEndYmd(todaySpYmd);
+
+    const isPayDateInSelectedPeriod = (payYmd: string): boolean => {
+      if (!payYmd) return false;
+      if (periodFilter === 'all') return true;
+      if (periodFilter === 'today') return payYmd === todaySpYmd;
+      if (periodFilter === '7d') return isYmdWithinRange(payYmd, start7d, todaySpYmd);
+      return isYmdWithinRange(payYmd, monthRange.start, monthRange.end);
+    };
+
+    let receivablePendingTotal = 0;
+    let receivablePendingCount = 0;
+    let payablePendingTotal = 0;
+    let payablePendingCount = 0;
+    let receivableOverdueTotal = 0;
+    let receivableOverdueCount = 0;
+    let payableOverdueTotal = 0;
+    let payableOverdueCount = 0;
+    let receivedPeriodTotal = 0;
+    let receivedPeriodCount = 0;
+    let paidPeriodTotal = 0;
+    let paidPeriodCount = 0;
+
+    const receivablesDueToday: FinancialTransaction[] = [];
+    const payablesDueToday: FinancialTransaction[] = [];
+    const overdueObligations: FinancialTransaction[] = [];
+
+    for (const tx of financial) {
+      const effective = computeFinancialEffectiveStatus(tx, todaySpYmd);
+      const dueYmd = normalizeDateToSaoPauloYmd(tx.dueDate);
+      const payYmd = normalizeDateToSaoPauloYmd(tx.paymentDate || tx.paidAt);
+
+      if (tx.type === 'receivable') {
+        if (effective === 'pending' || effective === 'overdue') {
+          receivablePendingTotal += tx.amount;
+          receivablePendingCount += 1;
+        }
+        if (effective === 'overdue') {
+          receivableOverdueTotal += tx.amount;
+          receivableOverdueCount += 1;
+          overdueObligations.push(tx);
+        } else if (effective === 'pending' && dueYmd === todaySpYmd) {
+          receivablesDueToday.push(tx);
+        } else if (effective === 'paid' && isPayDateInSelectedPeriod(payYmd)) {
+          receivedPeriodTotal += tx.amount;
+          receivedPeriodCount += 1;
+        }
+      } else {
+        if (effective === 'pending' || effective === 'overdue') {
+          payablePendingTotal += tx.amount;
+          payablePendingCount += 1;
+        }
+        if (effective === 'overdue') {
+          payableOverdueTotal += tx.amount;
+          payableOverdueCount += 1;
+          overdueObligations.push(tx);
+        } else if (effective === 'pending' && dueYmd === todaySpYmd) {
+          payablesDueToday.push(tx);
+        } else if (effective === 'paid' && isPayDateInSelectedPeriod(payYmd)) {
+          paidPeriodTotal += tx.amount;
+          paidPeriodCount += 1;
+        }
+      }
+    }
+
+    overdueObligations.sort((a, b) =>
+      (normalizeDateToSaoPauloYmd(a.dueDate) || '').localeCompare(
+        normalizeDateToSaoPauloYmd(b.dueDate) || ''
+      )
+    );
+
+    return {
+      receivablePendingTotal,
+      receivablePendingCount,
+      payablePendingTotal,
+      payablePendingCount,
+      receivableOverdueTotal,
+      receivableOverdueCount,
+      payableOverdueTotal,
+      payableOverdueCount,
+      receivedPeriodTotal,
+      receivedPeriodCount,
+      paidPeriodTotal,
+      paidPeriodCount,
+      receivablesDueToday,
+      payablesDueToday,
+      overdueObligations,
+    };
+  }, [financial, todaySpYmd, periodFilter]);
 
   // Real Status counters
   const totalInPeriod = filteredAppointments.length;
@@ -170,8 +286,6 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
             100
         )
       : null;
-
-  const totalReceivablesPeriod = filteredFinancialPaid.reduce((acc, curr) => acc + curr.amount, 0);
 
   const periodLabel: Record<PeriodFilter, string> = {
     today: 'Hoje',
@@ -405,22 +519,19 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
 
         <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs">
           <div className="flex items-center justify-between text-slate-500">
-            <span className="text-xs font-medium">Recebimentos ({periodLabel[periodFilter]})</span>
+            <span className="text-xs font-medium">Recebido ({periodLabel[periodFilter]})</span>
             <DollarSign className="w-4 h-4 text-emerald-600" />
           </div>
           {canOpenFinancial ? (
             <>
-              <div className="mt-2 flex items-baseline gap-1">
-                <span className="text-sm font-semibold text-slate-600">R$</span>
-                <span className="text-2xl font-extrabold text-slate-900 tabular-nums">
-                  {isLoading
-                    ? '—'
-                    : totalReceivablesPeriod.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                </span>
+              <div className="mt-2 text-2xl font-extrabold text-slate-900 tabular-nums">
+                {isLoading ? '—' : formatCurrencyPtBr(financialOverview.receivedPeriodTotal)}
               </div>
               <div className="mt-2 text-[11px] text-emerald-600 font-medium">
-                {filteredFinancialPaid.length}{' '}
-                {filteredFinancialPaid.length === 1 ? 'lançamento quitado' : 'lançamentos quitados'}
+                {financialOverview.receivedPeriodCount}{' '}
+                {financialOverview.receivedPeriodCount === 1
+                  ? 'recebimento conciliado'
+                  : 'recebimentos conciliados'}
               </div>
             </>
           ) : (
@@ -435,6 +546,353 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
           )}
         </div>
       </div>
+
+      {/* Resumo Financeiro Real (Visível apenas para perfis autorizados ao Financeiro) */}
+      {canOpenFinancial && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-extrabold text-slate-900">
+                Obrigações Financeiras & Acompanhamento ({periodLabel[periodFilter]})
+              </h2>
+              <p className="text-[11px] text-slate-500">
+                Totais reais persistidos no Supabase · Vencimentos e baixas em horário de Brasília ({formatDatePtBr(todaySpYmd)}).
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigateTab('financial')}
+              className="text-xs font-semibold text-sky-700 hover:text-sky-800 inline-flex items-center gap-1 self-start sm:self-auto"
+            >
+              <span>Abrir Módulo Financeiro</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {financialError && financial.length === 0 ? (
+            <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>Erro ao carregar o resumo financeiro: {financialError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => void loadDashboardData()}
+                className="px-3 py-1.5 bg-white border border-rose-200 rounded-lg font-semibold hover:bg-rose-100 inline-flex items-center gap-1 shrink-0"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>Tentar novamente</span>
+              </button>
+            </div>
+          ) : (
+            <>
+              {/* 6 Financial KPIs */}
+              <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+                <div className="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-xs">
+                  <div className="flex items-center justify-between text-slate-500 text-[11px] font-medium">
+                    <span>A Receber Pendente</span>
+                    <ArrowDownLeft className="w-3.5 h-3.5 text-sky-600" />
+                  </div>
+                  <div className="mt-1.5 text-base font-extrabold text-slate-900 tabular-nums">
+                    {isLoading ? '—' : formatCurrencyPtBr(financialOverview.receivablePendingTotal)}
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-0.5">
+                    {financialOverview.receivablePendingCount} título(s)
+                  </p>
+                </div>
+
+                <div className="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-xs">
+                  <div className="flex items-center justify-between text-slate-500 text-[11px] font-medium">
+                    <span>A Pagar Pendente</span>
+                    <ArrowUpRight className="w-3.5 h-3.5 text-amber-600" />
+                  </div>
+                  <div className="mt-1.5 text-base font-extrabold text-slate-900 tabular-nums">
+                    {isLoading ? '—' : formatCurrencyPtBr(financialOverview.payablePendingTotal)}
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-0.5">
+                    {financialOverview.payablePendingCount} título(s)
+                  </p>
+                </div>
+
+                <div className="p-3.5 bg-white rounded-2xl border border-rose-200 shadow-xs">
+                  <div className="flex items-center justify-between text-rose-700 text-[11px] font-semibold">
+                    <span>Receitas Vencidas</span>
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+                  </div>
+                  <div className="mt-1.5 text-base font-extrabold text-rose-700 tabular-nums">
+                    {isLoading ? '—' : formatCurrencyPtBr(financialOverview.receivableOverdueTotal)}
+                  </div>
+                  <p className="text-[10px] text-rose-600 mt-0.5">
+                    {financialOverview.receivableOverdueCount} em atraso
+                  </p>
+                </div>
+
+                <div className="p-3.5 bg-white rounded-2xl border border-rose-200 shadow-xs">
+                  <div className="flex items-center justify-between text-rose-700 text-[11px] font-semibold">
+                    <span>Despesas Vencidas</span>
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+                  </div>
+                  <div className="mt-1.5 text-base font-extrabold text-rose-700 tabular-nums">
+                    {isLoading ? '—' : formatCurrencyPtBr(financialOverview.payableOverdueTotal)}
+                  </div>
+                  <p className="text-[10px] text-rose-600 mt-0.5">
+                    {financialOverview.payableOverdueCount} em atraso
+                  </p>
+                </div>
+
+                <div className="p-3.5 bg-white rounded-2xl border border-emerald-200/80 shadow-xs">
+                  <div className="flex items-center justify-between text-emerald-700 text-[11px] font-semibold">
+                    <span>Recebido ({periodLabel[periodFilter]})</span>
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  </div>
+                  <div className="mt-1.5 text-base font-extrabold text-emerald-700 tabular-nums">
+                    {isLoading ? '—' : formatCurrencyPtBr(financialOverview.receivedPeriodTotal)}
+                  </div>
+                  <p className="text-[10px] text-emerald-700 mt-0.5">
+                    {financialOverview.receivedPeriodCount} baixa(s)
+                  </p>
+                </div>
+
+                <div className="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-xs">
+                  <div className="flex items-center justify-between text-slate-600 text-[11px] font-medium">
+                    <span>Pago ({periodLabel[periodFilter]})</span>
+                    <DollarSign className="w-3.5 h-3.5 text-slate-600" />
+                  </div>
+                  <div className="mt-1.5 text-base font-extrabold text-slate-900 tabular-nums">
+                    {isLoading ? '—' : formatCurrencyPtBr(financialOverview.paidPeriodTotal)}
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-0.5">
+                    {financialOverview.paidPeriodCount} baixa(s)
+                  </p>
+                </div>
+              </div>
+
+              {/* Highlight Lists: Receivables Today, Payables Today, Overdue */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {/* Contas a Receber Hoje */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden flex flex-col">
+                  <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <ArrowDownLeft className="w-4 h-4 text-emerald-600" />
+                      <h3 className="text-xs font-bold text-slate-900">
+                        Contas a Receber Hoje ({financialOverview.receivablesDueToday.length})
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenFinancialTransaction
+                          ? onOpenFinancialTransaction({ tab: 'receivable' })
+                          : onNavigateTab('financial')
+                      }
+                      className="text-[11px] font-semibold text-sky-600 hover:text-sky-700"
+                    >
+                      Ver todas
+                    </button>
+                  </div>
+
+                  <div className="divide-y divide-slate-100 flex-1">
+                    {isLoading ? (
+                      <div className="p-6 text-center text-xs text-slate-400">Carregando...</div>
+                    ) : financialOverview.receivablesDueToday.length === 0 ? (
+                      <div className="p-6 text-center text-xs text-slate-400">
+                        Nenhuma conta a receber com vencimento hoje.
+                      </div>
+                    ) : (
+                      financialOverview.receivablesDueToday.slice(0, 5).map((tx) => (
+                        <div key={tx.id} className="p-3.5 flex items-center justify-between gap-2 text-xs">
+                          <div className="min-w-0">
+                            <p className="font-bold text-slate-900 truncate">{tx.description}</p>
+                            <p className="text-[11px] text-slate-500 truncate">
+                              {tx.patientName || 'Cliente avulso'} · {tx.branchName}
+                            </p>
+                            <p className="text-[11px] font-extrabold text-emerald-700 tabular-nums mt-0.5">
+                              {formatCurrencyPtBr(tx.amount)}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {canEditFinancial && (
+                              <button
+                                type="button"
+                                onClick={() => setSettlingTx(tx)}
+                                className="px-2 py-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg"
+                              >
+                                Receber
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onOpenFinancialTransaction
+                                  ? onOpenFinancialTransaction({ transactionId: tx.id, tab: tx.type })
+                                  : onNavigateTab('financial')
+                              }
+                              className="p-1.5 text-slate-500 hover:text-sky-700 hover:bg-sky-50 rounded-lg"
+                              title="Abrir no Financeiro"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* Contas a Pagar Hoje */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden flex flex-col">
+                  <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <ArrowUpRight className="w-4 h-4 text-amber-600" />
+                      <h3 className="text-xs font-bold text-slate-900">
+                        Contas a Pagar Hoje ({financialOverview.payablesDueToday.length})
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenFinancialTransaction
+                          ? onOpenFinancialTransaction({ tab: 'payable' })
+                          : onNavigateTab('financial')
+                      }
+                      className="text-[11px] font-semibold text-sky-600 hover:text-sky-700"
+                    >
+                      Ver todas
+                    </button>
+                  </div>
+
+                  <div className="divide-y divide-slate-100 flex-1">
+                    {isLoading ? (
+                      <div className="p-6 text-center text-xs text-slate-400">Carregando...</div>
+                    ) : financialOverview.payablesDueToday.length === 0 ? (
+                      <div className="p-6 text-center text-xs text-slate-400">
+                        Nenhuma conta a pagar com vencimento hoje.
+                      </div>
+                    ) : (
+                      financialOverview.payablesDueToday.slice(0, 5).map((tx) => (
+                        <div key={tx.id} className="p-3.5 flex items-center justify-between gap-2 text-xs">
+                          <div className="min-w-0">
+                            <p className="font-bold text-slate-900 truncate">{tx.description}</p>
+                            <p className="text-[11px] text-slate-500 truncate">
+                              {tx.supplierName || tx.categoryName || 'Fornecedor'} · {tx.branchName}
+                            </p>
+                            <p className="text-[11px] font-extrabold text-rose-700 tabular-nums mt-0.5">
+                              {formatCurrencyPtBr(tx.amount)}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {canEditFinancial && (
+                              <button
+                                type="button"
+                                onClick={() => setSettlingTx(tx)}
+                                className="px-2 py-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg"
+                              >
+                                Pagar
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onOpenFinancialTransaction
+                                  ? onOpenFinancialTransaction({ transactionId: tx.id, tab: tx.type })
+                                  : onNavigateTab('financial')
+                              }
+                              className="p-1.5 text-slate-500 hover:text-sky-700 hover:bg-sky-50 rounded-lg"
+                              title="Abrir no Financeiro"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* Contas Vencidas */}
+                <div className="bg-white rounded-2xl border border-rose-200/80 shadow-xs overflow-hidden flex flex-col">
+                  <div className="px-4 py-3 border-b border-rose-100 bg-rose-50/40 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 text-rose-600" />
+                      <h3 className="text-xs font-bold text-rose-900">
+                        Contas Vencidas ({financialOverview.overdueObligations.length})
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onNavigateTab('financial')}
+                      className="text-[11px] font-semibold text-rose-700 hover:text-rose-900"
+                    >
+                      Gerenciar
+                    </button>
+                  </div>
+
+                  <div className="divide-y divide-slate-100 flex-1">
+                    {isLoading ? (
+                      <div className="p-6 text-center text-xs text-slate-400">Carregando...</div>
+                    ) : financialOverview.overdueObligations.length === 0 ? (
+                      <div className="p-6 text-center text-xs text-emerald-700">
+                        Nenhuma conta vencida em aberto.
+                      </div>
+                    ) : (
+                      financialOverview.overdueObligations.slice(0, 5).map((tx) => (
+                        <div key={tx.id} className="p-3.5 flex items-center justify-between gap-2 text-xs">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                                  tx.type === 'receivable'
+                                    ? 'bg-sky-100 text-sky-800'
+                                    : 'bg-rose-100 text-rose-800'
+                                }`}
+                              >
+                                {tx.type === 'receivable' ? 'Receber' : 'Pagar'}
+                              </span>
+                              <p className="font-bold text-slate-900 truncate">{tx.description}</p>
+                            </div>
+                            <p className="text-[11px] text-rose-700 mt-0.5">
+                              Venceu em {formatDatePtBr(tx.dueDate)} ·{' '}
+                              {tx.type === 'receivable'
+                                ? tx.patientName || 'Avulso'
+                                : tx.supplierName || tx.categoryName || 'Despesa'}
+                            </p>
+                            <p className="text-[11px] font-extrabold text-slate-900 tabular-nums mt-0.5">
+                              {formatCurrencyPtBr(tx.amount)}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {canEditFinancial && (
+                              <button
+                                type="button"
+                                onClick={() => setSettlingTx(tx)}
+                                className="px-2 py-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg"
+                              >
+                                {tx.type === 'receivable' ? 'Receber' : 'Pagar'}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onOpenFinancialTransaction
+                                  ? onOpenFinancialTransaction({ transactionId: tx.id, tab: tx.type })
+                                  : onNavigateTab('financial')
+                              }
+                              className="p-1.5 text-slate-500 hover:text-sky-700 hover:bg-sky-50 rounded-lg"
+                              title="Abrir no Financeiro"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Main Grid: Atendimentos & Lista de Espera / Filiais */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -701,6 +1159,12 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
           )}
         </div>
       </div>
+      {/* Quick Settle Modal from Dashboard */}
+      <FinancialSettleModal
+        transaction={settlingTx}
+        onClose={() => setSettlingTx(null)}
+        onSettled={loadDashboardData}
+      />
     </div>
   );
 };

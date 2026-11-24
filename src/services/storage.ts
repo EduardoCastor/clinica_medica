@@ -3015,330 +3015,45 @@ export const StorageService = {
     }
     setStored(STORAGE_KEYS.FINANCIAL, list);
   },
+  removeFinancialTransactionFromCache: (id: string): void => {
+    const list = getStored<FinancialTransaction[]>(STORAGE_KEYS.FINANCIAL, []).filter(
+      (f) => f.id !== id
+    );
+    setStored(STORAGE_KEYS.FINANCIAL, list);
+  },
   fetchFinancialFromCloud: async (
     branchFilterId?: string,
     organizationId?: string
   ): Promise<{ transactions: FinancialTransaction[]; error?: string }> => {
-    const supabase = getSupabase();
-    if (!supabase) {
-      return {
-        transactions: [],
-        error: 'Cliente Supabase não configurado neste ambiente.',
-      };
-    }
-
-    const isUuid = (val?: string) =>
-      Boolean(
-        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
-      );
-
-    const extractJoin = (val: unknown): Record<string, unknown> | null => {
-      if (!val) return null;
-      if (Array.isArray(val)) return (val[0] as Record<string, unknown>) || null;
-      if (typeof val === 'object') return val as Record<string, unknown>;
-      return null;
-    };
-
-    try {
-      let query = supabase
-        .from('financial_transactions')
-        .select(
-          `
-          *,
-          patient:patients (id, full_name),
-          professional:professionals (id, full_name),
-          branch:branches (id, name)
-        `
-        )
-        .order('due_date', { ascending: false })
-        .order('created_at', { ascending: false });
-
-      if (isUuid(organizationId)) {
-        query = query.eq('organization_id', organizationId!);
-      }
-      if (branchFilterId && branchFilterId !== 'all' && isUuid(branchFilterId)) {
-        query = query.eq('branch_id', branchFilterId);
-      }
-
-      let { data, error } = await query;
-
-      if (error) {
-        // Fallback sem joins caso alguma FK auxiliar não seja acessível
-        let flatQuery = supabase
-          .from('financial_transactions')
-          .select('*')
-          .order('due_date', { ascending: false })
-          .order('created_at', { ascending: false });
-
-        if (isUuid(organizationId)) {
-          flatQuery = flatQuery.eq('organization_id', organizationId!);
-        }
-        if (branchFilterId && branchFilterId !== 'all' && isUuid(branchFilterId)) {
-          flatQuery = flatQuery.eq('branch_id', branchFilterId);
-        }
-
-        const flatRes = await flatQuery;
-        data = flatRes.data;
-        error = flatRes.error;
-      }
-
-      if (error) {
-        return {
-          transactions: [],
-          error:
-            error.code === '42501'
-              ? 'Acesso negado ao módulo financeiro pelas políticas de segurança (RLS). Verifique suas permissões ou aplique a migration de RLS financeiro.'
-              : error.message,
-        };
-      }
-
-      const branches = StorageService.getBranches();
-      const professionals = StorageService.getProfessionals();
-
-      const mapped: FinancialTransaction[] = (
-        (data || []) as Array<Record<string, unknown>>
-      ).map((row) => {
-        const patientJoin = extractJoin(row.patient);
-        const profJoin = extractJoin(row.professional);
-        const branchJoin = extractJoin(row.branch);
-        const branchId = String(row.branch_id || '');
-        const profId = row.professional_id ? String(row.professional_id) : undefined;
-
-        const branchObj = branches.find((b) => b.id === branchId);
-        const profObj = profId ? professionals.find((p) => p.id === profId) : undefined;
-
-        const rawStatus = String(row.status || 'paid');
-        const status: FinancialTransaction['status'] =
-          rawStatus === 'pending' || rawStatus === 'cancelled' || rawStatus === 'paid'
-            ? rawStatus
-            : rawStatus === 'refunded'
-              ? 'cancelled'
-              : 'paid';
-
-        const rawMethod = String(row.payment_method || 'pix');
-        const paymentMethod: FinancialTransaction['paymentMethod'] =
-          rawMethod === 'credit_card' ||
-          rawMethod === 'debit_card' ||
-          rawMethod === 'cash' ||
-          rawMethod === 'transfer' ||
-          rawMethod === 'pix'
-            ? rawMethod
-            : 'transfer';
-
-        return {
-          id: String(row.id),
-          organizationId: String(row.organization_id || organizationId || ''),
-          branchId,
-          branchName: String(branchJoin?.name || branchObj?.name || 'Unidade'),
-          patientId: row.patient_id ? String(row.patient_id) : undefined,
-          patientName: patientJoin?.full_name ? String(patientJoin.full_name) : undefined,
-          appointmentId: row.appointment_id ? String(row.appointment_id) : undefined,
-          professionalId: profId,
-          professionalName: profJoin?.full_name
-            ? String(profJoin.full_name)
-            : profObj?.fullName,
-          serviceId: row.service_id ? String(row.service_id) : undefined,
-          description: String(row.description || ''),
-          amount: Number(row.amount || 0),
-          type: row.transaction_type === 'payable' ? 'payable' : 'receivable',
-          paymentMethod,
-          installments: Number(row.installments || 1),
-          status,
-          dueDate: String(row.due_date || new Date().toISOString().split('T')[0]),
-          paidAt: row.paid_at ? String(row.paid_at) : undefined,
-          receiptNumber: row.receipt_number ? String(row.receipt_number) : undefined,
-          createdAt: String(row.created_at || new Date().toISOString()),
-        };
-      });
-
-      if (!branchFilterId || branchFilterId === 'all') {
-        setStored(STORAGE_KEYS.FINANCIAL, mapped);
-      }
-
-      return { transactions: mapped };
-    } catch (err) {
-      return {
-        transactions: [],
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
+    const { FinancialCloudService } = await import('./financialCloudService');
+    return FinancialCloudService.fetchFinancialFromCloud(branchFilterId, organizationId);
   },
   saveFinancialTransactionToCloud: async (
     tx: FinancialTransaction
   ): Promise<{ success: boolean; transaction?: FinancialTransaction; error?: string }> => {
-    const supabase = getSupabase();
-    if (!supabase) {
-      return {
-        success: false,
-        error: 'Conexão com o Supabase não configurada neste ambiente.',
-      };
-    }
-
-    const isUuid = (val?: string) =>
-      Boolean(
-        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
-      );
-
-    try {
-      let orgId = isUuid(tx.organizationId) ? tx.organizationId : undefined;
-      if (!orgId) {
-        const currentOrg = StorageService.getOrganization();
-        if (isUuid(currentOrg.id)) {
-          orgId = currentOrg.id;
-        } else {
-          const { data: orgRow } = await supabase
-            .from('organizations')
-            .select('id')
-            .limit(1)
-            .maybeSingle();
-          if (orgRow?.id) orgId = String(orgRow.id);
-        }
-      }
-
-      if (!orgId) {
-        return {
-          success: false,
-          error: 'Organização não identificada para gravar o lançamento financeiro.',
-        };
-      }
-
-      let branchId = isUuid(tx.branchId) ? tx.branchId : undefined;
-      if (!branchId) {
-        const localBranches = StorageService.getBranches();
-        const validLocalBranch = localBranches.find((b) => isUuid(b.id));
-        if (validLocalBranch) {
-          branchId = validLocalBranch.id;
-        } else {
-          const { data: branchRow } = await supabase
-            .from('branches')
-            .select('id')
-            .eq('organization_id', orgId)
-            .limit(1)
-            .maybeSingle();
-          if (branchRow?.id) branchId = String(branchRow.id);
-        }
-      }
-
-      if (!branchId) {
-        return {
-          success: false,
-          error: 'Filial válida (UUID) não encontrada para gravar o lançamento financeiro.',
-        };
-      }
-
-      const payload: Record<string, unknown> = {
-        organization_id: orgId,
-        branch_id: branchId,
-        patient_id: isUuid(tx.patientId) ? tx.patientId : null,
-        appointment_id: isUuid(tx.appointmentId) ? tx.appointmentId : null,
-        professional_id: isUuid(tx.professionalId) ? tx.professionalId : null,
-        service_id: isUuid(tx.serviceId) ? tx.serviceId : null,
-        description: tx.description.trim(),
-        amount: Number(tx.amount),
-        transaction_type: tx.type,
-        payment_method: tx.paymentMethod,
-        installments: Math.max(1, Number(tx.installments || 1)),
-        status: tx.status,
-        due_date: tx.dueDate,
-        paid_at: tx.status === 'paid' ? tx.paidAt || new Date().toISOString() : null,
-        receipt_number: tx.receiptNumber || null,
-      };
-
-      const isUpdate = isUuid(tx.id);
-      const { data: savedRow, error } = isUpdate
-        ? await supabase
-            .from('financial_transactions')
-            .update(payload)
-            .eq('id', tx.id)
-            .select('*')
-            .single()
-        : await supabase
-            .from('financial_transactions')
-            .insert(payload)
-            .select('*')
-            .single();
-
-      if (error || !savedRow) {
-        const errMsg =
-          error?.code === '42501'
-            ? 'Sem permissão para gravar lançamento financeiro nesta filial (RLS).'
-            : error?.message || 'Não foi possível salvar o lançamento financeiro no Supabase.';
-        return { success: false, error: errMsg };
-      }
-
-      const savedTx: FinancialTransaction = {
-        ...tx,
-        id: String(savedRow.id),
-        organizationId: String(savedRow.organization_id || orgId),
-        branchId: String(savedRow.branch_id || branchId),
-        paidAt: savedRow.paid_at ? String(savedRow.paid_at) : undefined,
-        receiptNumber: savedRow.receipt_number ? String(savedRow.receipt_number) : tx.receiptNumber,
-        createdAt: String(savedRow.created_at || tx.createdAt),
-      };
-
-      StorageService.saveFinancialTransaction(savedTx);
-      void StorageService.addAuditLogToCloud({
-        organizationId: orgId,
-        action: isUpdate ? 'Atualizou Lançamento Financeiro' : 'Novo Lançamento Financeiro',
-        entity: 'Financeiro',
-        entityId: savedTx.id,
-        details: `${savedTx.description} - R$ ${savedTx.amount.toFixed(2)} (${savedTx.paymentMethod})`,
-      });
-
-      return { success: true, transaction: savedTx };
-    } catch (err) {
-      return {
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
+    const { FinancialCloudService } = await import('./financialCloudService');
+    return FinancialCloudService.saveFinancialTransactionToCloud(tx);
   },
   updateFinancialTransactionStatusInCloud: async (
     id: string,
-    status: FinancialTransaction['status']
+    status: FinancialTransaction['status'],
+    paymentDate?: string
   ): Promise<{ success: boolean; error?: string }> => {
-    const supabase = getSupabase();
-    if (!supabase) {
-      return { success: false, error: 'Conexão com o Supabase não configurada.' };
+    const { FinancialCloudService } = await import('./financialCloudService');
+    if (status === 'paid') {
+      const { getSaoPauloTodayYmd } = await import('./financialDateUtils');
+      return FinancialCloudService.settleFinancialTransactionInCloud({
+        id,
+        paymentDate: paymentDate || getSaoPauloTodayYmd(),
+      });
     }
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
-      return { success: false, error: 'ID de lançamento inválido para persistência no banco.' };
+    if (status === 'cancelled') {
+      return FinancialCloudService.cancelFinancialTransactionInCloud({
+        id,
+        reason: 'Cancelamento administrativo',
+      });
     }
-
-    try {
-      const paidAt = status === 'paid' ? new Date().toISOString() : null;
-      const { error } = await supabase
-        .from('financial_transactions')
-        .update({ status, paid_at: paidAt })
-        .eq('id', id);
-
-      if (error) {
-        return {
-          success: false,
-          error:
-            error.code === '42501'
-              ? 'Sem permissão para atualizar este lançamento financeiro.'
-              : error.message,
-        };
-      }
-
-      const cached = StorageService.getFinancial();
-      const target = cached.find((item) => item.id === id);
-      if (target) {
-        StorageService.saveFinancialTransaction({
-          ...target,
-          status,
-          paidAt: paidAt || undefined,
-        });
-      }
-
-      return { success: true };
-    } catch (err) {
-      return {
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
+    return { success: false, error: 'Status não suportado para atualização simplificada.' };
   },
 
   // Website Config (localStorage + Supabase public.websites persistence)
