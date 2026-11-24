@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, ClipboardCheck, AlertCircle, Upload, FileText, Loader2 } from 'lucide-react';
 import { Patient, ExamResult } from '../../types';
 import { StorageService } from '../../services/storage';
@@ -27,7 +27,7 @@ export const ExamResultModal: React.FC<ExamResultModalProps> = ({
   const [examName, setExamName] = useState('');
   const [examCategory, setExamCategory] = useState<'laboratorial' | 'imagem' | 'outros'>('laboratorial');
   const [performedDate, setPerformedDate] = useState(new Date().toISOString().split('T')[0]);
-  const [laboratoryName, setLaboratoryName] = useState('Laboratório Fleury');
+  const [laboratoryName, setLaboratoryName] = useState('');
   const [reportSummary, setReportSummary] = useState('');
   const [referenceValues, setReferenceValues] = useState('');
   const [status, setStatus] = useState<'performed' | 'evaluated' | 'critical'>('evaluated');
@@ -36,6 +36,7 @@ export const ExamResultModal: React.FC<ExamResultModalProps> = ({
   const [notes, setNotes] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const professionals = StorageService.getProfessionals();
   const activeProf =
@@ -65,11 +66,11 @@ export const ExamResultModal: React.FC<ExamResultModalProps> = ({
     const resolvedBranchId =
       activeBranchId !== 'all'
         ? activeBranchId
-        : patient.originBranchId || branches[0]?.id || 'branch_cf_centro';
+        : patient.originBranchId || branches[0]?.id || '';
 
     const newResult: ExamResult = {
       id: `exam_res_${Date.now()}`,
-      organizationId: patient.organizationId || organization.id || 'org_mureb_01',
+      organizationId: patient.organizationId || organization.id || '',
       branchId: resolvedBranchId,
       patientId: patient.id,
       medicalRecordId,
@@ -98,10 +99,12 @@ export const ExamResultModal: React.FC<ExamResultModalProps> = ({
 
       onSuccess();
       setExamName('');
+      setLaboratoryName('');
       setReportSummary('');
       setReferenceValues('');
       setAttachmentUrl('');
       setSelectedFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
       setNotes('');
       onClose();
     } catch (err) {
@@ -273,6 +276,7 @@ export const ExamResultModal: React.FC<ExamResultModalProps> = ({
               <span>Anexar Arquivo do Laudo (PDF, JPG, PNG ou WEBP - máx. 15 MB)</span>
             </label>
             <input
+              ref={fileInputRef}
               type="file"
               accept="application/pdf,image/jpeg,image/png,image/webp"
               onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
@@ -286,7 +290,10 @@ export const ExamResultModal: React.FC<ExamResultModalProps> = ({
                 </span>
                 <button
                   type="button"
-                  onClick={() => setSelectedFile(null)}
+                  onClick={() => {
+                    setSelectedFile(null);
+                    if (fileInputRef.current) fileInputRef.current.value = '';
+                  }}
                   className="text-rose-600 hover:underline font-semibold ml-2 shrink-0"
                 >
                   Remover

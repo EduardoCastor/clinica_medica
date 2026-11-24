@@ -32,24 +32,38 @@
   page-break-inside: avoid;
 }
 
+/* Portal de impressão oculto na tela normal e exibido exclusivamente em @media print */
+#medsync-print-portal {
+  display: none;
+}
+
 @media print {
   html,
   body {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
     background: #ffffff !important;
     color: #0f172a !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
 
-  /* Quando DocumentPrintModal estiver aberto, oculta toda a interface (#root e modais) e imprime apenas o portal exclusivo */
+  /* Quando DocumentPrintModal estiver aberto, oculta toda a interface (#root, banners e modais) e imprime apenas o portal exclusivo */
+  body.medsync-printing-doc #root,
   body.medsync-printing-doc > *:not(#medsync-print-portal) {
     display: none !important;
+    visibility: hidden !important;
   }
 
   body.medsync-printing-doc #medsync-print-portal {
     display: block !important;
+    visibility: visible !important;
     position: static !important;
     width: 100% !important;
+    height: auto !important;
     margin: 0 !important;
     padding: 0 !important;
     background: #ffffff !important;

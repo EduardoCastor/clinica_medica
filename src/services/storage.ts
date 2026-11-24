@@ -99,7 +99,57 @@ const STORAGE_KEYS = {
   DATA_VERSION: 'medsync_data_version',
 };
 
-export const MEDSYNC_DATA_VERSION = '2026.11.24-rbac-teams-auth';
+export const MEDSYNC_DATA_VERSION = '2026.11.24-real-persistence-v1';
+
+const OPERATIONAL_STORAGE_KEYS = new Set<string>([
+  STORAGE_KEYS.PATIENTS,
+  STORAGE_KEYS.APPOINTMENTS,
+  STORAGE_KEYS.WAITLIST,
+  STORAGE_KEYS.MEDICAL_RECORDS,
+  STORAGE_KEYS.PRESCRIPTIONS,
+  STORAGE_KEYS.CERTIFICATES,
+  STORAGE_KEYS.LAB_ORDERS,
+  STORAGE_KEYS.EXAM_RESULTS,
+  STORAGE_KEYS.MEDICAL_DOCUMENTS,
+  STORAGE_KEYS.FINANCIAL,
+  STORAGE_KEYS.AUDIT_LOGS,
+  STORAGE_KEYS.MESSAGES,
+  STORAGE_KEYS.AUTOMATION_EXECUTIONS,
+]);
+
+const SEEDED_DEMO_IDS = new Set<string>([
+  ...INITIAL_PATIENTS.map((p) => p.id),
+  ...INITIAL_APPOINTMENTS.map((a) => a.id),
+  ...INITIAL_WAITLIST.map((w) => w.id),
+  ...INITIAL_MEDICAL_RECORDS.map((r) => r.id),
+  ...INITIAL_PRESCRIPTIONS.map((p) => p.id),
+  ...INITIAL_CERTIFICATES.map((c) => c.id),
+  ...INITIAL_LAB_ORDERS.map((l) => l.id),
+  ...INITIAL_EXAM_RESULTS.map((e) => e.id),
+  ...INITIAL_FINANCIAL.map((f) => f.id),
+  ...INITIAL_AUDIT_LOGS.map((a) => a.id),
+  ...INITIAL_MESSAGES.map((m) => m.id),
+  ...INITIAL_AUTOMATION_EXECUTIONS.map((x) => x.id),
+]);
+
+function stripSeededDemoItemsFromStorageKey(storageKey: string): void {
+  if (typeof window === 'undefined') return;
+  const raw = localStorage.getItem(storageKey);
+  if (!raw) return;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return;
+    const cleaned = parsed.filter(
+      (item: unknown) =>
+        item &&
+        typeof item === 'object' &&
+        !SEEDED_DEMO_IDS.has(String((item as Record<string, unknown>).id || ''))
+    );
+    localStorage.setItem(storageKey, JSON.stringify(cleaned));
+  } catch {
+    localStorage.removeItem(storageKey);
+  }
+}
 
 let migrationChecked = false;
 
@@ -108,6 +158,7 @@ export function runDataMigrationIfNeeded(): void {
   migrationChecked = true;
 
   try {
+    const hasCloud = Boolean(getSupabase());
     const currentVersion = localStorage.getItem(STORAGE_KEYS.DATA_VERSION);
     const rawClinic = localStorage.getItem(STORAGE_KEYS.CLINIC);
     const rawProfessionals = localStorage.getItem(STORAGE_KEYS.PROFESSIONALS);
@@ -137,7 +188,13 @@ export function runDataMigrationIfNeeded(): void {
       hasLegacyBranches ||
       !currentVersion;
 
-    // Incremental non-destructive migration when upgrading from 2026.11.13-newton-mureb
+    // Purga definitiva de registros demo/mock quando conectado ao Supabase
+    if (hasCloud && currentVersion !== MEDSYNC_DATA_VERSION) {
+      OPERATIONAL_STORAGE_KEYS.forEach((key) => {
+        stripSeededDemoItemsFromStorageKey(key);
+      });
+    }
+
     if (!needsLegacyReset && currentVersion !== MEDSYNC_DATA_VERSION) {
       if (rawClinic) {
         try {
@@ -195,7 +252,7 @@ export function runDataMigrationIfNeeded(): void {
 
     if (!needsLegacyReset) return;
 
-    // Upgrade core clinic, org, branches, rooms, specialties, professionals, services, users, website, domains
+    // Upgrade core structural metadata defaults
     localStorage.setItem(STORAGE_KEYS.ORGANIZATION, JSON.stringify(INITIAL_ORGANIZATION));
     localStorage.setItem(STORAGE_KEYS.CLINIC, JSON.stringify(INITIAL_CLINIC));
     localStorage.setItem(STORAGE_KEYS.BRANCHES, JSON.stringify(INITIAL_BRANCHES));
@@ -208,57 +265,42 @@ export function runDataMigrationIfNeeded(): void {
     localStorage.setItem(STORAGE_KEYS.WEBSITE, JSON.stringify(INITIAL_WEBSITE));
     localStorage.setItem(STORAGE_KEYS.CLINIC_DOMAINS, JSON.stringify(INITIAL_CLINIC_DOMAINS));
 
-    // Migrate patients (preserve custom added patients while remapping old SP/RJ branchIds to Cabo Frio)
-    const rawPatients = localStorage.getItem(STORAGE_KEYS.PATIENTS);
-    if (rawPatients) {
-      try {
-        const parsedPatients = JSON.parse(rawPatients) as Patient[];
-        const migratedPatients = parsedPatients.map((p) => {
-          const isOldBranch =
-            p.originBranchId === 'branch_sp_jardins' || p.originBranchId === 'branch_rj_ipanema';
-          return {
-            ...p,
-            originBranchId: isOldBranch ? 'branch_cf_centro' : p.originBranchId,
-            authorizedBranchIds: ['branch_cf_centro'],
-          };
-        });
-        localStorage.setItem(STORAGE_KEYS.PATIENTS, JSON.stringify(migratedPatients));
-      } catch {
-        localStorage.setItem(STORAGE_KEYS.PATIENTS, JSON.stringify(INITIAL_PATIENTS));
-      }
+    if (hasCloud) {
+      // Em produção (Supabase configurado), nunca semear pacientes/consultas/financeiro fictícios
+      OPERATIONAL_STORAGE_KEYS.forEach((key) => {
+        stripSeededDemoItemsFromStorageKey(key);
+        if (!localStorage.getItem(key)) {
+          localStorage.setItem(key, JSON.stringify([]));
+        }
+      });
     } else {
-      localStorage.setItem(STORAGE_KEYS.PATIENTS, JSON.stringify(INITIAL_PATIENTS));
+      localStorage.setItem(STORAGE_KEYS.PATIENTS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEYS.APPOINTMENTS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEYS.WAITLIST, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEYS.MEDICAL_RECORDS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEYS.PRESCRIPTIONS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEYS.CERTIFICATES, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEYS.LAB_ORDERS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEYS.EXAM_RESULTS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEYS.MEDICAL_DOCUMENTS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEYS.AUTOMATION_EXECUTIONS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEYS.FINANCIAL, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEYS.AUDIT_LOGS, JSON.stringify([]));
     }
 
-    // Reset/update sample appointments, records, prescriptions, certificates, lab orders, exams, financial & messages containing legacy doctors/CRM
-    localStorage.setItem(STORAGE_KEYS.APPOINTMENTS, JSON.stringify(INITIAL_APPOINTMENTS));
-    localStorage.setItem(STORAGE_KEYS.WAITLIST, JSON.stringify(INITIAL_WAITLIST));
-    localStorage.setItem(STORAGE_KEYS.MEDICAL_RECORDS, JSON.stringify(INITIAL_MEDICAL_RECORDS));
-    localStorage.setItem(STORAGE_KEYS.PRESCRIPTIONS, JSON.stringify(INITIAL_PRESCRIPTIONS));
-    localStorage.setItem(STORAGE_KEYS.CERTIFICATES, JSON.stringify(INITIAL_CERTIFICATES));
-    localStorage.setItem(STORAGE_KEYS.LAB_ORDERS, JSON.stringify(INITIAL_LAB_ORDERS));
-    localStorage.setItem(STORAGE_KEYS.EXAM_RESULTS, JSON.stringify(INITIAL_EXAM_RESULTS));
-    localStorage.setItem(STORAGE_KEYS.MEDICAL_DOCUMENTS, JSON.stringify([]));
-    localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify(INITIAL_MESSAGES));
     localStorage.setItem(
       STORAGE_KEYS.AUTOMATION_TRIGGERS,
       JSON.stringify(INITIAL_AUTOMATION_TRIGGERS)
     );
-    localStorage.setItem(
-      STORAGE_KEYS.AUTOMATION_EXECUTIONS,
-      JSON.stringify(INITIAL_AUTOMATION_EXECUTIONS)
-    );
-    localStorage.setItem(STORAGE_KEYS.FINANCIAL, JSON.stringify(INITIAL_FINANCIAL));
-    localStorage.setItem(STORAGE_KEYS.AUDIT_LOGS, JSON.stringify(INITIAL_AUDIT_LOGS));
 
-    // Fix active branch/user if pointing to removed IDs
     const activeBranch = localStorage.getItem(STORAGE_KEYS.ACTIVE_BRANCH_ID);
     if (activeBranch === 'branch_sp_jardins' || activeBranch === 'branch_rj_ipanema') {
-      localStorage.setItem(STORAGE_KEYS.ACTIVE_BRANCH_ID, 'branch_cf_centro');
+      localStorage.setItem(STORAGE_KEYS.ACTIVE_BRANCH_ID, 'all');
     }
     const activeUser = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER_ID);
     if (activeUser === 'usr_physio_rodrigo') {
-      localStorage.setItem(STORAGE_KEYS.ACTIVE_USER_ID, 'usr_doctor_newton');
+      localStorage.removeItem(STORAGE_KEYS.ACTIVE_USER_ID);
     }
 
     localStorage.setItem(STORAGE_KEYS.DATA_VERSION, MEDSYNC_DATA_VERSION);
@@ -273,13 +315,29 @@ function getStored<T>(key: string, fallback: T): T {
   try {
     const data = localStorage.getItem(key);
     if (!data) {
+      if (OPERATIONAL_STORAGE_KEYS.has(key)) {
+        const emptyList = [] as unknown as T;
+        localStorage.setItem(key, JSON.stringify(emptyList));
+        return emptyList;
+      }
       localStorage.setItem(key, JSON.stringify(fallback));
       return fallback;
     }
-    return JSON.parse(data) as T;
+    const parsed = JSON.parse(data) as T;
+    if (OPERATIONAL_STORAGE_KEYS.has(key) && Array.isArray(parsed) && getSupabase()) {
+      return parsed.filter(
+        (item: unknown) =>
+          !(
+            item &&
+            typeof item === 'object' &&
+            SEEDED_DEMO_IDS.has(String((item as Record<string, unknown>).id || ''))
+          )
+      ) as unknown as T;
+    }
+    return parsed;
   } catch (e) {
     console.error(`Error reading key ${key} from localStorage:`, e);
-    return fallback;
+    return OPERATIONAL_STORAGE_KEYS.has(key) ? ([] as unknown as T) : fallback;
   }
 }
 
@@ -531,20 +589,21 @@ export const StorageService = {
     setStored(STORAGE_KEYS.PROFESSIONALS, INITIAL_PROFESSIONALS);
     setStored(STORAGE_KEYS.SERVICES, INITIAL_SERVICES);
     setStored(STORAGE_KEYS.USERS, INITIAL_USERS);
-    setStored(STORAGE_KEYS.PATIENTS, INITIAL_PATIENTS);
-    setStored(STORAGE_KEYS.APPOINTMENTS, INITIAL_APPOINTMENTS);
-    setStored(STORAGE_KEYS.WAITLIST, INITIAL_WAITLIST);
-    setStored(STORAGE_KEYS.MEDICAL_RECORDS, INITIAL_MEDICAL_RECORDS);
-    setStored(STORAGE_KEYS.PRESCRIPTIONS, INITIAL_PRESCRIPTIONS);
-    setStored(STORAGE_KEYS.CERTIFICATES, INITIAL_CERTIFICATES);
-    setStored(STORAGE_KEYS.LAB_ORDERS, INITIAL_LAB_ORDERS);
-    setStored(STORAGE_KEYS.EXAM_RESULTS, INITIAL_EXAM_RESULTS);
+    setStored(STORAGE_KEYS.PATIENTS, []);
+    setStored(STORAGE_KEYS.APPOINTMENTS, []);
+    setStored(STORAGE_KEYS.WAITLIST, []);
+    setStored(STORAGE_KEYS.MEDICAL_RECORDS, []);
+    setStored(STORAGE_KEYS.PRESCRIPTIONS, []);
+    setStored(STORAGE_KEYS.CERTIFICATES, []);
+    setStored(STORAGE_KEYS.LAB_ORDERS, []);
+    setStored(STORAGE_KEYS.EXAM_RESULTS, []);
     setStored(STORAGE_KEYS.MEDICAL_DOCUMENTS, []);
     setStored(STORAGE_KEYS.TEMPLATES, INITIAL_TEMPLATES);
-    setStored(STORAGE_KEYS.MESSAGES, INITIAL_MESSAGES);
-    setStored(STORAGE_KEYS.FINANCIAL, INITIAL_FINANCIAL);
+    setStored(STORAGE_KEYS.MESSAGES, []);
+    setStored(STORAGE_KEYS.AUTOMATION_EXECUTIONS, []);
+    setStored(STORAGE_KEYS.FINANCIAL, []);
     setStored(STORAGE_KEYS.WEBSITE, INITIAL_WEBSITE);
-    setStored(STORAGE_KEYS.AUDIT_LOGS, INITIAL_AUDIT_LOGS);
+    setStored(STORAGE_KEYS.AUDIT_LOGS, []);
     window.dispatchEvent(new Event('medsync_storage_update'));
   },
 
@@ -930,9 +989,183 @@ export const StorageService = {
     }
   },
 
-  // Organization cache setter
+  // Organization & Core Catalog Hydration
   updateOrganizationCache: (org: Organization): void => {
     setStored(STORAGE_KEYS.ORGANIZATION, org);
+  },
+
+  clearOperationalCaches: (): void => {
+    if (typeof window === 'undefined') return;
+    OPERATIONAL_STORAGE_KEYS.forEach((key) => {
+      localStorage.removeItem(key);
+    });
+    localStorage.removeItem(STORAGE_KEYS.ACTIVE_BRANCH_ID);
+    localStorage.removeItem(STORAGE_KEYS.ACTIVE_USER_ID);
+    window.dispatchEvent(new Event('medsync_storage_update'));
+  },
+
+  hydrateClinicCoreCatalogFromCloud: async (organizationId: string): Promise<void> => {
+    const supabase = getSupabase();
+    if (!supabase || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(organizationId)) {
+      return;
+    }
+
+    try {
+      const [
+        clinicRes,
+        branchesRes,
+        professionalsRes,
+        profBranchesRes,
+        servicesRes,
+        roomsRes,
+        specialtiesRes,
+      ] = await Promise.all([
+        supabase.from('clinics').select('*').eq('organization_id', organizationId).limit(1).maybeSingle(),
+        supabase.from('branches').select('*').eq('organization_id', organizationId).order('created_at', { ascending: true }),
+        supabase.from('professionals').select('*').eq('organization_id', organizationId).order('full_name', { ascending: true }),
+        supabase.from('professional_branches').select('professional_id, branch_id').eq('organization_id', organizationId),
+        supabase.from('services').select('*').eq('organization_id', organizationId).order('name', { ascending: true }),
+        supabase.from('rooms').select('*').eq('organization_id', organizationId).order('name', { ascending: true }),
+        supabase.from('specialties').select('*').eq('organization_id', organizationId).order('name', { ascending: true }),
+      ]);
+
+      if (!clinicRes.error && clinicRes.data) {
+        const c = clinicRes.data as Record<string, unknown>;
+        const prev = StorageService.getClinic();
+        setStored(STORAGE_KEYS.CLINIC, {
+          ...prev,
+          id: String(c.id),
+          organizationId: String(c.organization_id || organizationId),
+          legalName: String(c.legal_name || prev.legalName),
+          tradeName: String(c.trade_name || prev.tradeName),
+          documentNumber: String(c.document_number || prev.documentNumber),
+          municipalRegistration: c.municipal_registration ? String(c.municipal_registration) : prev.municipalRegistration,
+          email: String(c.email || prev.email),
+          phone: String(c.phone || prev.phone),
+          whatsapp: String(c.whatsapp || prev.whatsapp),
+          logoUrl: c.logo_url ? String(c.logo_url) : prev.logoUrl,
+          primaryColor: String(c.primary_color || prev.primaryColor),
+          institutionalBio: c.institutional_bio ? String(c.institutional_bio) : prev.institutionalBio,
+          n8nWebhookDisponibilidade: c.n8n_webhook_disponibilidade
+            ? String(c.n8n_webhook_disponibilidade)
+            : prev.n8nWebhookDisponibilidade,
+          n8nWebhookAgendamento: c.n8n_webhook_agendamento
+            ? String(c.n8n_webhook_agendamento)
+            : prev.n8nWebhookAgendamento,
+          n8nWebhookMegaapiInbound: c.n8n_webhook_megaapi_inbound
+            ? String(c.n8n_webhook_megaapi_inbound)
+            : prev.n8nWebhookMegaapiInbound,
+          megaapiInstanceUrl: c.megaapi_instance_url ? String(c.megaapi_instance_url) : prev.megaapiInstanceUrl,
+          megaapiInstanceKey: c.megaapi_instance_key ? String(c.megaapi_instance_key) : prev.megaapiInstanceKey,
+          megaapiToken: c.megaapi_token ? String(c.megaapi_token) : prev.megaapiToken,
+          createdAt: String(c.created_at || prev.createdAt),
+        });
+      }
+
+      if (!branchesRes.error && Array.isArray(branchesRes.data) && branchesRes.data.length > 0) {
+        const mappedBranches: Branch[] = (branchesRes.data as Array<Record<string, unknown>>).map((b) => ({
+          id: String(b.id),
+          organizationId: String(b.organization_id || organizationId),
+          clinicId: String(b.clinic_id || ''),
+          name: String(b.name || 'Filial'),
+          code: String(b.code || 'FILIAL'),
+          isHeadquarters: Boolean(b.is_headquarters),
+          documentNumber: String(b.document_number || ''),
+          phone: String(b.phone || ''),
+          whatsapp: String(b.whatsapp || b.phone || ''),
+          email: String(b.email || ''),
+          postalCode: String(b.postal_code || ''),
+          street: String(b.street || ''),
+          number: String(b.number || ''),
+          complement: b.complement ? String(b.complement) : undefined,
+          neighborhood: String(b.neighborhood || ''),
+          city: String(b.city || ''),
+          state: String(b.state || ''),
+          openingHours:
+            b.opening_hours && typeof b.opening_hours === 'object'
+              ? (b.opening_hours as Branch['openingHours'])
+              : { weekday: '08:00 - 19:00' },
+          patientSharingMode: b.patient_sharing_mode === 'model_a' ? 'model_a' : 'model_b',
+          isActive: b.is_active !== false,
+        }));
+        setStored(STORAGE_KEYS.BRANCHES, mappedBranches);
+      }
+
+      const branchMap = new Map<string, string[]>();
+      if (!profBranchesRes.error && Array.isArray(profBranchesRes.data)) {
+        (profBranchesRes.data as Array<Record<string, unknown>>).forEach((pb) => {
+          const pid = String(pb.professional_id || '');
+          const bid = String(pb.branch_id || '');
+          if (!pid || !bid) return;
+          const list = branchMap.get(pid) || [];
+          list.push(bid);
+          branchMap.set(pid, list);
+        });
+      }
+
+      if (!specialtiesRes.error && Array.isArray(specialtiesRes.data) && specialtiesRes.data.length > 0) {
+        const mappedSpecs: Specialty[] = (specialtiesRes.data as Array<Record<string, unknown>>).map((s) => ({
+          id: String(s.id),
+          organizationId: String(s.organization_id || organizationId),
+          name: String(s.name || ''),
+          councilType: (String(s.council_type || 'CRM') as Specialty['councilType']),
+          description: s.description ? String(s.description) : undefined,
+          isActive: s.is_active !== false,
+        }));
+        setStored(STORAGE_KEYS.SPECIALTIES, mappedSpecs);
+      }
+
+      if (!professionalsRes.error && Array.isArray(professionalsRes.data) && professionalsRes.data.length > 0) {
+        const defaultBranchIds = StorageService.getBranches().map((b) => b.id);
+        const mappedProfs: Professional[] = (professionalsRes.data as Array<Record<string, unknown>>).map((p) => ({
+          id: String(p.id),
+          organizationId: String(p.organization_id || organizationId),
+          userProfileId: p.user_profile_id ? String(p.user_profile_id) : undefined,
+          fullName: String(p.full_name || ''),
+          councilNumber: String(p.council_number || ''),
+          specialtyId: String(p.specialty_id || ''),
+          branchIds: branchMap.get(String(p.id)) || defaultBranchIds,
+          phone: String(p.phone || ''),
+          email: String(p.email || ''),
+          bio: String(p.bio || ''),
+          color: String(p.color || '#0284c7'),
+          avatarUrl: p.avatar_url ? String(p.avatar_url) : undefined,
+          isActive: p.is_active !== false,
+          createdAt: p.created_at ? String(p.created_at) : undefined,
+          updatedAt: p.updated_at ? String(p.updated_at) : undefined,
+        }));
+        setStored(STORAGE_KEYS.PROFESSIONALS, mappedProfs);
+      }
+
+      if (!servicesRes.error && Array.isArray(servicesRes.data) && servicesRes.data.length > 0) {
+        const mappedServices: Service[] = (servicesRes.data as Array<Record<string, unknown>>).map((s) => ({
+          id: String(s.id),
+          organizationId: String(s.organization_id || organizationId),
+          name: String(s.name || ''),
+          durationMinutes: Number(s.duration_minutes || 50),
+          price: Number(s.price || 0),
+          description: s.description ? String(s.description) : undefined,
+          specialtyId: s.specialty_id ? String(s.specialty_id) : undefined,
+          isActive: s.is_active !== false,
+        }));
+        setStored(STORAGE_KEYS.SERVICES, mappedServices);
+      }
+
+      if (!roomsRes.error && Array.isArray(roomsRes.data) && roomsRes.data.length > 0) {
+        const mappedRooms: Room[] = (roomsRes.data as Array<Record<string, unknown>>).map((r) => ({
+          id: String(r.id),
+          organizationId: String(r.organization_id || organizationId),
+          branchId: String(r.branch_id || ''),
+          name: String(r.name || ''),
+          description: String(r.description || ''),
+          color: String(r.color || '#0284c7'),
+          isActive: r.is_active !== false,
+        }));
+        setStored(STORAGE_KEYS.ROOMS, mappedRooms);
+      }
+    } catch (err) {
+      console.warn('Aviso ao hidratar catálogos da clínica:', err);
+    }
   },
 
   // Branches
@@ -1037,10 +1270,9 @@ export const StorageService = {
 
   // Patients (with duplicate CPF prevention and Model A/B sharing logic)
   getPatients: (branchFilterId?: string): Patient[] => {
-    const list = getStored<Patient[]>(STORAGE_KEYS.PATIENTS, INITIAL_PATIENTS);
+    const list = getStored<Patient[]>(STORAGE_KEYS.PATIENTS, []);
     if (!branchFilterId || branchFilterId === 'all') return list;
 
-    // Filter based on originBranch or authorized sharing
     return list.filter(p => {
       if (p.originBranchId === branchFilterId) return true;
       if (p.sharingMode === 'model_b_shared' && p.authorizedBranchIds?.includes(branchFilterId)) {
@@ -1050,9 +1282,8 @@ export const StorageService = {
     });
   },
   savePatient: (patient: Patient): { success: boolean; message?: string } => {
-    const list = getStored<Patient[]>(STORAGE_KEYS.PATIENTS, INITIAL_PATIENTS);
+    const list = getStored<Patient[]>(STORAGE_KEYS.PATIENTS, []);
     
-    // Check CPF duplicate for other patients
     const normalizedCpf = patient.documentCpf.replace(/\D/g, '');
     const duplicate = list.find(p => p.id !== patient.id && p.documentCpf.replace(/\D/g, '') === normalizedCpf);
     if (duplicate) {
@@ -1080,7 +1311,7 @@ export const StorageService = {
     return { success: true };
   },
   upsertPatientByCpf: (patient: Patient): Patient => {
-    const list = getStored<Patient[]>(STORAGE_KEYS.PATIENTS, INITIAL_PATIENTS);
+    const list = getStored<Patient[]>(STORAGE_KEYS.PATIENTS, []);
     const normalizedCpf = patient.documentCpf.replace(/\D/g, '');
     const existingIndex = list.findIndex(
       p => p.documentCpf.replace(/\D/g, '') === normalizedCpf
@@ -1114,14 +1345,13 @@ export const StorageService = {
 
   // Appointments
   getAppointments: (branchFilterId?: string): Appointment[] => {
-    const list = getStored<Appointment[]>(STORAGE_KEYS.APPOINTMENTS, INITIAL_APPOINTMENTS);
+    const list = getStored<Appointment[]>(STORAGE_KEYS.APPOINTMENTS, []);
     if (!branchFilterId || branchFilterId === 'all') return list;
     return list.filter(a => a.branchId === branchFilterId);
   },
   saveAppointment: (appointment: Appointment): { success: boolean; message?: string } => {
-    const list = getStored<Appointment[]>(STORAGE_KEYS.APPOINTMENTS, INITIAL_APPOINTMENTS);
+    const list = getStored<Appointment[]>(STORAGE_KEYS.APPOINTMENTS, []);
 
-    // Concurrency / duplicate slot check (unless marked as overbook / encaixe)
     if (!appointment.isOverbook && appointment.status !== 'cancelled') {
       const conflict = list.find(a => 
         a.id !== appointment.id &&
@@ -1179,7 +1409,7 @@ export const StorageService = {
 
   // Waitlist
   getWaitlist: (branchFilterId?: string): WaitlistEntry[] => {
-    const list = getStored<WaitlistEntry[]>(STORAGE_KEYS.WAITLIST, INITIAL_WAITLIST);
+    const list = getStored<WaitlistEntry[]>(STORAGE_KEYS.WAITLIST, []);
     if (!branchFilterId || branchFilterId === 'all') return list;
     return list.filter(w => w.branchId === branchFilterId);
   },
@@ -1200,18 +1430,17 @@ export const StorageService = {
 
   // Medical Records (Electronic Health Record - CFM 1.638/2002 e 1.821/2007)
   getMedicalRecords: (patientId?: string): MedicalRecordEntry[] => {
-    const list = getStored<MedicalRecordEntry[]>(STORAGE_KEYS.MEDICAL_RECORDS, INITIAL_MEDICAL_RECORDS);
+    const list = getStored<MedicalRecordEntry[]>(STORAGE_KEYS.MEDICAL_RECORDS, []);
     if (!patientId) return list;
     return list.filter(r => r.patientId === patientId);
   },
 
   saveMedicalRecord: (record: MedicalRecordEntry): { success: boolean; message?: string } => {
-    const list = getStored<MedicalRecordEntry[]>(STORAGE_KEYS.MEDICAL_RECORDS, INITIAL_MEDICAL_RECORDS);
+    const list = getStored<MedicalRecordEntry[]>(STORAGE_KEYS.MEDICAL_RECORDS, []);
     const index = list.findIndex(r => r.id === record.id);
     
     if (index >= 0) {
       const existing = list[index];
-      // Regra de Ouro do CFM: Registro assinado não pode ser reeditado
       if (existing.status === 'signed' && existing.isSigned) {
         return {
           success: false,
@@ -1238,7 +1467,7 @@ export const StorageService = {
   },
 
   addMedicalRecordAddendum: (recordId: string, addendum: MedicalRecordAddendum): { success: boolean; message?: string } => {
-    const list = getStored<MedicalRecordEntry[]>(STORAGE_KEYS.MEDICAL_RECORDS, INITIAL_MEDICAL_RECORDS);
+    const list = getStored<MedicalRecordEntry[]>(STORAGE_KEYS.MEDICAL_RECORDS, []);
     const index = list.findIndex(r => r.id === recordId);
     if (index === -1) {
       return { success: false, message: 'Registro clínico original não encontrado.' };
@@ -1266,12 +1495,12 @@ export const StorageService = {
 
   // Prescrições e Receituários (Portaria ANVISA 344/98 e Receitas Simples)
   getPrescriptions: (patientId?: string): Prescription[] => {
-    const list = getStored<Prescription[]>(STORAGE_KEYS.PRESCRIPTIONS, INITIAL_PRESCRIPTIONS);
+    const list = getStored<Prescription[]>(STORAGE_KEYS.PRESCRIPTIONS, []);
     if (!patientId) return list;
     return list.filter(p => p.patientId === patientId);
   },
   savePrescription: (prescription: Prescription): void => {
-    const list = getStored<Prescription[]>(STORAGE_KEYS.PRESCRIPTIONS, INITIAL_PRESCRIPTIONS);
+    const list = getStored<Prescription[]>(STORAGE_KEYS.PRESCRIPTIONS, []);
     const index = list.findIndex(p => p.id === prescription.id);
     if (index >= 0) {
       list[index] = prescription;
@@ -1290,12 +1519,12 @@ export const StorageService = {
 
   // Atestados Médicos e Declarações (Resolução CFM nº 1.658/2002)
   getCertificates: (patientId?: string): MedicalCertificate[] => {
-    const list = getStored<MedicalCertificate[]>(STORAGE_KEYS.CERTIFICATES, INITIAL_CERTIFICATES);
+    const list = getStored<MedicalCertificate[]>(STORAGE_KEYS.CERTIFICATES, []);
     if (!patientId) return list;
     return list.filter(c => c.patientId === patientId);
   },
   saveCertificate: (certificate: MedicalCertificate): void => {
-    const list = getStored<MedicalCertificate[]>(STORAGE_KEYS.CERTIFICATES, INITIAL_CERTIFICATES);
+    const list = getStored<MedicalCertificate[]>(STORAGE_KEYS.CERTIFICATES, []);
     const index = list.findIndex(c => c.id === certificate.id);
     if (index >= 0) {
       list[index] = certificate;
@@ -1314,12 +1543,12 @@ export const StorageService = {
 
   // Pedidos de Exames (Lab Orders)
   getLabOrders: (patientId?: string): LabOrder[] => {
-    const list = getStored<LabOrder[]>(STORAGE_KEYS.LAB_ORDERS, INITIAL_LAB_ORDERS);
+    const list = getStored<LabOrder[]>(STORAGE_KEYS.LAB_ORDERS, []);
     if (!patientId) return list;
     return list.filter(o => o.patientId === patientId);
   },
   saveLabOrder: (order: LabOrder): void => {
-    const list = getStored<LabOrder[]>(STORAGE_KEYS.LAB_ORDERS, INITIAL_LAB_ORDERS);
+    const list = getStored<LabOrder[]>(STORAGE_KEYS.LAB_ORDERS, []);
     const index = list.findIndex(o => o.id === order.id);
     if (index >= 0) {
       list[index] = order;
@@ -1338,12 +1567,12 @@ export const StorageService = {
 
   // Resultados de Exames (Exam Results)
   getExamResults: (patientId?: string): ExamResult[] => {
-    const list = getStored<ExamResult[]>(STORAGE_KEYS.EXAM_RESULTS, INITIAL_EXAM_RESULTS);
+    const list = getStored<ExamResult[]>(STORAGE_KEYS.EXAM_RESULTS, []);
     if (!patientId) return list;
     return list.filter(r => r.patientId === patientId);
   },
   saveExamResult: (result: ExamResult): void => {
-    const list = getStored<ExamResult[]>(STORAGE_KEYS.EXAM_RESULTS, INITIAL_EXAM_RESULTS);
+    const list = getStored<ExamResult[]>(STORAGE_KEYS.EXAM_RESULTS, []);
     const index = list.findIndex(r => r.id === result.id);
     if (index >= 0) {
       list[index] = result;
@@ -1393,7 +1622,7 @@ export const StorageService = {
     setStored(STORAGE_KEYS.PATIENTS, patients);
   },
   upsertPatientCacheById: (patient: Patient, replaceLegacyId?: string): void => {
-    const list = getStored<Patient[]>(STORAGE_KEYS.PATIENTS, INITIAL_PATIENTS);
+    const list = getStored<Patient[]>(STORAGE_KEYS.PATIENTS, []);
     const filtered = list.filter(
       p => p.id !== patient.id && (!replaceLegacyId || p.id !== replaceLegacyId)
     );
@@ -1411,17 +1640,17 @@ export const StorageService = {
       documents: MedicalDocument[];
     }
   ): void => {
-    const mergeForPatient = <T extends { patientId: string }>(key: string, fallback: T[], incoming: T[]) => {
-      const others = getStored<T[]>(key, fallback).filter(item => item.patientId !== patientId);
+    const mergeForPatient = <T extends { patientId: string }>(key: string, incoming: T[]) => {
+      const others = getStored<T[]>(key, []).filter(item => item.patientId !== patientId);
       setStored(key, [...incoming, ...others]);
     };
 
-    mergeForPatient(STORAGE_KEYS.MEDICAL_RECORDS, INITIAL_MEDICAL_RECORDS, bundle.records);
-    mergeForPatient(STORAGE_KEYS.PRESCRIPTIONS, INITIAL_PRESCRIPTIONS, bundle.prescriptions);
-    mergeForPatient(STORAGE_KEYS.CERTIFICATES, INITIAL_CERTIFICATES, bundle.certificates);
-    mergeForPatient(STORAGE_KEYS.LAB_ORDERS, INITIAL_LAB_ORDERS, bundle.labOrders);
-    mergeForPatient(STORAGE_KEYS.EXAM_RESULTS, INITIAL_EXAM_RESULTS, bundle.examResults);
-    mergeForPatient(STORAGE_KEYS.MEDICAL_DOCUMENTS, [], bundle.documents);
+    mergeForPatient(STORAGE_KEYS.MEDICAL_RECORDS, bundle.records);
+    mergeForPatient(STORAGE_KEYS.PRESCRIPTIONS, bundle.prescriptions);
+    mergeForPatient(STORAGE_KEYS.CERTIFICATES, bundle.certificates);
+    mergeForPatient(STORAGE_KEYS.LAB_ORDERS, bundle.labOrders);
+    mergeForPatient(STORAGE_KEYS.EXAM_RESULTS, bundle.examResults);
+    mergeForPatient(STORAGE_KEYS.MEDICAL_DOCUMENTS, bundle.documents);
   },
 
   // Message Templates & Logs
@@ -1784,7 +2013,7 @@ export const StorageService = {
       return { template: prepared, syncedCloud: false, error: msg };
     }
   },
-  getMessages: (): MessageLog[] => getStored<MessageLog[]>(STORAGE_KEYS.MESSAGES, INITIAL_MESSAGES),
+  getMessages: (): MessageLog[] => getStored<MessageLog[]>(STORAGE_KEYS.MESSAGES, []),
   sendMessage: (msg: Omit<MessageLog, 'id' | 'sentAt'>): MessageLog => {
     const fullMsg: MessageLog = {
       ...msg,
@@ -2581,7 +2810,7 @@ export const StorageService = {
     runDataMigrationIfNeeded();
     return getStored<AutomationExecutionRecord[]>(
       STORAGE_KEYS.AUTOMATION_EXECUTIONS,
-      INITIAL_AUTOMATION_EXECUTIONS
+      []
     );
   },
 
@@ -2770,14 +2999,14 @@ export const StorageService = {
     }
   },
 
-  // Financial Transactions
+  // Financial Transactions (Supabase public.financial_transactions + local cache sync)
   getFinancial: (branchFilterId?: string): FinancialTransaction[] => {
-    const list = getStored<FinancialTransaction[]>(STORAGE_KEYS.FINANCIAL, INITIAL_FINANCIAL);
+    const list = getStored<FinancialTransaction[]>(STORAGE_KEYS.FINANCIAL, []);
     if (!branchFilterId || branchFilterId === 'all') return list;
     return list.filter(f => f.branchId === branchFilterId);
   },
   saveFinancialTransaction: (tx: FinancialTransaction): void => {
-    const list = getStored<FinancialTransaction[]>(STORAGE_KEYS.FINANCIAL, INITIAL_FINANCIAL);
+    const list = getStored<FinancialTransaction[]>(STORAGE_KEYS.FINANCIAL, []);
     const index = list.findIndex(f => f.id === tx.id);
     if (index >= 0) {
       list[index] = tx;
@@ -2785,13 +3014,331 @@ export const StorageService = {
       list.unshift(tx);
     }
     setStored(STORAGE_KEYS.FINANCIAL, list);
+  },
+  fetchFinancialFromCloud: async (
+    branchFilterId?: string,
+    organizationId?: string
+  ): Promise<{ transactions: FinancialTransaction[]; error?: string }> => {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return {
+        transactions: [],
+        error: 'Cliente Supabase não configurado neste ambiente.',
+      };
+    }
 
-    StorageService.addAuditLog({
-      action: index >= 0 ? 'Atualizou Lançamento Financeiro' : 'Novo Recebimento Registrado',
-      entity: 'Financeiro',
-      entityId: tx.id,
-      details: `${tx.description} - R$ ${tx.amount.toFixed(2)} (${tx.paymentMethod})`,
-    });
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    const extractJoin = (val: unknown): Record<string, unknown> | null => {
+      if (!val) return null;
+      if (Array.isArray(val)) return (val[0] as Record<string, unknown>) || null;
+      if (typeof val === 'object') return val as Record<string, unknown>;
+      return null;
+    };
+
+    try {
+      let query = supabase
+        .from('financial_transactions')
+        .select(
+          `
+          *,
+          patient:patients (id, full_name),
+          professional:professionals (id, full_name),
+          branch:branches (id, name)
+        `
+        )
+        .order('due_date', { ascending: false })
+        .order('created_at', { ascending: false });
+
+      if (isUuid(organizationId)) {
+        query = query.eq('organization_id', organizationId!);
+      }
+      if (branchFilterId && branchFilterId !== 'all' && isUuid(branchFilterId)) {
+        query = query.eq('branch_id', branchFilterId);
+      }
+
+      let { data, error } = await query;
+
+      if (error) {
+        // Fallback sem joins caso alguma FK auxiliar não seja acessível
+        let flatQuery = supabase
+          .from('financial_transactions')
+          .select('*')
+          .order('due_date', { ascending: false })
+          .order('created_at', { ascending: false });
+
+        if (isUuid(organizationId)) {
+          flatQuery = flatQuery.eq('organization_id', organizationId!);
+        }
+        if (branchFilterId && branchFilterId !== 'all' && isUuid(branchFilterId)) {
+          flatQuery = flatQuery.eq('branch_id', branchFilterId);
+        }
+
+        const flatRes = await flatQuery;
+        data = flatRes.data;
+        error = flatRes.error;
+      }
+
+      if (error) {
+        return {
+          transactions: [],
+          error:
+            error.code === '42501'
+              ? 'Acesso negado ao módulo financeiro pelas políticas de segurança (RLS). Verifique suas permissões ou aplique a migration de RLS financeiro.'
+              : error.message,
+        };
+      }
+
+      const branches = StorageService.getBranches();
+      const professionals = StorageService.getProfessionals();
+
+      const mapped: FinancialTransaction[] = (
+        (data || []) as Array<Record<string, unknown>>
+      ).map((row) => {
+        const patientJoin = extractJoin(row.patient);
+        const profJoin = extractJoin(row.professional);
+        const branchJoin = extractJoin(row.branch);
+        const branchId = String(row.branch_id || '');
+        const profId = row.professional_id ? String(row.professional_id) : undefined;
+
+        const branchObj = branches.find((b) => b.id === branchId);
+        const profObj = profId ? professionals.find((p) => p.id === profId) : undefined;
+
+        const rawStatus = String(row.status || 'paid');
+        const status: FinancialTransaction['status'] =
+          rawStatus === 'pending' || rawStatus === 'cancelled' || rawStatus === 'paid'
+            ? rawStatus
+            : rawStatus === 'refunded'
+              ? 'cancelled'
+              : 'paid';
+
+        const rawMethod = String(row.payment_method || 'pix');
+        const paymentMethod: FinancialTransaction['paymentMethod'] =
+          rawMethod === 'credit_card' ||
+          rawMethod === 'debit_card' ||
+          rawMethod === 'cash' ||
+          rawMethod === 'transfer' ||
+          rawMethod === 'pix'
+            ? rawMethod
+            : 'transfer';
+
+        return {
+          id: String(row.id),
+          organizationId: String(row.organization_id || organizationId || ''),
+          branchId,
+          branchName: String(branchJoin?.name || branchObj?.name || 'Unidade'),
+          patientId: row.patient_id ? String(row.patient_id) : undefined,
+          patientName: patientJoin?.full_name ? String(patientJoin.full_name) : undefined,
+          appointmentId: row.appointment_id ? String(row.appointment_id) : undefined,
+          professionalId: profId,
+          professionalName: profJoin?.full_name
+            ? String(profJoin.full_name)
+            : profObj?.fullName,
+          serviceId: row.service_id ? String(row.service_id) : undefined,
+          description: String(row.description || ''),
+          amount: Number(row.amount || 0),
+          type: row.transaction_type === 'payable' ? 'payable' : 'receivable',
+          paymentMethod,
+          installments: Number(row.installments || 1),
+          status,
+          dueDate: String(row.due_date || new Date().toISOString().split('T')[0]),
+          paidAt: row.paid_at ? String(row.paid_at) : undefined,
+          receiptNumber: row.receipt_number ? String(row.receipt_number) : undefined,
+          createdAt: String(row.created_at || new Date().toISOString()),
+        };
+      });
+
+      if (!branchFilterId || branchFilterId === 'all') {
+        setStored(STORAGE_KEYS.FINANCIAL, mapped);
+      }
+
+      return { transactions: mapped };
+    } catch (err) {
+      return {
+        transactions: [],
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  },
+  saveFinancialTransactionToCloud: async (
+    tx: FinancialTransaction
+  ): Promise<{ success: boolean; transaction?: FinancialTransaction; error?: string }> => {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return {
+        success: false,
+        error: 'Conexão com o Supabase não configurada neste ambiente.',
+      };
+    }
+
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    try {
+      let orgId = isUuid(tx.organizationId) ? tx.organizationId : undefined;
+      if (!orgId) {
+        const currentOrg = StorageService.getOrganization();
+        if (isUuid(currentOrg.id)) {
+          orgId = currentOrg.id;
+        } else {
+          const { data: orgRow } = await supabase
+            .from('organizations')
+            .select('id')
+            .limit(1)
+            .maybeSingle();
+          if (orgRow?.id) orgId = String(orgRow.id);
+        }
+      }
+
+      if (!orgId) {
+        return {
+          success: false,
+          error: 'Organização não identificada para gravar o lançamento financeiro.',
+        };
+      }
+
+      let branchId = isUuid(tx.branchId) ? tx.branchId : undefined;
+      if (!branchId) {
+        const localBranches = StorageService.getBranches();
+        const validLocalBranch = localBranches.find((b) => isUuid(b.id));
+        if (validLocalBranch) {
+          branchId = validLocalBranch.id;
+        } else {
+          const { data: branchRow } = await supabase
+            .from('branches')
+            .select('id')
+            .eq('organization_id', orgId)
+            .limit(1)
+            .maybeSingle();
+          if (branchRow?.id) branchId = String(branchRow.id);
+        }
+      }
+
+      if (!branchId) {
+        return {
+          success: false,
+          error: 'Filial válida (UUID) não encontrada para gravar o lançamento financeiro.',
+        };
+      }
+
+      const payload: Record<string, unknown> = {
+        organization_id: orgId,
+        branch_id: branchId,
+        patient_id: isUuid(tx.patientId) ? tx.patientId : null,
+        appointment_id: isUuid(tx.appointmentId) ? tx.appointmentId : null,
+        professional_id: isUuid(tx.professionalId) ? tx.professionalId : null,
+        service_id: isUuid(tx.serviceId) ? tx.serviceId : null,
+        description: tx.description.trim(),
+        amount: Number(tx.amount),
+        transaction_type: tx.type,
+        payment_method: tx.paymentMethod,
+        installments: Math.max(1, Number(tx.installments || 1)),
+        status: tx.status,
+        due_date: tx.dueDate,
+        paid_at: tx.status === 'paid' ? tx.paidAt || new Date().toISOString() : null,
+        receipt_number: tx.receiptNumber || null,
+      };
+
+      const isUpdate = isUuid(tx.id);
+      const { data: savedRow, error } = isUpdate
+        ? await supabase
+            .from('financial_transactions')
+            .update(payload)
+            .eq('id', tx.id)
+            .select('*')
+            .single()
+        : await supabase
+            .from('financial_transactions')
+            .insert(payload)
+            .select('*')
+            .single();
+
+      if (error || !savedRow) {
+        const errMsg =
+          error?.code === '42501'
+            ? 'Sem permissão para gravar lançamento financeiro nesta filial (RLS).'
+            : error?.message || 'Não foi possível salvar o lançamento financeiro no Supabase.';
+        return { success: false, error: errMsg };
+      }
+
+      const savedTx: FinancialTransaction = {
+        ...tx,
+        id: String(savedRow.id),
+        organizationId: String(savedRow.organization_id || orgId),
+        branchId: String(savedRow.branch_id || branchId),
+        paidAt: savedRow.paid_at ? String(savedRow.paid_at) : undefined,
+        receiptNumber: savedRow.receipt_number ? String(savedRow.receipt_number) : tx.receiptNumber,
+        createdAt: String(savedRow.created_at || tx.createdAt),
+      };
+
+      StorageService.saveFinancialTransaction(savedTx);
+      void StorageService.addAuditLogToCloud({
+        organizationId: orgId,
+        action: isUpdate ? 'Atualizou Lançamento Financeiro' : 'Novo Lançamento Financeiro',
+        entity: 'Financeiro',
+        entityId: savedTx.id,
+        details: `${savedTx.description} - R$ ${savedTx.amount.toFixed(2)} (${savedTx.paymentMethod})`,
+      });
+
+      return { success: true, transaction: savedTx };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  },
+  updateFinancialTransactionStatusInCloud: async (
+    id: string,
+    status: FinancialTransaction['status']
+  ): Promise<{ success: boolean; error?: string }> => {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { success: false, error: 'Conexão com o Supabase não configurada.' };
+    }
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      return { success: false, error: 'ID de lançamento inválido para persistência no banco.' };
+    }
+
+    try {
+      const paidAt = status === 'paid' ? new Date().toISOString() : null;
+      const { error } = await supabase
+        .from('financial_transactions')
+        .update({ status, paid_at: paidAt })
+        .eq('id', id);
+
+      if (error) {
+        return {
+          success: false,
+          error:
+            error.code === '42501'
+              ? 'Sem permissão para atualizar este lançamento financeiro.'
+              : error.message,
+        };
+      }
+
+      const cached = StorageService.getFinancial();
+      const target = cached.find((item) => item.id === id);
+      if (target) {
+        StorageService.saveFinancialTransaction({
+          ...target,
+          status,
+          paidAt: paidAt || undefined,
+        });
+      }
+
+      return { success: true };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   },
 
   // Website Config (localStorage + Supabase public.websites persistence)
@@ -3164,22 +3711,245 @@ export const StorageService = {
     }
   },
 
-  // Audit Logs
-  getAuditLogs: (): AuditLog[] => getStored<AuditLog[]>(STORAGE_KEYS.AUDIT_LOGS, INITIAL_AUDIT_LOGS),
+  // Audit Logs (Supabase public.audit_logs + cache)
+  getAuditLogs: (): AuditLog[] => getStored<AuditLog[]>(STORAGE_KEYS.AUDIT_LOGS, []),
+  addAuditLogToCloud: async (entry: {
+    organizationId?: string;
+    userId?: string;
+    userName?: string;
+    userRole?: string;
+    action: string;
+    entity: string;
+    entityId?: string;
+    details: string;
+  }): Promise<void> => {
+    const supabase = getSupabase();
+    if (!supabase) return;
+
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    try {
+      const orgId = isUuid(entry.organizationId)
+        ? entry.organizationId
+        : isUuid(StorageService.getOrganization().id)
+          ? StorageService.getOrganization().id
+          : undefined;
+      if (!orgId) return;
+
+      const users = StorageService.getUsers();
+      const activeUserId =
+        typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.ACTIVE_USER_ID) : null;
+      const actor = users.find((u) => u.id === (entry.userId || activeUserId)) || users[0];
+
+      await supabase.from('audit_logs').insert({
+        organization_id: orgId,
+        user_id: isUuid(actor?.userId || entry.userId) ? actor?.userId || entry.userId : null,
+        user_role: entry.userRole || actor?.role || 'staff',
+        action: entry.action,
+        entity: entry.entity,
+        entity_id: isUuid(entry.entityId) ? entry.entityId : null,
+        details: {
+          summary: entry.details,
+          userName: entry.userName || actor?.fullName || 'Usuário',
+        },
+      });
+    } catch {
+      // Best-effort audit persistence
+    }
+  },
+  fetchAuditLogsFromCloud: async (
+    limit = 25,
+    organizationId?: string
+  ): Promise<{ logs: AuditLog[]; error?: string }> => {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { logs: [], error: 'Supabase não configurado.' };
+    }
+
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    try {
+      let query = supabase
+        .from('audit_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(limit);
+
+      if (isUuid(organizationId)) {
+        query = query.eq('organization_id', organizationId!);
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        return { logs: [], error: error.message };
+      }
+
+      const logs: AuditLog[] = ((data || []) as Array<Record<string, unknown>>).map((row) => {
+        const rawDetails = row.details;
+        let detailsText = '';
+        let userNameFromDetails = '';
+        if (rawDetails && typeof rawDetails === 'object') {
+          const obj = rawDetails as Record<string, unknown>;
+          userNameFromDetails = obj.userName ? String(obj.userName) : '';
+          detailsText = obj.summary
+            ? String(obj.summary)
+            : obj.message
+              ? String(obj.message)
+              : JSON.stringify(obj);
+        } else if (rawDetails != null) {
+          detailsText = String(rawDetails);
+        }
+
+        return {
+          id: String(row.id),
+          organizationId: String(row.organization_id || ''),
+          userId: row.user_id ? String(row.user_id) : '',
+          userName: userNameFromDetails || String(row.user_role || 'Sistema'),
+          userRole: String(row.user_role || ''),
+          action: String(row.action || ''),
+          entity: String(row.entity || ''),
+          entityId: row.entity_id ? String(row.entity_id) : undefined,
+          details: detailsText || `${String(row.entity || '')} (${String(row.action || '')})`,
+          timestamp: String(row.created_at || new Date().toISOString()),
+        };
+      });
+
+      setStored(STORAGE_KEYS.AUDIT_LOGS, logs.slice(0, 100));
+      return { logs };
+    } catch (err) {
+      return {
+        logs: [],
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  },
+  fetchSaasTenantOverviewFromCloud: async (): Promise<{
+    tenants: Array<{
+      organization: Organization;
+      plan?: Plan;
+      clinic?: Clinic;
+      branchesCount: number;
+      activeUsersCount: number;
+      patientsCount: number;
+    }>;
+    error?: string;
+  }> => {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { tenants: [], error: 'Conexão com o Supabase não configurada.' };
+    }
+
+    try {
+      const [orgsRes, plansRes, clinicsRes, branchesRes, usersRes, patientsRes] = await Promise.all([
+        supabase.from('organizations').select('*').order('created_at', { ascending: false }),
+        supabase.from('plans').select('*'),
+        supabase.from('clinics').select('*'),
+        supabase.from('branches').select('id, organization_id, is_active'),
+        supabase.from('user_profiles').select('id, organization_id, is_active'),
+        supabase.from('patients').select('id, organization_id, is_active'),
+      ]);
+
+      if (orgsRes.error) {
+        return { tenants: [], error: orgsRes.error.message };
+      }
+
+      const planById = new Map<string, Plan>();
+      ((plansRes.data || []) as Array<Record<string, unknown>>).forEach((row) => {
+        const mapped = mapDbPlanToPlan(row);
+        planById.set(mapped.id, mapped);
+      });
+
+      const clinicByOrg = new Map<string, Clinic>();
+      ((clinicsRes.data || []) as Array<Record<string, unknown>>).forEach((row) => {
+        const orgId = String(row.organization_id || '');
+        if (!orgId) return;
+        clinicByOrg.set(orgId, {
+          ...INITIAL_CLINIC,
+          id: String(row.id),
+          organizationId: orgId,
+          legalName: String(row.legal_name || ''),
+          tradeName: String(row.trade_name || ''),
+          documentNumber: String(row.document_number || ''),
+          email: String(row.email || ''),
+          phone: String(row.phone || ''),
+          whatsapp: String(row.whatsapp || ''),
+          primaryColor: String(row.primary_color || '#0284c7'),
+          institutionalBio: String(row.institutional_bio || ''),
+          createdAt: String(row.created_at || new Date().toISOString()),
+        });
+      });
+
+      const countByOrg = (rows: Array<Record<string, unknown>> | null) => {
+        const map = new Map<string, number>();
+        (rows || []).forEach((r) => {
+          if (r.is_active === false) return;
+          const oid = String(r.organization_id || '');
+          if (!oid) return;
+          map.set(oid, (map.get(oid) || 0) + 1);
+        });
+        return map;
+      };
+
+      const branchesCountMap = countByOrg(
+        branchesRes.data as Array<Record<string, unknown>> | null
+      );
+      const usersCountMap = countByOrg(
+        usersRes.data as Array<Record<string, unknown>> | null
+      );
+      const patientsCountMap = countByOrg(
+        patientsRes.data as Array<Record<string, unknown>> | null
+      );
+
+      const tenants = ((orgsRes.data || []) as Array<Record<string, unknown>>).map((row) => {
+        const orgId = String(row.id);
+        const planId = String(row.plan_id || '');
+        const org: Organization = {
+          id: orgId,
+          name: String(row.name || ''),
+          slug: String(row.slug || ''),
+          planId,
+          status: (String(row.status || 'active') as Organization['status']),
+          trialEndsAt: String(row.trial_ends_at || ''),
+          subscriptionRenewsAt: String(row.subscription_renews_at || ''),
+          createdAt: String(row.created_at || new Date().toISOString()),
+        };
+        return {
+          organization: org,
+          plan: planById.get(planId),
+          clinic: clinicByOrg.get(orgId),
+          branchesCount: branchesCountMap.get(orgId) || 0,
+          activeUsersCount: usersCountMap.get(orgId) || 0,
+          patientsCount: patientsCountMap.get(orgId) || 0,
+        };
+      });
+
+      return { tenants };
+    } catch (err) {
+      return {
+        tenants: [],
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  },
   addAuditLog: (entry: { action: string; entity: string; entityId?: string; details: string }): void => {
     const currentUsers = StorageService.getUsers();
     const activeUserId = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.ACTIVE_USER_ID) : null;
     const currentUser =
       currentUsers.find(u => u.id === activeUserId) ||
-      currentUsers.find(u => u.id === 'usr_doctor_newton') ||
-      currentUsers[0]; // Default Dr. Newton Mureb
+      currentUsers[0];
 
     const log: AuditLog = {
       id: `aud_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      organizationId: StorageService.getOrganization().id || 'org_mureb_01',
-      userId: currentUser.id,
-      userName: currentUser.fullName,
-      userRole: currentUser.role,
+      organizationId: StorageService.getOrganization().id || '',
+      userId: currentUser?.id || '',
+      userName: currentUser?.fullName || 'Usuário',
+      userRole: currentUser?.role || 'staff',
       action: entry.action,
       entity: entry.entity,
       entityId: entry.entityId,
@@ -3189,7 +3959,17 @@ export const StorageService = {
 
     const list = StorageService.getAuditLogs();
     list.unshift(log);
-    setStored(STORAGE_KEYS.AUDIT_LOGS, list.slice(0, 100)); // Keep latest 100
+    setStored(STORAGE_KEYS.AUDIT_LOGS, list.slice(0, 100));
+    void StorageService.addAuditLogToCloud({
+      organizationId: log.organizationId,
+      userId: log.userId,
+      userName: log.userName,
+      userRole: log.userRole,
+      action: log.action,
+      entity: log.entity,
+      entityId: log.entityId,
+      details: log.details,
+    });
   },
 
   // Active Branch Preference
@@ -3337,13 +4117,13 @@ export const StorageService = {
   fetchAppointmentsFromCloudDetailed: async (
     dateFilter?: string
   ): Promise<CloudAppointmentsSyncResult> => {
-    const localList = StorageService.getAppointments();
     const supabase = getSupabase();
     if (!supabase) {
       return {
-        appointments: localList,
+        appointments: [],
         source: 'local_fallback',
-        count: localList.length,
+        error: 'Conexão com o Supabase não configurada neste ambiente.',
+        count: 0,
       };
     }
 
@@ -3355,7 +4135,6 @@ export const StorageService = {
     };
 
     try {
-      // 1. Primary query using aliased left-joins without any mock organization_id filter
       let primaryQuery = supabase
         .from('appointments')
         .select(
@@ -3377,7 +4156,6 @@ export const StorageService = {
 
       let { data: appointmentsData, error: appError } = await primaryQuery;
 
-      // 2. Cloud fallback 1: join only patients if any auxiliary table/column (branches/services/professionals) fails
       if (appError) {
         console.warn('Primary appointments join failed, trying patient-only join:', appError.message);
         let fallbackPatientQuery = supabase
@@ -3396,7 +4174,6 @@ export const StorageService = {
         appError = res1.error;
       }
 
-      // 3. Cloud fallback 2: flat select(*) on appointments + separate patients lookup
       const patientsById = new Map<string, Record<string, unknown>>();
       if (appError) {
         console.warn('Patient join failed, trying flat appointments select(*):', appError.message);
@@ -3431,20 +4208,19 @@ export const StorageService = {
 
       if (appError || !appointmentsData) {
         const errMsg = appError?.message || 'Erro desconhecido ao consultar public.appointments.';
-        console.warn('Erro ao buscar agendamentos no Supabase:', errMsg);
         return {
-          appointments: localList,
-          source: 'local_fallback',
+          appointments: [],
+          source: 'supabase',
           error: errMsg,
           count: 0,
         };
       }
 
       const branches = StorageService.getBranches();
-      const defaultBranchId = branches[0]?.id || 'branch_cf_centro';
-      const defaultBranchName = branches[0]?.name || 'Unidade Matriz Cabo Frio (Centro)';
+      const defaultBranchId = branches[0]?.id || '';
+      const defaultBranchName = branches[0]?.name || 'Unidade';
 
-      const cachedPatients = getStored<Patient[]>(STORAGE_KEYS.PATIENTS, INITIAL_PATIENTS);
+      const cachedPatients = getStored<Patient[]>(STORAGE_KEYS.PATIENTS, []);
       let patientsCacheDirty = false;
 
       const cloudAppointments: Appointment[] = (
@@ -3464,7 +4240,7 @@ export const StorageService = {
           patientJoin?.full_name ||
             row.patient_name ||
             row.nome ||
-            'Paciente Online'
+            'Paciente'
         );
         const resolvedPatientPhone = String(
           patientJoin?.whatsapp ||
@@ -3476,7 +4252,6 @@ export const StorageService = {
             ''
         );
 
-        // Cache real patient in localStorage once for PEP navigation / modal selection
         if (patientJoin && patientJoin.id && patientJoin.full_name) {
           const patCpfClean = String(patientJoin.document_cpf || '').replace(/\D/g, '');
           const alreadyExists = cachedPatients.some(
@@ -3488,7 +4263,7 @@ export const StorageService = {
           if (!alreadyExists) {
             cachedPatients.unshift({
               id: String(patientJoin.id),
-              organizationId: String(row.organization_id || 'org_mureb_01'),
+              organizationId: String(row.organization_id || ''),
               originBranchId: String(row.branch_id || defaultBranchId),
               fullName: String(patientJoin.full_name),
               documentCpf: String(patientJoin.document_cpf || ''),
@@ -3518,7 +4293,7 @@ export const StorageService = {
 
         return {
           id: String(row.id),
-          organizationId: String(row.organization_id || 'org_mureb_01'),
+          organizationId: String(row.organization_id || ''),
           branchId: String(row.branch_id || defaultBranchId),
           branchName: String(
             branchJoin?.name || row.branch_name || row.unidade || defaultBranchName
@@ -3526,7 +4301,7 @@ export const StorageService = {
           patientId: resolvedPatientId,
           patientName: resolvedPatientName,
           patientPhone: resolvedPatientPhone,
-          professionalId: String(row.professional_id || profJoin?.id || 'prof_newton'),
+          professionalId: String(row.professional_id || profJoin?.id || ''),
           professionalName: String(
             profJoin?.full_name ||
               row.professional_name ||
@@ -3544,7 +4319,7 @@ export const StorageService = {
           roomName: String(
             roomJoin?.name ||
               row.room_name ||
-              'Consultório 01 - Clínica Médica, Endocrinologia e Metabologia'
+              'Consultório 01'
           ),
           startTime: startTimeIso,
           endTime: endTimeIso,
@@ -3563,8 +4338,6 @@ export const StorageService = {
         setStored(STORAGE_KEYS.PATIENTS, cachedPatients);
       }
 
-      // CRITICAL: When Supabase responds without error, replace local appointments cache with real Supabase rows
-      // (never merge INITIAL_APPOINTMENTS mock records back in)
       if (!dateFilter) {
         setStored(STORAGE_KEYS.APPOINTMENTS, cloudAppointments);
       }
@@ -3576,10 +4349,9 @@ export const StorageService = {
       };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.warn('Exceção ao carregar agendamentos do Supabase:', errMsg);
       return {
-        appointments: localList,
-        source: 'local_fallback',
+        appointments: [],
+        source: 'supabase',
         error: errMsg,
         count: 0,
       };
@@ -3596,19 +4368,15 @@ export const StorageService = {
     newStatus: AppointmentStatus,
     notes?: string
   ): Promise<{ success: boolean; error?: string }> => {
-    // 1. Update localStorage immediately for responsive UI
-    StorageService.updateAppointmentStatus(
-      appointmentId,
-      newStatus,
-      newStatus === 'cancelled' ? notes : undefined
-    );
-
     const supabase = getSupabase();
+    if (!supabase) {
+      return { success: false, error: 'Conexão com o Supabase não configurada neste ambiente.' };
+    }
+
     const isUuid =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(appointmentId);
-
-    if (!supabase || !isUuid) {
-      return { success: true };
+    if (!isUuid) {
+      return { success: false, error: 'ID de agendamento inválido para atualização no banco.' };
     }
 
     try {
@@ -3631,9 +4399,20 @@ export const StorageService = {
         .eq('id', appointmentId);
 
       if (error) {
-        console.warn('Erro ao atualizar status no Supabase:', error.message);
-        return { success: false, error: error.message };
+        return {
+          success: false,
+          error:
+            error.code === '42501'
+              ? 'Sem permissão para alterar o status desta consulta (RLS).'
+              : error.message,
+        };
       }
+
+      StorageService.updateAppointmentStatus(
+        appointmentId,
+        newStatus,
+        newStatus === 'cancelled' ? notes : undefined
+      );
 
       return { success: true };
     } catch (err) {
@@ -3669,6 +4448,14 @@ export const StorageService = {
     n8nInicio?: string;
     sendToN8n?: boolean;
   }): Promise<{ success: boolean; appointment?: Appointment; message?: string }> => {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return {
+        success: false,
+        message: 'Conexão com o Supabase não configurada. Não é possível salvar consultas fora do banco.',
+      };
+    }
+
     const clinic = StorageService.getClinic();
     const org = StorageService.getOrganization();
     const branches = StorageService.getBranches();
@@ -3681,15 +4468,19 @@ export const StorageService = {
     const targetService = services.find((s) => s.id === input.serviceId) || services[0];
     const targetRoom = rooms.find((r) => r.id === input.roomId) || rooms[0];
 
-    let resolvedPatient: Patient | undefined;
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
 
+    let resolvedPatient: Patient | undefined;
     if (input.newPatient) {
       const nowIso = new Date().toISOString();
-      resolvedPatient = StorageService.upsertPatientByCpf({
+      resolvedPatient = {
         id: `pat_${Date.now()}`,
-        organizationId: org.id || 'org_mureb_01',
-        originBranchId: targetBranch?.id || 'branch_cf_centro',
-        authorizedBranchIds: [targetBranch?.id || 'branch_cf_centro'],
+        organizationId: org.id || '',
+        originBranchId: targetBranch?.id || '',
+        authorizedBranchIds: targetBranch?.id ? [targetBranch.id] : [],
         sharingMode: 'model_b_shared',
         fullName: input.newPatient.fullName.trim(),
         documentCpf: input.newPatient.documentCpf,
@@ -3703,266 +4494,392 @@ export const StorageService = {
         administrativeNotes: 'Paciente cadastrado diretamente via Agenda Visual.',
         isActive: true,
         createdAt: nowIso,
-      });
+      };
     } else if (input.existingPatientId) {
       resolvedPatient = StorageService.getPatients().find((p) => p.id === input.existingPatientId);
-    }
-
-    if (!resolvedPatient) {
-      return { success: false, message: 'Selecione ou cadastre um paciente para agendar.' };
-    }
-
-    const nowIso = new Date().toISOString();
-    let finalAppointmentId = input.existingAppointmentId || `apt_${Date.now()}`;
-    const isUuid = (val?: string) =>
-      Boolean(
-        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
-      );
-
-    // 1. Optional n8n webhook notification (if requested for new appointments)
-    if (input.sendToN8n && !input.existingAppointmentId) {
-      const webhookUrl = (
-        clinic.n8nWebhookAgendamento ||
-        'https://n8n.srv1352561.hstgr.cloud/webhook/agendaclinica'
-      ).trim();
-
-      const cleanCpf = resolvedPatient.documentCpf.replace(/\D/g, '');
-      const cleanPhone = (resolvedPatient.whatsapp || resolvedPatient.phone).replace(/\D/g, '');
-      const celularE164 =
-        cleanPhone.startsWith('55') && cleanPhone.length >= 12
-          ? `+${cleanPhone}`
-          : `+55${cleanPhone}`;
-
-      const dateYmd =
-        input.dateYmd ||
-        `${new Date(input.startTime).getFullYear()}-${String(new Date(input.startTime).getMonth() + 1).padStart(2, '0')}-${String(new Date(input.startTime).getDate()).padStart(2, '0')}`;
-      const horaFmt =
-        input.horaFormatada ||
-        new Date(input.startTime).toLocaleTimeString('pt-BR', {
-          hour: '2-digit',
-          minute: '2-digit',
-        });
-
-      try {
-        await fetch(webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            unidade: targetBranch
-              ? `${targetBranch.name} (${targetBranch.city}/${targetBranch.state})`
-              : 'Unidade Matriz Cabo Frio (Centro) (Cabo Frio/RJ)',
-            especialista: targetProf?.fullName || 'Dr. Newton Mureb',
-            tipo_atendimento: input.serviceName || targetService?.name || 'Primeira consulta',
-            nome: resolvedPatient.fullName,
-            cpf: cleanCpf,
-            celular: celularE164,
-            email: resolvedPatient.email || '',
-            assunto: input.notes || '',
-            data: dateYmd,
-            horario: input.n8nInicio || input.startTime,
-            hora_formatada: horaFmt,
-            inicio: input.n8nInicio || input.startTime,
-            tenant_slug: org.slug || 'dr-newton-mureb',
-            organization_id: org.id || 'org_mureb_01',
-            clinic_cnpj: clinic.documentNumber || '55.937.470/0001-78',
-          }),
-        });
-      } catch (n8nErr) {
-        console.warn('Aviso ao enviar confirmação para webhook n8n:', n8nErr);
+      if (!resolvedPatient && isUuid(input.existingPatientId)) {
+        const { data: dbPat } = await supabase
+          .from('patients')
+          .select('*')
+          .eq('id', input.existingPatientId)
+          .maybeSingle();
+        if (dbPat) {
+          resolvedPatient = {
+            id: String(dbPat.id),
+            organizationId: String(dbPat.organization_id || ''),
+            originBranchId: String(dbPat.origin_branch_id || ''),
+            fullName: String(dbPat.full_name || ''),
+            documentCpf: String(dbPat.document_cpf || ''),
+            birthDate: String(dbPat.birth_date || ''),
+            gender: String(dbPat.gender || 'N'),
+            phone: String(dbPat.phone || ''),
+            whatsapp: String(dbPat.whatsapp || dbPat.phone || ''),
+            email: String(dbPat.email || ''),
+            sharingMode: 'model_b_shared',
+            createdAt: String(dbPat.created_at || new Date().toISOString()),
+            isActive: dbPat.is_active !== false,
+          };
+        }
       }
     }
 
-    // 2. Persist in Supabase (if configured)
-    const supabase = getSupabase();
-    if (supabase) {
-      try {
+    if (!resolvedPatient) {
+      return { success: false, message: 'Selecione ou cadastre um paciente válido para agendar.' };
+    }
+
+    const nowIso = new Date().toISOString();
+
+    try {
+      let supaOrgId = isUuid(org.id) ? org.id : undefined;
+      if (!supaOrgId) {
         const { data: orgRow } = await supabase
           .from('organizations')
           .select('id')
           .limit(1)
           .maybeSingle();
-
-        const supaOrgId = orgRow?.id;
-        if (supaOrgId) {
-          const { data: branchRow } = await supabase
-            .from('branches')
-            .select('id')
-            .eq('organization_id', supaOrgId)
-            .limit(1)
-            .maybeSingle();
-
-          const { data: profRow } = await supabase
-            .from('professionals')
-            .select('id')
-            .eq('organization_id', supaOrgId)
-            .limit(1)
-            .maybeSingle();
-
-          const { data: srvRow } = await supabase
-            .from('services')
-            .select('id')
-            .eq('organization_id', supaOrgId)
-            .limit(1)
-            .maybeSingle();
-
-          const cleanCpf = resolvedPatient.documentCpf.replace(/\D/g, '');
-          let supaPatientId = isUuid(resolvedPatient.id) ? resolvedPatient.id : undefined;
-
-          if (!supaPatientId && cleanCpf) {
-            const { data: foundPat } = await supabase
-              .from('patients')
-              .select('id')
-              .eq('organization_id', supaOrgId)
-              .or(`document_cpf.eq.${resolvedPatient.documentCpf},document_cpf.eq.${cleanCpf}`)
-              .limit(1)
-              .maybeSingle();
-            supaPatientId = foundPat?.id;
-          }
-
-          if (!supaPatientId && branchRow?.id) {
-            const { data: insertedPat } = await supabase
-              .from('patients')
-              .insert({
-                organization_id: supaOrgId,
-                origin_branch_id: branchRow.id,
-                full_name: resolvedPatient.fullName,
-                document_cpf: resolvedPatient.documentCpf,
-                phone: resolvedPatient.phone,
-                whatsapp: resolvedPatient.whatsapp || resolvedPatient.phone,
-                email: resolvedPatient.email || null,
-                lgpd_consent: true,
-                lgpd_consent_date: nowIso,
-                sharing_mode: 'model_b_shared',
-              })
-              .select('id')
-              .single();
-            supaPatientId = insertedPat?.id;
-          }
-
-          if (supaPatientId && branchRow?.id && profRow?.id) {
-            if (isUuid(input.existingAppointmentId)) {
-              await supabase
-                .from('appointments')
-                .update({
-                  patient_id: supaPatientId,
-                  service_id: isUuid(input.serviceId) ? input.serviceId : srvRow?.id || null,
-                  room_id: isUuid(input.roomId) ? input.roomId : null,
-                  start_time: input.startTime,
-                  end_time: input.endTime,
-                  status: input.status,
-                  appointment_type: input.appointmentType,
-                  notes: input.notes || null,
-                  updated_at: nowIso,
-                })
-                .eq('id', input.existingAppointmentId!);
-            } else {
-              const { data: insertedApt } = await supabase
-                .from('appointments')
-                .insert({
-                  organization_id: supaOrgId,
-                  branch_id: branchRow.id,
-                  patient_id: supaPatientId,
-                  professional_id: profRow.id,
-                  service_id: isUuid(input.serviceId) ? input.serviceId : srvRow?.id || null,
-                  room_id: isUuid(input.roomId) ? input.roomId : null,
-                  start_time: input.startTime,
-                  end_time: input.endTime,
-                  status: input.status,
-                  appointment_type: input.appointmentType,
-                  notes: input.notes || null,
-                })
-                .select('id')
-                .single();
-              if (insertedApt?.id) {
-                finalAppointmentId = insertedApt.id;
-              }
-            }
-          }
-        }
-      } catch (supaErr) {
-        console.warn('Aviso ao persistir agendamento no Supabase:', supaErr);
+        supaOrgId = orgRow?.id ? String(orgRow.id) : undefined;
       }
-    }
 
-    // 3. Persist in localStorage ERP
-    const appointmentObj: Appointment = {
-      id: finalAppointmentId,
-      organizationId: org.id || 'org_mureb_01',
-      branchId: targetBranch?.id || 'branch_cf_centro',
-      patientId: resolvedPatient.id,
-      patientName: resolvedPatient.fullName,
-      patientPhone: resolvedPatient.whatsapp || resolvedPatient.phone,
-      professionalId: targetProf?.id || 'prof_newton',
-      professionalName: targetProf?.fullName || 'Dr. Newton Mureb',
-      serviceId: targetService?.id,
-      serviceName: input.serviceName || targetService?.name || 'Consulta Médica',
-      roomId: targetRoom?.id,
-      roomName: targetRoom?.name || 'Consultório 01 - Clínica Médica, Endocrinologia e Metabologia',
-      startTime: input.startTime,
-      endTime: input.endTime,
-      status: input.status,
-      appointmentType: input.appointmentType,
-      notes: input.notes,
-      isOverbook: input.isOverbook,
-      createdAt: nowIso,
-    };
+      if (!supaOrgId) {
+        return {
+          success: false,
+          message: 'Organização não encontrada no Supabase para gravar o agendamento.',
+        };
+      }
 
-    const localRes = StorageService.saveAppointment(appointmentObj);
-    if (!localRes.success) {
-      return { success: false, message: localRes.message };
-    }
+      // Resolver filial real no Supabase respeitando a escolha do formulário
+      let supaBranchId = isUuid(input.branchId) ? input.branchId : undefined;
+      if (!supaBranchId) {
+        const { data: branchRow } = await supabase
+          .from('branches')
+          .select('id')
+          .eq('organization_id', supaOrgId)
+          .limit(1)
+          .maybeSingle();
+        supaBranchId = branchRow?.id ? String(branchRow.id) : undefined;
+      }
 
-    if (input.sendToN8n && !input.existingAppointmentId && appointmentObj.patientPhone) {
-      const startDt = new Date(input.startTime);
-      const formattedDate = startDt.toLocaleDateString('pt-BR');
-      const formattedHour =
-        input.horaFormatada ||
-        startDt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-      const branchLabel = targetBranch
-        ? `${targetBranch.name} (${targetBranch.city}/${targetBranch.state})`
-        : 'nossa clínica';
-      const confirmationText = `Olá, ${appointmentObj.patientName}! Confirmamos seu agendamento (${appointmentObj.serviceName}) com ${appointmentObj.professionalName} para o dia ${formattedDate} às ${formattedHour} em ${branchLabel}.`;
+      if (!supaBranchId) {
+        return {
+          success: false,
+          message: 'Nenhuma filial cadastrada no Supabase para esta organização.',
+        };
+      }
 
-      if (clinic.megaapiInstanceUrl?.trim() && clinic.megaapiToken?.trim()) {
-        try {
-          const { sendWhatsAppMessage } = await import('./megaApiService');
-          await sendWhatsAppMessage(appointmentObj.patientPhone, confirmationText, clinic, {
-            organizationId: appointmentObj.organizationId,
-            branchId: appointmentObj.branchId,
-            patientId: appointmentObj.patientId,
-            patientName: appointmentObj.patientName,
-            appointmentId: appointmentObj.id,
-            recordAttemptOnFailure: true,
-          });
-        } catch (megaErr) {
-          console.warn('Aviso ao disparar WhatsApp de confirmação:', megaErr);
+      // Resolver profissional real no Supabase respeitando a escolha do formulário
+      let supaProfId = isUuid(input.professionalId) ? input.professionalId : undefined;
+      if (!supaProfId) {
+        const { data: profRow } = await supabase
+          .from('professionals')
+          .select('id')
+          .eq('organization_id', supaOrgId)
+          .limit(1)
+          .maybeSingle();
+        supaProfId = profRow?.id ? String(profRow.id) : undefined;
+      }
+
+      if (!supaProfId) {
+        return {
+          success: false,
+          message: 'Nenhum profissional cadastrado no Supabase para esta organização.',
+        };
+      }
+
+      let supaServiceId = isUuid(input.serviceId) ? input.serviceId : undefined;
+      if (!supaServiceId) {
+        const { data: srvRow } = await supabase
+          .from('services')
+          .select('id')
+          .eq('organization_id', supaOrgId)
+          .limit(1)
+          .maybeSingle();
+        supaServiceId = srvRow?.id ? String(srvRow.id) : undefined;
+      }
+
+      const supaRoomId = isUuid(input.roomId) ? input.roomId : undefined;
+
+      // Verificar conflito de horário no banco (a menos que Encaixe esteja ativo ou cancelado)
+      if (!input.isOverbook && input.status !== 'cancelled') {
+        let conflictQuery = supabase
+          .from('appointments')
+          .select('id, start_time, end_time')
+          .eq('organization_id', supaOrgId)
+          .eq('branch_id', supaBranchId)
+          .eq('professional_id', supaProfId)
+          .neq('status', 'cancelled')
+          .lt('start_time', input.endTime)
+          .gt('end_time', input.startTime);
+
+        if (isUuid(input.existingAppointmentId)) {
+          conflictQuery = conflictQuery.neq('id', input.existingAppointmentId!);
         }
+
+        const { data: conflicts } = await conflictQuery.limit(1);
+        if (conflicts && conflicts.length > 0) {
+          return {
+            success: false,
+            message:
+              'Conflito de horário: o profissional já possui outra consulta neste intervalo. Marque "Permitir Encaixe" se desejar sobrepor.',
+          };
+        }
+      }
+
+      const cleanCpf = resolvedPatient.documentCpf.replace(/\D/g, '');
+      let supaPatientId = isUuid(resolvedPatient.id) ? resolvedPatient.id : undefined;
+
+      if (!supaPatientId && cleanCpf) {
+        const { data: foundPat } = await supabase
+          .from('patients')
+          .select('id')
+          .eq('organization_id', supaOrgId)
+          .or(`document_cpf.eq.${resolvedPatient.documentCpf},document_cpf.eq.${cleanCpf}`)
+          .limit(1)
+          .maybeSingle();
+        supaPatientId = foundPat?.id ? String(foundPat.id) : undefined;
+      }
+
+      if (!supaPatientId) {
+        const { data: insertedPat, error: patErr } = await supabase
+          .from('patients')
+          .insert({
+            organization_id: supaOrgId,
+            origin_branch_id: supaBranchId,
+            full_name: resolvedPatient.fullName,
+            document_cpf: resolvedPatient.documentCpf,
+            phone: resolvedPatient.phone,
+            whatsapp: resolvedPatient.whatsapp || resolvedPatient.phone,
+            email: resolvedPatient.email || null,
+            lgpd_consent: true,
+            lgpd_consent_date: nowIso,
+            sharing_mode: 'model_b_shared',
+          })
+          .select('id')
+          .single();
+
+        if (patErr || !insertedPat?.id) {
+          return {
+            success: false,
+            message:
+              patErr?.code === '42501'
+                ? 'Sem permissão para cadastrar paciente na agenda (RLS).'
+                : patErr?.message || 'Erro ao salvar paciente no Supabase.',
+          };
+        }
+        supaPatientId = String(insertedPat.id);
+      }
+
+      resolvedPatient = {
+        ...resolvedPatient,
+        id: supaPatientId,
+        organizationId: supaOrgId,
+        originBranchId: supaBranchId,
+      };
+      StorageService.upsertPatientCacheById(resolvedPatient);
+
+      let savedAptId = input.existingAppointmentId || '';
+      if (isUuid(input.existingAppointmentId)) {
+        const { data: updatedApt, error: updErr } = await supabase
+          .from('appointments')
+          .update({
+            branch_id: supaBranchId,
+            patient_id: supaPatientId,
+            professional_id: supaProfId,
+            service_id: supaServiceId || null,
+            room_id: supaRoomId || null,
+            start_time: input.startTime,
+            end_time: input.endTime,
+            status: input.status,
+            appointment_type: input.appointmentType,
+            notes: input.notes || null,
+            updated_at: nowIso,
+          })
+          .eq('id', input.existingAppointmentId!)
+          .select('id')
+          .single();
+
+        if (updErr || !updatedApt?.id) {
+          return {
+            success: false,
+            message:
+              updErr?.code === '42501'
+                ? 'Sem permissão para editar este agendamento (RLS).'
+                : updErr?.message || 'Erro ao atualizar agendamento no Supabase.',
+          };
+        }
+        savedAptId = String(updatedApt.id);
       } else {
-        await StorageService.sendMessageToCloud({
-          organizationId: appointmentObj.organizationId,
-          branchId: appointmentObj.branchId,
-          patientId: appointmentObj.patientId,
-          appointmentId: appointmentObj.id,
-          patientName: appointmentObj.patientName,
-          recipientPhone: appointmentObj.patientPhone,
-          channel: 'whatsapp',
-          direction: 'outbound',
-          content: confirmationText,
-          status: 'delivered',
-        });
-      }
-    }
+        const { data: insertedApt, error: insErr } = await supabase
+          .from('appointments')
+          .insert({
+            organization_id: supaOrgId,
+            branch_id: supaBranchId,
+            patient_id: supaPatientId,
+            professional_id: supaProfId,
+            service_id: supaServiceId || null,
+            room_id: supaRoomId || null,
+            start_time: input.startTime,
+            end_time: input.endTime,
+            status: input.status,
+            appointment_type: input.appointmentType,
+            notes: input.notes || null,
+          })
+          .select('id')
+          .single();
 
-    return { success: true, appointment: appointmentObj };
+        if (insErr || !insertedApt?.id) {
+          return {
+            success: false,
+            message:
+              insErr?.code === '42501'
+                ? 'Sem permissão para criar agendamentos nesta filial (RLS).'
+                : insErr?.message || 'Erro ao criar agendamento no Supabase.',
+          };
+        }
+        savedAptId = String(insertedApt.id);
+      }
+
+      const appointmentObj: Appointment = {
+        id: savedAptId,
+        organizationId: supaOrgId,
+        branchId: supaBranchId,
+        branchName: targetBranch?.name,
+        patientId: supaPatientId,
+        patientName: resolvedPatient.fullName,
+        patientPhone: resolvedPatient.whatsapp || resolvedPatient.phone,
+        professionalId: supaProfId,
+        professionalName: targetProf?.fullName || 'Dr. Newton Mureb',
+        serviceId: supaServiceId,
+        serviceName: input.serviceName || targetService?.name || 'Consulta Médica',
+        roomId: supaRoomId,
+        roomName: input.roomName || targetRoom?.name || 'Consultório 01',
+        startTime: input.startTime,
+        endTime: input.endTime,
+        status: input.status,
+        appointmentType: input.appointmentType,
+        notes: input.notes,
+        isOverbook: input.isOverbook,
+        createdAt: nowIso,
+      };
+
+      StorageService.saveAppointment(appointmentObj);
+
+      // Disparo opcional para n8n / WhatsApp apenas após confirmação no Supabase
+      if (input.sendToN8n && !input.existingAppointmentId) {
+        const webhookUrl = (
+          clinic.n8nWebhookAgendamento ||
+          'https://n8n.srv1352561.hstgr.cloud/webhook/agendaclinica'
+        ).trim();
+
+        const cleanPhone = (resolvedPatient.whatsapp || resolvedPatient.phone).replace(/\D/g, '');
+        const celularE164 =
+          cleanPhone.startsWith('55') && cleanPhone.length >= 12
+            ? `+${cleanPhone}`
+            : `+55${cleanPhone}`;
+
+        const dateYmd =
+          input.dateYmd ||
+          `${new Date(input.startTime).getFullYear()}-${String(new Date(input.startTime).getMonth() + 1).padStart(2, '0')}-${String(new Date(input.startTime).getDate()).padStart(2, '0')}`;
+        const horaFmt =
+          input.horaFormatada ||
+          new Date(input.startTime).toLocaleTimeString('pt-BR', {
+            hour: '2-digit',
+            minute: '2-digit',
+          });
+
+        try {
+          await fetch(webhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              unidade: targetBranch
+                ? `${targetBranch.name} (${targetBranch.city}/${targetBranch.state})`
+                : 'Unidade',
+              especialista: targetProf?.fullName || 'Dr. Newton Mureb',
+              tipo_atendimento: input.serviceName || targetService?.name || 'Primeira consulta',
+              nome: resolvedPatient.fullName,
+              cpf: cleanCpf,
+              celular: celularE164,
+              email: resolvedPatient.email || '',
+              assunto: input.notes || '',
+              data: dateYmd,
+              horario: input.n8nInicio || input.startTime,
+              hora_formatada: horaFmt,
+              inicio: input.n8nInicio || input.startTime,
+              tenant_slug: org.slug || 'dr-newton-mureb',
+              organization_id: supaOrgId,
+              clinic_cnpj: clinic.documentNumber || '55.937.470/0001-78',
+            }),
+          });
+        } catch (n8nErr) {
+          console.warn('Aviso ao enviar confirmação para webhook n8n:', n8nErr);
+        }
+
+        if (appointmentObj.patientPhone) {
+          const startDt = new Date(input.startTime);
+          const formattedDate = startDt.toLocaleDateString('pt-BR');
+          const branchLabel = targetBranch
+            ? `${targetBranch.name} (${targetBranch.city}/${targetBranch.state})`
+            : 'nossa clínica';
+          const confirmationText = `Olá, ${appointmentObj.patientName}! Confirmamos seu agendamento (${appointmentObj.serviceName}) com ${appointmentObj.professionalName} para o dia ${formattedDate} às ${horaFmt} em ${branchLabel}.`;
+
+          if (clinic.megaapiInstanceUrl?.trim() && clinic.megaapiToken?.trim()) {
+            try {
+              const { sendWhatsAppMessage } = await import('./megaApiService');
+              await sendWhatsAppMessage(appointmentObj.patientPhone, confirmationText, clinic, {
+                organizationId: appointmentObj.organizationId,
+                branchId: appointmentObj.branchId,
+                patientId: appointmentObj.patientId,
+                patientName: appointmentObj.patientName,
+                appointmentId: appointmentObj.id,
+                recordAttemptOnFailure: true,
+              });
+            } catch (megaErr) {
+              console.warn('Aviso ao disparar WhatsApp de confirmação:', megaErr);
+            }
+          } else {
+            await StorageService.sendMessageToCloud({
+              organizationId: appointmentObj.organizationId,
+              branchId: appointmentObj.branchId,
+              patientId: appointmentObj.patientId,
+              appointmentId: appointmentObj.id,
+              patientName: appointmentObj.patientName,
+              recipientPhone: appointmentObj.patientPhone,
+              channel: 'whatsapp',
+              direction: 'outbound',
+              content: confirmationText,
+              status: 'delivered',
+            });
+          }
+        }
+      }
+
+      return { success: true, appointment: appointmentObj };
+    } catch (supaErr) {
+      return {
+        success: false,
+        message: supaErr instanceof Error ? supaErr.message : String(supaErr),
+      };
+    }
   },
 
-  fetchWaitlistFromCloud: async (branchFilterId?: string): Promise<WaitlistEntry[]> => {
-    const localList = StorageService.getWaitlist(branchFilterId);
+  fetchWaitlistFromCloudDetailed: async (
+    branchFilterId?: string
+  ): Promise<{ waitlist: WaitlistEntry[]; error?: string }> => {
     const supabase = getSupabase();
-    if (!supabase) return localList;
+    if (!supabase) {
+      return {
+        waitlist: [],
+        error: 'Conexão com o Supabase não configurada neste ambiente.',
+      };
+    }
+
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
 
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('waitlist')
         .select(
           `
@@ -3987,8 +4904,20 @@ export const StorageService = {
         .eq('status', 'waiting')
         .order('created_at', { ascending: false });
 
+      if (branchFilterId && branchFilterId !== 'all' && isUuid(branchFilterId)) {
+        query = query.eq('branch_id', branchFilterId);
+      }
+
+      const { data, error } = await query;
+
       if (error || !data) {
-        return localList;
+        return {
+          waitlist: [],
+          error:
+            error?.code === '42501'
+              ? 'Acesso bloqueado à lista de espera (RLS). Aplique a migration de RLS ou verifique permissões.'
+              : error?.message || 'Erro ao carregar lista de espera do Supabase.',
+        };
       }
 
       const cloudWaitlist: WaitlistEntry[] = (data as Array<Record<string, unknown>>).map((row) => {
@@ -4015,98 +4944,174 @@ export const StorageService = {
         };
       });
 
-      const cloudIds = new Set(cloudWaitlist.map((w) => w.id));
-      const merged = [
-        ...cloudWaitlist,
-        ...StorageService.getWaitlist().filter((l) => !cloudIds.has(l.id)),
-      ];
-      setStored(STORAGE_KEYS.WAITLIST, merged);
-      return !branchFilterId || branchFilterId === 'all'
-        ? merged
-        : merged.filter((w) => w.branchId === branchFilterId);
-    } catch {
-      return localList;
+      if (!branchFilterId || branchFilterId === 'all') {
+        setStored(STORAGE_KEYS.WAITLIST, cloudWaitlist);
+      }
+
+      return { waitlist: cloudWaitlist };
+    } catch (err) {
+      return {
+        waitlist: [],
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
   },
 
-  createWaitlistInCloud: async (entry: WaitlistEntry): Promise<WaitlistEntry> => {
-    let savedId = entry.id;
-    const supabase = getSupabase();
+  fetchWaitlistFromCloud: async (branchFilterId?: string): Promise<WaitlistEntry[]> => {
+    const res = await StorageService.fetchWaitlistFromCloudDetailed(branchFilterId);
+    return res.waitlist;
+  },
 
-    if (supabase) {
-      try {
+  createWaitlistInCloud: async (
+    entry: WaitlistEntry
+  ): Promise<{ success: boolean; entry?: WaitlistEntry; error?: string }> => {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { success: false, error: 'Conexão com o Supabase não configurada.' };
+    }
+
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    try {
+      let orgId = isUuid(entry.organizationId) ? entry.organizationId : undefined;
+      if (!orgId) {
         const { data: orgRow } = await supabase
           .from('organizations')
           .select('id')
           .limit(1)
           .maybeSingle();
-        if (orgRow?.id) {
-          const { data: branchRow } = await supabase
-            .from('branches')
-            .select('id')
-            .eq('organization_id', orgRow.id)
-            .limit(1)
-            .maybeSingle();
-          const { data: profRow } = await supabase
-            .from('professionals')
-            .select('id')
-            .eq('organization_id', orgRow.id)
-            .limit(1)
-            .maybeSingle();
-
-          const localPatient = StorageService.getPatients().find((p) => p.id === entry.patientId);
-          let supaPatientId: string | undefined;
-          if (localPatient) {
-            const cleanCpf = localPatient.documentCpf.replace(/\D/g, '');
-            const { data: patRow } = await supabase
-              .from('patients')
-              .select('id')
-              .eq('organization_id', orgRow.id)
-              .or(`document_cpf.eq.${localPatient.documentCpf},document_cpf.eq.${cleanCpf}`)
-              .limit(1)
-              .maybeSingle();
-            supaPatientId = patRow?.id;
-          }
-
-          if (branchRow?.id && supaPatientId) {
-            const { data: inserted } = await supabase
-              .from('waitlist')
-              .insert({
-                organization_id: orgRow.id,
-                branch_id: branchRow.id,
-                patient_id: supaPatientId,
-                professional_id: profRow?.id || null,
-                preferred_days: entry.preferredDays,
-                preferred_period: entry.preferredPeriod,
-                notes: entry.notes || null,
-                status: 'waiting',
-              })
-              .select('id')
-              .single();
-            if (inserted?.id) savedId = inserted.id;
-          }
-        }
-      } catch (err) {
-        console.warn('Aviso ao inserir na waitlist do Supabase:', err);
+        orgId = orgRow?.id ? String(orgRow.id) : undefined;
       }
-    }
 
-    const finalEntry = { ...entry, id: savedId };
-    StorageService.saveWaitlistEntry(finalEntry);
-    return finalEntry;
+      if (!orgId) {
+        return { success: false, error: 'Organização não encontrada no Supabase.' };
+      }
+
+      let branchId = isUuid(entry.branchId) ? entry.branchId : undefined;
+      if (!branchId) {
+        const { data: branchRow } = await supabase
+          .from('branches')
+          .select('id')
+          .eq('organization_id', orgId)
+          .limit(1)
+          .maybeSingle();
+        branchId = branchRow?.id ? String(branchRow.id) : undefined;
+      }
+
+      if (!branchId) {
+        return { success: false, error: 'Filial não encontrada no Supabase.' };
+      }
+
+      let profId = isUuid(entry.professionalId) ? entry.professionalId : undefined;
+      if (!profId && !entry.professionalId) {
+        const { data: profRow } = await supabase
+          .from('professionals')
+          .select('id')
+          .eq('organization_id', orgId)
+          .limit(1)
+          .maybeSingle();
+        profId = profRow?.id ? String(profRow.id) : undefined;
+      }
+
+      let supaPatientId = isUuid(entry.patientId) ? entry.patientId : undefined;
+      if (!supaPatientId) {
+        const localPatient = StorageService.getPatients().find((p) => p.id === entry.patientId);
+        if (localPatient) {
+          const cleanCpf = localPatient.documentCpf.replace(/\D/g, '');
+          const { data: patRow } = await supabase
+            .from('patients')
+            .select('id')
+            .eq('organization_id', orgId)
+            .or(`document_cpf.eq.${localPatient.documentCpf},document_cpf.eq.${cleanCpf}`)
+            .limit(1)
+            .maybeSingle();
+          supaPatientId = patRow?.id ? String(patRow.id) : undefined;
+        }
+      }
+
+      if (!supaPatientId) {
+        return {
+          success: false,
+          error: 'Paciente não encontrado no banco de dados Supabase. Cadastre o paciente antes.',
+        };
+      }
+
+      const { data: inserted, error } = await supabase
+        .from('waitlist')
+        .insert({
+          organization_id: orgId,
+          branch_id: branchId,
+          patient_id: supaPatientId,
+          professional_id: profId || null,
+          preferred_days: entry.preferredDays,
+          preferred_period: entry.preferredPeriod,
+          notes: entry.notes || null,
+          status: 'waiting',
+        })
+        .select('id, created_at')
+        .single();
+
+      if (error || !inserted?.id) {
+        return {
+          success: false,
+          error:
+            error?.code === '42501'
+              ? 'Sem permissão para adicionar paciente à lista de espera (RLS).'
+              : error?.message || 'Erro ao gravar na lista de espera.',
+        };
+      }
+
+      const finalEntry: WaitlistEntry = {
+        ...entry,
+        id: String(inserted.id),
+        organizationId: orgId,
+        branchId,
+        patientId: supaPatientId,
+        professionalId: profId,
+        createdAt: String(inserted.created_at || entry.createdAt),
+      };
+      StorageService.saveWaitlistEntry(finalEntry);
+      return { success: true, entry: finalEntry };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   },
 
-  removeWaitlistInCloud: async (id: string): Promise<void> => {
-    StorageService.removeWaitlistEntry(id);
+  removeWaitlistInCloud: async (id: string): Promise<{ success: boolean; error?: string }> => {
     const supabase = getSupabase();
+    if (!supabase) {
+      return { success: false, error: 'Conexão com o Supabase não configurada.' };
+    }
     const isUuid =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-    if (supabase && isUuid) {
-      try {
-        await supabase.from('waitlist').delete().eq('id', id);
-      } catch (err) {
-        console.warn('Aviso ao remover item da waitlist no Supabase:', err);
+    if (!isUuid) {
+      return { success: false, error: 'ID inválido para remoção na lista de espera.' };
+    }
+
+    try {
+      const { error } = await supabase.from('waitlist').delete().eq('id', id);
+      if (error) {
+        return {
+          success: false,
+          error:
+            error.code === '42501'
+              ? 'Sem permissão para remover item da lista de espera (RLS).'
+              : error.message,
+        };
       }
+      StorageService.removeWaitlistEntry(id);
+      return { success: true };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 };

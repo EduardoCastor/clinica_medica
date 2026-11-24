@@ -49,8 +49,8 @@ export const PatientsModule: React.FC<PatientsModuleProps> = ({
   const canOpenMedicalRecords = canViewMenu('medical_records') || canConsultMenu('medical_records');
   const canOpenAppointments = canViewMenu('appointments');
 
-  const [patients, setPatients] = useState<Patient[]>(() => StorageService.getPatients(activeBranchId));
-  const [isLoadingPatients, setIsLoadingPatients] = useState(false);
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [isLoadingPatients, setIsLoadingPatients] = useState(true);
   const [syncError, setSyncError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [sharingFilter, setSharingFilter] = useState<string>('all');
@@ -78,7 +78,6 @@ export const PatientsModule: React.FC<PatientsModuleProps> = ({
 
   useEffect(() => {
     let cancelled = false;
-    setPatients(StorageService.getPatients(activeBranchId));
     setIsLoadingPatients(true);
     setSyncError('');
     ClinicalCloudService.fetchPatientsFromCloud(activeBranchId)
@@ -99,7 +98,6 @@ export const PatientsModule: React.FC<PatientsModuleProps> = ({
     if (savedPatient) {
       setSelectedPatientId(savedPatient.id);
     }
-    setPatients(StorageService.getPatients(activeBranchId));
     void loadPatients();
   };
 
@@ -213,9 +211,18 @@ export const PatientsModule: React.FC<PatientsModuleProps> = ({
       </div>
 
       {syncError && (
-        <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-          <span>Aviso de sincronização com o banco de dados: {syncError}</span>
+        <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>Erro ao carregar pacientes do banco de dados: {syncError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadPatients()}
+            className="px-2.5 py-1 text-[11px] font-semibold bg-white border border-rose-300 text-rose-700 rounded-lg hover:bg-rose-100 shrink-0"
+          >
+            Tentar novamente
+          </button>
         </div>
       )}
 
@@ -366,10 +373,21 @@ export const PatientsModule: React.FC<PatientsModuleProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredPatients.length === 0 ? (
+              {isLoadingPatients && patients.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-12 text-center text-slate-500">
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin text-sky-600" />
+                      <span>Carregando pacientes do Supabase...</span>
+                    </span>
+                  </td>
+                </tr>
+              ) : filteredPatients.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="py-12 text-center text-slate-400">
-                    Nenhum paciente localizado com os filtros selecionados.
+                    {patients.length === 0
+                      ? 'Nenhum paciente cadastrado nesta unidade ainda.'
+                      : 'Nenhum paciente localizado com os filtros selecionados.'}
                   </td>
                 </tr>
               ) : (
@@ -535,9 +553,16 @@ export const PatientsModule: React.FC<PatientsModuleProps> = ({
 
       {/* Responsive Mobile Cards (< md) so Editar & actions require zero horizontal scroll */}
       <div className="md:hidden space-y-3">
-        {filteredPatients.length === 0 ? (
+        {isLoadingPatients && patients.length === 0 ? (
+          <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-xs text-slate-500 flex items-center justify-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin text-sky-600" />
+            <span>Carregando pacientes...</span>
+          </div>
+        ) : filteredPatients.length === 0 ? (
           <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-xs text-slate-400">
-            Nenhum paciente localizado com os filtros selecionados.
+            {patients.length === 0
+              ? 'Nenhum paciente cadastrado nesta unidade ainda.'
+              : 'Nenhum paciente localizado com os filtros selecionados.'}
           </div>
         ) : (
           filteredPatients.map((p) => {

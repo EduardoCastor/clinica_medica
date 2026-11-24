@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { Appointment, AppointmentStatus, Patient } from '../../types';
 import { StorageService } from '../../services/storage';
+import { ClinicalCloudService } from '../../services/clinicalCloudService';
 import { useTenant } from '../../contexts/TenantContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { getSupabase } from '../../services/supabaseClient';
@@ -276,33 +277,51 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
     }
   };
 
-  const handleOpenMedicalRecord = (apt: Appointment) => {
+  const handleOpenMedicalRecord = async (apt: Appointment) => {
     if (!onNavigateToRecord) return;
-    const allPatients = StorageService.getPatients();
-    let patient =
-      allPatients.find((p) => p.id === apt.patientId) ||
-      allPatients.find((p) => p.fullName.toLowerCase() === apt.patientName.toLowerCase());
+    setUpdatingId(apt.id);
+    setSyncError(null);
+    try {
+      if (apt.patientId && isUuid(apt.patientId)) {
+        const res = await ClinicalCloudService.fetchPatientByIdFromCloud(apt.patientId);
+        if (res.patient) {
+          onNavigateToRecord(res.patient);
+          return;
+        }
+        if (res.error) {
+          setSyncError(res.error);
+          return;
+        }
+      }
 
-    if (!patient) {
-      patient = StorageService.upsertPatientByCpf({
-        id: apt.patientId || `pat_pep_${Date.now()}`,
-        organizationId: apt.organizationId,
-        originBranchId: apt.branchId,
-        fullName: apt.patientName,
-        documentCpf: '',
-        birthDate: '',
-        gender: 'N',
-        phone: apt.patientPhone,
-        whatsapp: apt.patientPhone,
-        email: '',
-        sharingMode: 'model_b_shared',
-        authorizedBranchIds: [apt.branchId],
-        createdAt: new Date().toISOString(),
-        isActive: true,
-      });
+      const cloudPatients = await ClinicalCloudService.fetchPatientsFromCloud(apt.branchId);
+      if (cloudPatients.error) {
+        setSyncError(cloudPatients.error);
+        return;
+      }
+
+      const targetName = apt.patientName.trim().toLowerCase();
+      const targetPhoneDigits = (apt.patientPhone || '').replace(/\D/g, '');
+      const matched =
+        cloudPatients.patients.find((p) => p.id === apt.patientId) ||
+        cloudPatients.patients.find((p) => p.fullName.trim().toLowerCase() === targetName) ||
+        (targetPhoneDigits.length >= 8
+          ? cloudPatients.patients.find(
+              (p) => (p.phone || p.whatsapp || '').replace(/\D/g, '') === targetPhoneDigits
+            )
+          : undefined);
+
+      if (matched) {
+        onNavigateToRecord(matched);
+        return;
+      }
+
+      setSyncError(
+        `Paciente "${apt.patientName}" ainda não possui cadastro vinculado no Supabase. Cadastre ou vincule o paciente antes de abrir o prontuário.`
+      );
+    } finally {
+      setUpdatingId(null);
     }
-
-    onNavigateToRecord(patient);
   };
 
   const handleCopyBookingLink = () => {
@@ -993,7 +1012,7 @@ export const AppointmentsModule: React.FC<AppointmentsModuleProps> = ({ onNaviga
                               {onNavigateToRecord && canOpenMedicalRecords && (
                                 <button
                                   type="button"
-                                  onClick={() => handleOpenMedicalRecord(apt)}
+                                  onClick={() => void handleOpenMedicalRecord(apt)}
                                   className="px-2.5 py-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition inline-flex items-center gap-1"
                                 >
                                   <FileText className="w-3 h-3" />

@@ -6,6 +6,8 @@ import {
   MedicalCertificate,
   LabOrder,
   MedicalRecordEntry,
+  ExamResult,
+  FinancialTransaction,
   Branch,
   Clinic,
 } from '../../types';
@@ -20,7 +22,9 @@ export type PrintableDocumentType =
   | { type: 'prescription'; data: Prescription }
   | { type: 'certificate'; data: MedicalCertificate }
   | { type: 'lab_order'; data: LabOrder }
-  | { type: 'medical_record'; data: MedicalRecordEntry; patientName?: string; patientCpf?: string };
+  | { type: 'medical_record'; data: MedicalRecordEntry; patientName?: string; patientCpf?: string }
+  | { type: 'exam_result'; data: ExamResult; patientName?: string; patientCpf?: string }
+  | { type: 'financial_receipt'; data: FinancialTransaction; patientName?: string; patientCpf?: string };
 
 interface DocumentPrintModalProps {
   isOpen: boolean;
@@ -44,7 +48,7 @@ export const DocumentPrintModal: React.FC<DocumentPrintModalProps> = ({
     const docBody = window.document.body;
     const container = window.document.createElement('div');
     container.id = 'medsync-print-portal';
-    container.className = 'hidden print:block bg-white text-slate-900';
+    container.className = 'bg-white text-slate-900';
     docBody.appendChild(container);
     docBody.classList.add('medsync-printing-doc');
     setPortalContainer(container);
@@ -100,6 +104,26 @@ export const DocumentPrintModal: React.FC<DocumentPrintModalProps> = ({
       {document.type === 'medical_record' && (
         <MedicalRecordCanvas
           record={document.data}
+          patientName={document.patientName}
+          patientCpf={document.patientCpf}
+          clinic={clinic}
+          branch={resolvedBranch}
+        />
+      )}
+
+      {document.type === 'exam_result' && (
+        <ExamResultCanvas
+          result={document.data}
+          patientName={document.patientName}
+          patientCpf={document.patientCpf}
+          clinic={clinic}
+          branch={resolvedBranch}
+        />
+      )}
+
+      {document.type === 'financial_receipt' && (
+        <FinancialReceiptCanvas
+          transaction={document.data}
           patientName={document.patientName}
           patientCpf={document.patientCpf}
           clinic={clinic}
@@ -767,6 +791,225 @@ const MedicalRecordCanvas: React.FC<{
         professionalCouncil={record.professionalCouncilNumber}
         cityState={branch ? `${branch.city} - ${branch.state}` : undefined}
         clinicLegalName={clinic?.legalName || clinic?.tradeName}
+      />
+    </div>
+  );
+};
+
+/* =========================================================================
+   SUB-CANVAS 5: RESULTADO / LAUDO DE EXAME CLÍNICO
+   ========================================================================= */
+const ExamResultCanvas: React.FC<{
+  result: ExamResult;
+  patientName?: string;
+  patientCpf?: string;
+} & CanvasProps> = ({ result, patientName, patientCpf, clinic, branch }) => {
+  return (
+    <div className="flex flex-col justify-between h-full min-h-[235mm] print:h-auto print:min-h-0 space-y-6">
+      <MedicalDocumentHeader
+        badgeTitle="Laudo / Resultado de Exame"
+        badgeSubtitle="Registro Integrado ao Prontuário (PEP)"
+        badgeTone="gold"
+        clinic={clinic}
+        branch={branch}
+      />
+
+      <div className="medsync-break-avoid bg-slate-50 p-3.5 rounded-lg border border-slate-200 text-xs grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <div>
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">Paciente:</span>
+          <span className="font-bold text-slate-900 text-sm">
+            {patientName || 'Paciente Registrado no PEP'}
+          </span>
+        </div>
+        <div>
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">CPF:</span>
+          <span className="font-mono text-slate-800">{patientCpf || 'Conforme Prontuário'}</span>
+        </div>
+        <div>
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">Data de Realização:</span>
+          <span className="font-semibold text-slate-800">
+            {new Date(result.performedDate + 'T00:00:00').toLocaleDateString('pt-BR')}
+          </span>
+        </div>
+      </div>
+
+      <div className="space-y-4 flex-1 print:flex-none text-xs">
+        <div className="medsync-break-avoid p-4 rounded-lg border border-slate-200 bg-white space-y-2">
+          <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
+            <div>
+              <span className="text-[10px] uppercase font-bold text-slate-400 block">Exame Avaliado</span>
+              <h3 className="text-base font-extrabold text-slate-900">{result.examName}</h3>
+            </div>
+            <span
+              className={`px-2.5 py-1 rounded text-[10px] font-bold uppercase ${
+                result.status === 'critical'
+                  ? 'bg-rose-100 text-rose-800 border border-rose-200'
+                  : 'bg-teal-100 text-teal-800 border border-teal-200'
+              }`}
+            >
+              {result.status === 'critical'
+                ? 'Alterado / Crítico'
+                : result.status === 'evaluated'
+                  ? 'Avaliado pelo Médico'
+                  : 'Realizado'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-[11px] text-slate-600">
+            <div>
+              <strong>Categoria:</strong> <span className="uppercase">{result.examCategory}</span>
+            </div>
+            <div>
+              <strong>Laboratório / Executante:</strong> {result.laboratoryName || 'Não informado'}
+            </div>
+          </div>
+        </div>
+
+        <div className="medsync-break-avoid p-4 rounded-lg border border-slate-200 bg-slate-50/70 space-y-1.5">
+          <span className="font-bold text-slate-900 uppercase text-[10px] tracking-wider block">
+            Conclusão do Laudo / Valores Encontrados
+          </span>
+          <p className="text-slate-800 whitespace-pre-line leading-relaxed">{result.reportSummary}</p>
+        </div>
+
+        {result.referenceValues && (
+          <div className="medsync-break-avoid p-3.5 rounded-lg border border-slate-200 space-y-1">
+            <span className="font-bold text-slate-900 uppercase text-[10px] tracking-wider block">
+              Valores de Referência / Notas Técnicas
+            </span>
+            <p className="text-slate-700 leading-relaxed">{result.referenceValues}</p>
+          </div>
+        )}
+
+        {result.notes && (
+          <div className="medsync-break-avoid p-3.5 rounded-lg border border-slate-200 space-y-1">
+            <span className="font-bold text-slate-900 uppercase text-[10px] tracking-wider block">
+              Observações Clínicas
+            </span>
+            <p className="text-slate-700 italic leading-relaxed">{result.notes}</p>
+          </div>
+        )}
+      </div>
+
+      <MedicalDocumentFooter
+        dateLabel="Data da Avaliação"
+        dateValue={new Date(result.evaluatedAt || result.createdAt).toLocaleDateString('pt-BR')}
+        extraLeftText={
+          result.attachmentFilename
+            ? `Arquivo vinculado no PEP: ${result.attachmentFilename}`
+            : 'Documento impresso a partir do Prontuário Eletrônico do Paciente'
+        }
+        roleSubtitle="Médico Responsável pela Análise"
+        professionalName={result.evaluatedByProfessionalName || CLINIC_OFFICIAL_DATA.physicianName}
+        cityState={branch ? `${branch.city} - ${branch.state}` : undefined}
+        clinicLegalName={clinic?.legalName || clinic?.tradeName}
+      />
+    </div>
+  );
+};
+
+/* =========================================================================
+   SUB-CANVAS 6: RECIBO FINANCEIRO DE HONORÁRIOS MÉDICOS
+   ========================================================================= */
+const FinancialReceiptCanvas: React.FC<{
+  transaction: FinancialTransaction;
+  patientName?: string;
+  patientCpf?: string;
+} & CanvasProps> = ({ transaction, patientName, patientCpf, clinic, branch }) => {
+  const displayPatient = patientName || transaction.patientName || 'Cliente / Paciente';
+  const displayLegalName = clinic?.legalName || clinic?.tradeName || CLINIC_OFFICIAL_DATA.legalName;
+  const displayCnpj = branch?.documentNumber || clinic?.documentNumber || CLINIC_OFFICIAL_DATA.cnpj;
+  const displayPhone = branch?.phone || clinic?.phone || CLINIC_OFFICIAL_DATA.phone;
+  const displayPhysician = transaction.professionalName || CLINIC_OFFICIAL_DATA.physicianName;
+  const receiptDate = transaction.paidAt || transaction.createdAt;
+
+  return (
+    <div className="flex flex-col justify-between h-full min-h-[235mm] print:h-auto print:min-h-0 space-y-6">
+      <MedicalDocumentHeader
+        badgeTitle="Recibo de Honorários Médicos"
+        badgeSubtitle={`Nº ${transaction.receiptNumber || transaction.id.slice(0, 8).toUpperCase()}`}
+        badgeTone="gold"
+        clinic={clinic}
+        branch={branch}
+      />
+
+      <div className="space-y-5 flex-1 print:flex-none text-xs">
+        <div className="medsync-break-avoid p-5 bg-slate-50 rounded-xl border border-slate-200 space-y-4">
+          <p className="text-slate-800 leading-relaxed text-sm">
+            Recebemos de <strong className="text-slate-900">{displayPatient}</strong>
+            {patientCpf ? (
+              <>
+                {' '}(CPF: <span className="font-mono">{patientCpf}</span>)
+              </>
+            ) : null}{' '}
+            a importância de{' '}
+            <strong className="text-emerald-800 text-base tabular-nums">
+              R$ {transaction.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+            </strong>{' '}
+            referente aos serviços médicos prestados por{' '}
+            <strong className="text-slate-900">{displayPhysician}</strong> junto à pessoa jurídica{' '}
+            <strong className="text-slate-900">{displayLegalName}</strong> (CNPJ:{' '}
+            <span className="font-mono">{displayCnpj}</span>).
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-4 border-t border-slate-200">
+            <div>
+              <span className="text-slate-500 block text-[11px]">Número do Recibo</span>
+              <span className="font-mono font-bold text-slate-900">
+                {transaction.receiptNumber || transaction.id}
+              </span>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">Data do Pagamento / Emissão</span>
+              <span className="font-semibold text-slate-900">
+                {new Date(receiptDate).toLocaleDateString('pt-BR')}
+              </span>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">Serviço / Procedimento</span>
+              <span className="font-semibold text-slate-900">{transaction.description}</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">Forma de Pagamento</span>
+              <span className="uppercase font-semibold text-slate-900">
+                {transaction.paymentMethod}
+                {transaction.installments && transaction.installments > 1
+                  ? ` (${transaction.installments}x)`
+                  : ' (À vista)'}
+              </span>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">Unidade de Atendimento</span>
+              <span className="font-medium text-slate-800">
+                {branch?.name || transaction.branchName || 'Unidade'}
+              </span>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">Situação</span>
+              <span className="font-extrabold text-emerald-700">
+                {transaction.status === 'paid'
+                  ? `QUITADO · R$ ${transaction.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
+                  : transaction.status === 'pending'
+                    ? 'PENDENTE DE QUITAÇÃO'
+                    : 'CANCELADO'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <p className="text-[11px] text-slate-500 text-center italic">
+          Recibo válido para fins de comprovação de despesas médicas (IRPF) e solicitação de reembolso junto a operadoras de saúde.
+        </p>
+      </div>
+
+      <MedicalDocumentFooter
+        dateLabel="Emissão"
+        dateValue={new Date(receiptDate).toLocaleDateString('pt-BR')}
+        extraLeftText={`CNPJ ${displayCnpj} · ${displayPhone}`}
+        roleSubtitle="Médico Responsável Técnico"
+        professionalName={displayPhysician}
+        cityState={branch ? `${branch.city} - ${branch.state}` : undefined}
+        clinicLegalName={displayLegalName}
       />
     </div>
   );

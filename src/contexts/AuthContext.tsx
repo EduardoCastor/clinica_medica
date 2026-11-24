@@ -274,6 +274,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (ctx.organization) {
         StorageService.updateOrganizationCache(ctx.organization);
+        await StorageService.hydrateClinicCoreCatalogFromCloud(ctx.organization.id);
       }
       if (ctx.branches && ctx.branches.length > 0) {
         StorageService.replaceBranchesCache(ctx.branches);
@@ -349,6 +350,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const { data: listener } = supabase.auth.onAuthStateChange((event) => {
       if (!mounted) return;
       if (event === 'SIGNED_OUT') {
+        StorageService.clearOperationalCaches();
         setCloudUser(null);
         setCloudEffectivePerms(null);
         setIsAuthenticated(false);
@@ -708,6 +710,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (supabase) {
       await supabase.auth.signOut();
     }
+    StorageService.clearOperationalCaches();
     DomainResolver.setImpersonatedClinicId(null);
     setImpersonatedClinicId(null);
     setCloudUser(null);

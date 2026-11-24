@@ -50,15 +50,15 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
   const [socialName, setSocialName] = useState('');
   const [documentCpf, setDocumentCpf] = useState('');
   const [documentRg, setDocumentRg] = useState('');
-  const [documentRgIssuer, setDocumentRgIssuer] = useState('DETRAN/RJ');
-  const [birthDate, setBirthDate] = useState('1990-01-01');
-  const [gender, setGender] = useState('Feminino');
-  const [biologicalSex, setBiologicalSex] = useState<'M' | 'F' | 'outro'>('F');
-  const [genderIdentity, setGenderIdentity] = useState('Mulher cis');
-  const [maritalStatus, setMaritalStatus] = useState<'solteiro' | 'casado' | 'uniao_estavel' | 'divorciado' | 'viuvo' | 'outro'>('solteiro');
+  const [documentRgIssuer, setDocumentRgIssuer] = useState('');
+  const [birthDate, setBirthDate] = useState('');
+  const [gender, setGender] = useState('');
+  const [biologicalSex, setBiologicalSex] = useState<'' | 'M' | 'F' | 'outro'>('');
+  const [genderIdentity, setGenderIdentity] = useState('');
+  const [maritalStatus, setMaritalStatus] = useState<'' | 'solteiro' | 'casado' | 'uniao_estavel' | 'divorciado' | 'viuvo' | 'outro'>('');
   const [profession, setProfession] = useState('');
   const [nationality, setNationality] = useState('Brasileira');
-  const [naturalness, setNaturalness] = useState('Cabo Frio/RJ');
+  const [naturalness, setNaturalness] = useState('');
 
   // 2. Contato e Endereço
   const [phone, setPhone] = useState('');
@@ -69,8 +69,8 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
   const [addressNumber, setAddressNumber] = useState('');
   const [complement, setComplement] = useState('');
   const [neighborhood, setNeighborhood] = useState('');
-  const [city, setCity] = useState('Cabo Frio');
-  const [state, setState] = useState('RJ');
+  const [city, setCity] = useState('');
+  const [state, setState] = useState('');
   const [isLoadingCep, setIsLoadingCep] = useState(false);
 
   // 3. Dados Clínicos e Triagem
@@ -107,77 +107,102 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
 
   const [errorMessage, setErrorMessage] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [isLoadingFreshPatient, setIsLoadingFreshPatient] = useState(false);
 
-  // Populate on open or edit
+  const applyPatientToForm = (pat: Patient) => {
+    setFullName(pat.fullName || '');
+    setSocialName(pat.socialName || '');
+    setDocumentCpf(pat.documentCpf || '');
+    setDocumentRg(pat.documentRg || '');
+    setDocumentRgIssuer(pat.documentRgIssuer || '');
+    setBirthDate(pat.birthDate || '');
+    setGender(pat.gender || '');
+    setBiologicalSex(pat.biologicalSex || '');
+    setGenderIdentity(pat.genderIdentity || '');
+    setMaritalStatus(pat.maritalStatus || '');
+    setProfession(pat.profession || '');
+    setNationality(pat.nationality || 'Brasileira');
+    setNaturalness(pat.naturalness || '');
+
+    setPhone(pat.phone || '');
+    setWhatsapp(pat.whatsapp || '');
+    setEmail(pat.email || '');
+    setPostalCode(pat.postalCode || '');
+    setAddress(pat.address || '');
+    setAddressNumber(pat.addressNumber || '');
+    setComplement(pat.complement || '');
+    setNeighborhood(pat.neighborhood || '');
+    setCity(pat.city || '');
+    setState(pat.state || '');
+
+    setBloodType(pat.bloodType || 'desconhecido');
+    setWeightKg(pat.weightKg ? pat.weightKg.toString() : '');
+    setHeightCm(pat.heightCm ? pat.heightCm.toString() : '');
+    setAllergiesText(pat.allergies ? pat.allergies.join(', ') : '');
+    setChronicDiseasesText(pat.chronicDiseases ? pat.chronicDiseases.join(', ') : '');
+    setContinuousMedicationsText(pat.continuousMedications ? pat.continuousMedications.join(', ') : '');
+
+    setHealthPlanType(pat.healthPlanType || 'particular');
+    setHealthPlanOperator(pat.healthPlanOperator || '');
+    setHealthPlanNumber(pat.healthPlanNumber || '');
+    setHealthPlanValidity(pat.healthPlanValidity || '');
+    setHealthPlanCategory(pat.healthPlanCategory || '');
+    setCnsNumber(pat.cnsNumber || '');
+
+    setEmergencyContactName(pat.emergencyContactName || '');
+    setEmergencyContactPhone(pat.emergencyContactPhone || '');
+    setEmergencyContactKinship(pat.emergencyContactKinship || '');
+    setLegalGuardianName(pat.legalGuardianName || '');
+    setLegalGuardianCpf(pat.legalGuardianCpf || '');
+    setLegalGuardianKinship(pat.legalGuardianKinship || '');
+    setLegalGuardianPhone(pat.legalGuardianPhone || '');
+
+    setOriginBranchId(pat.originBranchId || defaultBranch);
+    setSharingMode(pat.sharingMode || 'model_b_shared');
+    setAuthorizedBranchIds(
+      pat.authorizedBranchIds && pat.authorizedBranchIds.length > 0
+        ? pat.authorizedBranchIds
+        : branches.map(b => b.id)
+    );
+    setLgpdConsent(pat.lgpdConsent ?? true);
+    setAdministrativeNotes(pat.administrativeNotes || '');
+  };
+
+  // Populate on open or edit (re-fetching fresh DB row when editing)
   useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
     setErrorMessage('');
     setIsSaving(false);
+
     if (existingPatient) {
-      setFullName(existingPatient.fullName || '');
-      setSocialName(existingPatient.socialName || '');
-      setDocumentCpf(existingPatient.documentCpf || '');
-      setDocumentRg(existingPatient.documentRg || '');
-      setDocumentRgIssuer(existingPatient.documentRgIssuer || 'DETRAN/RJ');
-      setBirthDate(existingPatient.birthDate || '1990-01-01');
-      setGender(existingPatient.gender || 'Feminino');
-      setBiologicalSex(existingPatient.biologicalSex || 'F');
-      setGenderIdentity(existingPatient.genderIdentity || 'Mulher cis');
-      setMaritalStatus(existingPatient.maritalStatus || 'solteiro');
-      setProfession(existingPatient.profession || '');
-      setNationality(existingPatient.nationality || 'Brasileira');
-      setNaturalness(existingPatient.naturalness || 'Cabo Frio/RJ');
-
-      setPhone(existingPatient.phone || '');
-      setWhatsapp(existingPatient.whatsapp || '');
-      setEmail(existingPatient.email || '');
-      setPostalCode(existingPatient.postalCode || '');
-      setAddress(existingPatient.address || '');
-      setAddressNumber(existingPatient.addressNumber || '');
-      setComplement(existingPatient.complement || '');
-      setNeighborhood(existingPatient.neighborhood || '');
-      setCity(existingPatient.city || 'Cabo Frio');
-      setState(existingPatient.state || 'RJ');
-
-      setBloodType(existingPatient.bloodType || 'desconhecido');
-      setWeightKg(existingPatient.weightKg ? existingPatient.weightKg.toString() : '');
-      setHeightCm(existingPatient.heightCm ? existingPatient.heightCm.toString() : '');
-      setAllergiesText(existingPatient.allergies ? existingPatient.allergies.join(', ') : '');
-      setChronicDiseasesText(existingPatient.chronicDiseases ? existingPatient.chronicDiseases.join(', ') : '');
-      setContinuousMedicationsText(existingPatient.continuousMedications ? existingPatient.continuousMedications.join(', ') : '');
-
-      setHealthPlanType(existingPatient.healthPlanType || 'particular');
-      setHealthPlanOperator(existingPatient.healthPlanOperator || '');
-      setHealthPlanNumber(existingPatient.healthPlanNumber || '');
-      setHealthPlanValidity(existingPatient.healthPlanValidity || '');
-      setHealthPlanCategory(existingPatient.healthPlanCategory || '');
-      setCnsNumber(existingPatient.cnsNumber || '');
-
-      setEmergencyContactName(existingPatient.emergencyContactName || '');
-      setEmergencyContactPhone(existingPatient.emergencyContactPhone || '');
-      setEmergencyContactKinship(existingPatient.emergencyContactKinship || '');
-      setLegalGuardianName(existingPatient.legalGuardianName || '');
-      setLegalGuardianCpf(existingPatient.legalGuardianCpf || '');
-      setLegalGuardianKinship(existingPatient.legalGuardianKinship || '');
-      setLegalGuardianPhone(existingPatient.legalGuardianPhone || '');
-
-      setOriginBranchId(existingPatient.originBranchId || defaultBranch);
-      setSharingMode(existingPatient.sharingMode || 'model_b_shared');
-      setAuthorizedBranchIds(existingPatient.authorizedBranchIds || branches.map(b => b.id));
-      setLgpdConsent(existingPatient.lgpdConsent ?? true);
-      setAdministrativeNotes(existingPatient.administrativeNotes || '');
+      applyPatientToForm(existingPatient);
+      setIsLoadingFreshPatient(true);
+      ClinicalCloudService.fetchPatientByIdFromCloud(existingPatient.id)
+        .then((res) => {
+          if (cancelled) return;
+          if (res.patient) {
+            applyPatientToForm(res.patient);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setIsLoadingFreshPatient(false);
+        });
     } else {
-      // Default new patient
+      setIsLoadingFreshPatient(false);
       setFullName('');
       setSocialName('');
       setDocumentCpf('');
       setDocumentRg('');
-      setDocumentRgIssuer('DETRAN/RJ');
-      setBirthDate('1992-05-10');
-      setGender('Feminino');
-      setBiologicalSex('F');
-      setGenderIdentity('Mulher cis');
-      setMaritalStatus('solteiro');
+      setDocumentRgIssuer('');
+      setBirthDate('');
+      setGender('');
+      setBiologicalSex('');
+      setGenderIdentity('');
+      setMaritalStatus('');
       setProfession('');
+      setNationality('Brasileira');
+      setNaturalness('');
       setPhone('');
       setWhatsapp('');
       setEmail('');
@@ -186,8 +211,8 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
       setAddressNumber('');
       setComplement('');
       setNeighborhood('');
-      setCity('Cabo Frio');
-      setState('RJ');
+      setCity('');
+      setState('');
       setBloodType('desconhecido');
       setWeightKg('');
       setHeightCm('');
@@ -197,18 +222,27 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
       setHealthPlanType('particular');
       setHealthPlanOperator('');
       setHealthPlanNumber('');
+      setHealthPlanValidity('');
+      setHealthPlanCategory('');
       setCnsNumber('');
       setEmergencyContactName('');
       setEmergencyContactPhone('');
+      setEmergencyContactKinship('');
       setLegalGuardianName('');
       setLegalGuardianCpf('');
+      setLegalGuardianKinship('');
+      setLegalGuardianPhone('');
       setOriginBranchId(defaultBranch);
       setSharingMode('model_b_shared');
       setAuthorizedBranchIds(branches.map(b => b.id));
       setLgpdConsent(true);
       setAdministrativeNotes('');
     }
-  }, [isOpen, existingPatient, defaultBranch]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, existingPatient?.id, defaultBranch]);
 
   if (!isOpen) return null;
 
@@ -301,27 +335,36 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
       .map(s => s.trim())
       .filter(Boolean);
 
+    const resolvedGender =
+      biologicalSex === 'M'
+        ? 'Masculino'
+        : biologicalSex === 'F'
+          ? 'Feminino'
+          : biologicalSex === 'outro'
+            ? 'Outro'
+            : gender || 'N';
+
     const payload: Patient = {
       id: existingPatient?.id || `pat_${Date.now()}`,
-      organizationId: existingPatient?.organizationId || organization.id || 'org_mureb_01',
+      organizationId: existingPatient?.organizationId || organization.id || '',
       originBranchId: originBranchId || existingPatient?.originBranchId || defaultBranch,
       fullName: fullName.trim(),
       socialName: socialName.trim() || undefined,
       documentCpf: formatCpf(documentCpf),
       documentRg: documentRg.trim() || undefined,
       documentRgIssuer: documentRgIssuer.trim() || undefined,
-      birthDate,
-      gender,
-      biologicalSex,
-      genderIdentity,
-      maritalStatus,
+      birthDate: birthDate.trim(),
+      gender: resolvedGender,
+      biologicalSex: biologicalSex || undefined,
+      genderIdentity: genderIdentity || undefined,
+      maritalStatus: maritalStatus || undefined,
       profession: profession.trim() || undefined,
-      nationality,
+      nationality: nationality.trim() || undefined,
       naturalness: naturalness.trim() || undefined,
       phone: formatPhone(phone),
       whatsapp: whatsapp.trim() ? formatPhone(whatsapp) : formatPhone(phone),
       email: email.trim(),
-      postalCode: formatCep(postalCode),
+      postalCode: postalCode.trim() ? formatCep(postalCode) : undefined,
       address: address.trim(),
       addressNumber: addressNumber.trim(),
       complement: complement.trim() || undefined,
@@ -387,8 +430,11 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
               <User className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-white">
-                {existingPatient ? `Editar Cadastro de ${existingPatient.fullName}` : 'Novo Paciente &bull; Cadastro Completo de Saúde'}
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <span>
+                  {existingPatient ? `Editar Cadastro de ${existingPatient.fullName}` : 'Novo Paciente • Cadastro Completo de Saúde'}
+                </span>
+                {isLoadingFreshPatient && <Loader2 className="w-4 h-4 animate-spin text-sky-400" />}
               </h3>
               <p className="text-xs text-slate-400">
                 Conformidade CFM, SUS (Nome Social e CNS) e LGPD de dados sensíveis de saúde
@@ -546,11 +592,11 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Data de Nascimento * {age !== null && <span className="text-sky-700">({age} anos)</span>}
+                    Data de Nascimento {!existingPatient && '*'} {age !== null && <span className="text-sky-700">({age} anos)</span>}
                   </label>
                   <input
                     type="date"
-                    required
+                    required={!existingPatient}
                     value={birthDate}
                     onChange={(e) => setBirthDate(e.target.value)}
                     className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
@@ -563,9 +609,10 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                   </label>
                   <select
                     value={biologicalSex}
-                    onChange={(e) => setBiologicalSex(e.target.value as any)}
+                    onChange={(e) => setBiologicalSex(e.target.value as '' | 'M' | 'F' | 'outro')}
                     className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
                   >
+                    <option value="">Não informado</option>
                     <option value="F">Feminino</option>
                     <option value="M">Masculino</option>
                     <option value="outro">Intersexo / Outro</option>
@@ -581,6 +628,7 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                     onChange={(e) => setGenderIdentity(e.target.value)}
                     className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
                   >
+                    <option value="">Não informado</option>
                     <option value="Mulher cis">Mulher cis</option>
                     <option value="Homem cis">Homem cis</option>
                     <option value="Mulher trans">Mulher trans</option>
@@ -598,9 +646,10 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                   </label>
                   <select
                     value={maritalStatus}
-                    onChange={(e) => setMaritalStatus(e.target.value as any)}
+                    onChange={(e) => setMaritalStatus(e.target.value as '' | 'solteiro' | 'casado' | 'uniao_estavel' | 'divorciado' | 'viuvo' | 'outro')}
                     className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
                   >
+                    <option value="">Não informado</option>
                     <option value="solteiro">Solteiro(a)</option>
                     <option value="casado">Casado(a)</option>
                     <option value="uniao_estavel">União Estável</option>

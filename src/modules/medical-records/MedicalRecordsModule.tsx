@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   FileText, 
   User, 
@@ -20,7 +20,8 @@ import {
   Trash2,
   Paperclip,
   X,
-  ExternalLink
+  ExternalLink,
+  RefreshCw
 } from 'lucide-react';
 import { 
   MedicalRecordEntry, 
@@ -110,6 +111,8 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
     selectedPatient ? StorageService.getMedicalDocuments(selectedPatient.id) : []
   );
 
+  const [isLoadingPatients, setIsLoadingPatients] = useState(true);
+  const [patientsLoadError, setPatientsLoadError] = useState('');
   const [isLoadingBundle, setIsLoadingBundle] = useState(false);
   const [clinicalSyncError, setClinicalSyncError] = useState('');
   const [formError, setFormError] = useState('');
@@ -125,6 +128,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
   const [docActionError, setDocActionError] = useState('');
   const [previewDoc, setPreviewDoc] = useState<{ title: string; url: string; mimeType?: string } | null>(null);
   const [loadingSignedId, setLoadingSignedId] = useState<string | null>(null);
+  const docFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // New Record Form State
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -176,19 +180,16 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
     professionals[0];
   const councilNumber = activeProf?.councilNumber || 'CRM/RJ 52-444985';
 
-  const applyLocalBundle = useCallback((patientId: string) => {
-    setRecords(StorageService.getMedicalRecords(patientId));
-    setPrescriptions(StorageService.getPrescriptions(patientId));
-    setCertificates(StorageService.getCertificates(patientId));
-    setLabOrders(StorageService.getLabOrders(patientId));
-    setExamResults(StorageService.getExamResults(patientId));
-    setMedicalDocuments(StorageService.getMedicalDocuments(patientId));
-  }, []);
-
   const loadPatientBundle = useCallback(
     async (patientObj: Patient | null | undefined) => {
       if (!patientObj) return;
-      applyLocalBundle(patientObj.id);
+      // Clear current collections before cloud fetch so stale records from another patient never flash
+      setRecords([]);
+      setPrescriptions([]);
+      setCertificates([]);
+      setLabOrders([]);
+      setExamResults([]);
+      setMedicalDocuments([]);
       setIsLoadingBundle(true);
       setClinicalSyncError('');
       try {
@@ -210,27 +211,33 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
         setIsLoadingBundle(false);
       }
     },
-    [applyLocalBundle]
+    []
   );
+
+  const loadPatientsList = useCallback(async () => {
+    setIsLoadingPatients(true);
+    setPatientsLoadError('');
+    const res = await ClinicalCloudService.fetchPatientsFromCloud(activeBranchId);
+    let list = res.patients;
+    if (initialPatient && !list.some((p) => p.id === initialPatient.id)) {
+      list = [initialPatient, ...list];
+    }
+    setPatients(list);
+    if (res.error) {
+      setPatientsLoadError(res.error);
+    }
+    setSelectedPatientId((prev) => {
+      if (initialPatient?.id) return initialPatient.id;
+      if (prev && list.some((p) => p.id === prev)) return prev;
+      return list[0]?.id || '';
+    });
+    setIsLoadingPatients(false);
+  }, [activeBranchId, initialPatient]);
 
   // Hydrate patient selector list from Supabase
   useEffect(() => {
-    let cancelled = false;
-    ClinicalCloudService.fetchPatientsFromCloud(activeBranchId).then((res) => {
-      if (cancelled) return;
-      let list = res.patients;
-      if (initialPatient && !list.some((p) => p.id === initialPatient.id)) {
-        list = [initialPatient, ...list];
-      }
-      setPatients(list);
-      if (!selectedPatientId && list[0]?.id) {
-        setSelectedPatientId(list[0].id);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeBranchId, initialPatient, selectedPatientId]);
+    void loadPatientsList();
+  }, [loadPatientsList]);
 
   useEffect(() => {
     if (initialPatient?.id) {
@@ -240,7 +247,16 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
 
   useEffect(() => {
     if (selectedPatient) {
+      setVitalWeightKg(selectedPatient.weightKg?.toString() || '');
+      setVitalHeightCm(selectedPatient.heightCm?.toString() || '');
       void loadPatientBundle(selectedPatient);
+    } else {
+      setRecords([]);
+      setPrescriptions([]);
+      setCertificates([]);
+      setLabOrders([]);
+      setExamResults([]);
+      setMedicalDocuments([]);
     }
   }, [selectedPatient?.id, loadPatientBundle]);
 
@@ -322,11 +338,11 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
     const resolvedBranchId =
       activeBranchId !== 'all'
         ? activeBranchId
-        : selectedPatient.originBranchId || branches[0]?.id || 'branch_cf_centro';
+        : selectedPatient.originBranchId || branches[0]?.id || '';
 
     const entryToSave: MedicalRecordEntry = {
       id: editingRecordId || `rec_${Date.now()}`,
-      organizationId: selectedPatient.organizationId || organization.id || 'org_mureb_01',
+      organizationId: selectedPatient.organizationId || organization.id || '',
       patientId: selectedPatient.id,
       branchId: resolvedBranchId,
       professionalId: activeProf?.id || currentUser.id,
@@ -395,7 +411,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
     const resolvedBranchId =
       activeBranchId !== 'all'
         ? activeBranchId
-        : selectedPatient.originBranchId || branches[0]?.id || 'branch_cf_centro';
+        : selectedPatient.originBranchId || branches[0]?.id || '';
 
     setIsUploadingDoc(true);
     try {
@@ -420,6 +436,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
       setDocTitle('');
       setDocDescription('');
       setDocFile(null);
+      if (docFileInputRef.current) docFileInputRef.current.value = '';
       await loadPatientBundle(selectedPatient);
     } catch (err) {
       setDocActionError(err instanceof Error ? err.message : 'Erro ao anexar documento.');
@@ -557,14 +574,21 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
             </label>
             <select
               value={selectedPatientId}
+              disabled={isLoadingPatients || patients.length === 0}
               onChange={(e) => handlePatientChange(e.target.value)}
-              className="mt-0.5 px-3 py-1.5 text-xs font-bold text-slate-900 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500 bg-slate-50"
+              className="mt-0.5 px-3 py-1.5 text-xs font-bold text-slate-900 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500 bg-slate-50 disabled:opacity-60"
             >
-              {patients.map(p => (
-                <option key={p.id} value={p.id}>
-                  {p.fullName} {p.socialName ? `(${p.socialName})` : ''} · CPF: {p.documentCpf}
+              {patients.length === 0 ? (
+                <option value="">
+                  {isLoadingPatients ? 'Carregando pacientes...' : 'Nenhum paciente cadastrado'}
                 </option>
-              ))}
+              ) : (
+                patients.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.fullName} {p.socialName ? `(${p.socialName})` : ''} · CPF: {p.documentCpf}
+                  </option>
+                ))
+              )}
             </select>
           </div>
         </div>
@@ -690,10 +714,45 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
         </button>
       </div>
 
+      {patientsLoadError && (
+        <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>Erro ao carregar lista de pacientes: {patientsLoadError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadPatientsList()}
+            className="px-2.5 py-1 text-[11px] font-semibold bg-white border border-rose-200 rounded-lg hover:bg-rose-100 inline-flex items-center gap-1 shrink-0"
+          >
+            <RefreshCw className="w-3 h-3" />
+            <span>Tentar novamente</span>
+          </button>
+        </div>
+      )}
+
+      {!isLoadingPatients && !patientsLoadError && patients.length === 0 && (
+        <div className="p-8 bg-white rounded-2xl border border-slate-200 text-center text-xs text-slate-500">
+          Nenhum paciente encontrado no Supabase para esta unidade. Cadastre um paciente no módulo <strong>Pacientes</strong> para iniciar o prontuário eletrônico.
+        </div>
+      )}
+
       {clinicalSyncError && (
-        <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-          <span>Aviso ao carregar prontuário do banco de dados: {clinicalSyncError}</span>
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>Erro ao carregar prontuário do banco de dados: {clinicalSyncError}</span>
+          </div>
+          {selectedPatient && (
+            <button
+              type="button"
+              onClick={() => void loadPatientBundle(selectedPatient)}
+              className="px-2.5 py-1 text-[11px] font-semibold bg-white border border-amber-300 rounded-lg hover:bg-amber-100 inline-flex items-center gap-1 shrink-0"
+            >
+              <RefreshCw className="w-3 h-3" />
+              <span>Tentar novamente</span>
+            </button>
+          )}
         </div>
       )}
 
@@ -1484,11 +1543,31 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
                       </span>
                     </div>
 
-                    {res.evaluatedByProfessionalName && (
-                      <span className="text-xs text-slate-500 font-medium">
-                        Parecer por: <strong className="text-slate-800">{res.evaluatedByProfessionalName}</strong>
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {res.evaluatedByProfessionalName && (
+                        <span className="text-xs text-slate-500 font-medium">
+                          Parecer por: <strong className="text-slate-800">{res.evaluatedByProfessionalName}</strong>
+                        </span>
+                      )}
+                      {selectedPatient && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPrintableDoc({
+                              type: 'exam_result',
+                              data: res,
+                              patientName: selectedPatient.fullName,
+                              patientCpf: selectedPatient.documentCpf,
+                            })
+                          }
+                          className="px-3 py-1.5 text-xs font-semibold text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-xl transition flex items-center gap-1.5"
+                          title="Imprimir laudo / resultado de exame em A4"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          <span>Imprimir / PDF</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div className="p-3 bg-slate-50 rounded-xl text-xs space-y-1">
@@ -1607,6 +1686,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
                       Arquivo (PDF, JPG, PNG ou WEBP - máx. 15 MB) *
                     </label>
                     <input
+                      ref={docFileInputRef}
                       type="file"
                       required
                       accept="application/pdf,image/jpeg,image/png,image/webp"

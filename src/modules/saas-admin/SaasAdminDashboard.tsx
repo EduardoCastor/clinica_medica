@@ -1,24 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   ShieldCheck, 
   Building2, 
-  DollarSign, 
   Users, 
-  TrendingUp, 
-  Layers, 
   AlertTriangle, 
   CheckCircle2, 
-  Plus, 
   Edit, 
-  Lock,
-  PauseCircle,
-  PlayCircle,
-  Globe,
+  Globe, 
   UserCheck,
   Sparkles,
-  Check
+  Loader2,
+  RefreshCw
 } from 'lucide-react';
-import { Plan } from '../../types';
+import { Plan, Organization, Clinic } from '../../types';
 import {
   StorageService,
   syncPlansFromSupabase,
@@ -35,11 +29,23 @@ interface SaasAdminDashboardProps {
   onSimulateDomain?: (domain: string) => void;
 }
 
+interface SaasTenantRow {
+  organization: Organization;
+  plan?: Plan;
+  clinic?: Clinic;
+  branchesCount: number;
+  activeUsersCount: number;
+  patientsCount: number;
+}
+
 export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimulateDomain }) => {
   const { organization, updateOrganization } = useTenant();
   const { impersonateClinic, refreshSessionProfile } = useAuth();
   const [activeTab, setActiveTab] = useState<'overview' | 'domains' | 'team'>('domains');
   const [plans, setPlans] = useState<Plan[]>([]);
+  const [tenantsOverview, setTenantsOverview] = useState<SaasTenantRow[]>([]);
+  const [isLoadingOverview, setIsLoadingOverview] = useState(true);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
   const [editingPlan, setEditingPlan] = useState<Plan | null>(null);
   const [isSavingPlan, setIsSavingPlan] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
@@ -52,9 +58,24 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
   const [targetSuperAdminEmail, setTargetSuperAdminEmail] = useState('admin@drnewtonmureb.com.br');
   const [requireEmailConfirmation, setRequireEmailConfirmation] = useState(false);
 
-  // Sync plans from Supabase on mount and whenever updated
+  const loadSaasOverview = useCallback(async () => {
+    setIsLoadingOverview(true);
+    setOverviewError(null);
+    const [freshPlans, tenantsRes] = await Promise.all([
+      syncPlansFromSupabase(),
+      StorageService.fetchSaasTenantOverviewFromCloud(),
+    ]);
+    setPlans(freshPlans);
+    setTenantsOverview(tenantsRes.tenants);
+    if (tenantsRes.error) {
+      setOverviewError(tenantsRes.error);
+    }
+    setIsLoadingOverview(false);
+  }, []);
+
+  // Sync plans & tenants from Supabase on mount and whenever plans updated
   useEffect(() => {
-    syncPlansFromSupabase().then(setPlans);
+    void loadSaasOverview();
 
     const syncLocal = () => {
       setPlans(StorageService.getPlans());
@@ -65,15 +86,16 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
       window.removeEventListener('medsync-plans-updated', syncLocal);
       window.removeEventListener('medsync_storage_update', syncLocal);
     };
-  }, []);
+  }, [loadSaasOverview]);
 
-  // Metrics
-  const activeTenantsCount = 18;
-  const trialTenantsCount = 6;
-  const advancedPlan = plans.find(p => p.code === 'advanced');
-  const basicPlan = plans.find(p => p.code === 'basic');
-  const mrr = (14 * (advancedPlan?.priceMonthly || 589)) + (4 * (basicPlan?.priceMonthly || 249));
-  const trialConversionRate = 72;
+  // Real Metrics derived exclusively from Supabase tenants + plans
+  const activeTenants = tenantsOverview.filter((t) => t.organization.status === 'active');
+  const trialTenants = tenantsOverview.filter((t) => t.organization.status === 'trial');
+  const activeTenantsCount = activeTenants.length;
+  const trialTenantsCount = trialTenants.length;
+  const mrr = activeTenants.reduce((acc, t) => acc + (t.plan?.priceMonthly || 0), 0);
+  const totalBranchesTracked = tenantsOverview.reduce((acc, t) => acc + t.branchesCount, 0);
+  const totalUsersTracked = tenantsOverview.reduce((acc, t) => acc + t.activeUsersCount, 0);
 
   const handleAuditSuperAdmin = async () => {
     setErrorMessage(null);
@@ -141,8 +163,7 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
         return;
       }
 
-      const freshPlans = await syncPlansFromSupabase();
-      setPlans(freshPlans);
+      await loadSaasOverview();
       setEditingPlan(null);
       setFeedbackMessage('Plano comercial atualizado e publicado na página inicial com sucesso!');
       setTimeout(() => setFeedbackMessage(null), 5000);
@@ -154,9 +175,18 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
     }
   };
 
-  const toggleTenantStatus = () => {
-    const nextStatus = organization.status === 'active' ? 'suspended' : 'active';
-    updateOrganization({ status: nextStatus });
+  const toggleTenantStatus = (targetOrg: Organization) => {
+    const nextStatus = targetOrg.status === 'active' ? 'suspended' : 'active';
+    if (targetOrg.id === organization.id) {
+      updateOrganization({ status: nextStatus });
+    }
+    setTenantsOverview((prev) =>
+      prev.map((item) =>
+        item.organization.id === targetOrg.id
+          ? { ...item, organization: { ...item.organization, status: nextStatus } }
+          : item
+      )
+    );
   };
 
   return (
@@ -343,6 +373,23 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
       {/* TAB 2: Overview & Commercial Plans */}
       {activeTab === 'overview' && (
         <>
+      {overviewError && (
+        <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>Erro ao carregar métricas SaaS do Supabase: {overviewError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadSaasOverview()}
+            className="px-2.5 py-1 text-[11px] font-semibold bg-white border border-rose-200 rounded-lg hover:bg-rose-100 inline-flex items-center gap-1 shrink-0"
+          >
+            <RefreshCw className="w-3 h-3" />
+            <span>Tentar novamente</span>
+          </button>
+        </div>
+      )}
+
       {/* KPI Overview Grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs">
@@ -350,34 +397,44 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
           <div className="mt-2 flex items-baseline gap-1">
             <span className="text-sm font-semibold text-slate-500">R$</span>
             <span className="text-2xl font-extrabold text-slate-900 tabular-nums">
-              {mrr.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+              {isLoadingOverview
+                ? '—'
+                : mrr.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
             </span>
           </div>
-          <span className="text-[11px] text-emerald-600 font-semibold block mt-1">+14% este mês</span>
+          <span className="text-[11px] text-slate-500 block mt-1">
+            Soma dos planos das contas ativas
+          </span>
         </div>
 
         <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs">
           <span className="text-xs font-medium text-slate-500">Clínicas Clientes Ativas</span>
           <div className="mt-2 text-2xl font-extrabold text-slate-900 tabular-nums">
-            {activeTenantsCount}
+            {isLoadingOverview ? '—' : activeTenantsCount}
           </div>
-          <span className="text-[11px] text-slate-500 block mt-1">Multiunidade habilitada</span>
+          <span className="text-[11px] text-slate-500 block mt-1">
+            {totalBranchesTracked} {totalBranchesTracked === 1 ? 'filial ativa' : 'filiais ativas'}
+          </span>
         </div>
 
         <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs">
           <span className="text-xs font-medium text-slate-500">Contas em Período de Teste</span>
           <div className="mt-2 text-2xl font-extrabold text-amber-600 tabular-nums">
-            {trialTenantsCount}
+            {isLoadingOverview ? '—' : trialTenantsCount}
           </div>
-          <span className="text-[11px] text-slate-500 block mt-1">Trial de 10 dias ativo</span>
+          <span className="text-[11px] text-slate-500 block mt-1">
+            {tenantsOverview.length} {tenantsOverview.length === 1 ? 'organização monitorada' : 'organizações monitoradas'}
+          </span>
         </div>
 
         <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs">
-          <span className="text-xs font-medium text-slate-500">Taxa de Conversão Trial</span>
+          <span className="text-xs font-medium text-slate-500">Usuários Provisionados</span>
           <div className="mt-2 text-2xl font-extrabold text-emerald-600 tabular-nums">
-            {trialConversionRate}%
+            {isLoadingOverview ? '—' : totalUsersTracked}
           </div>
-          <span className="text-[11px] text-emerald-600 font-semibold block mt-1">Alta adesão médica</span>
+          <span className="text-[11px] text-slate-500 block mt-1">
+            Perfis ativos no Supabase
+          </span>
         </div>
       </div>
 
@@ -454,7 +511,15 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
           <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
             Clínicas Clientes Monitoradas
           </h3>
-          <span className="text-xs text-slate-400">Ambientes Provisionados</span>
+          <button
+            type="button"
+            disabled={isLoadingOverview}
+            onClick={() => void loadSaasOverview()}
+            className="text-xs text-slate-500 hover:text-slate-800 inline-flex items-center gap-1"
+          >
+            <RefreshCw className={`w-3 h-3 ${isLoadingOverview ? 'animate-spin' : ''}`} />
+            <span>Atualizar</span>
+          </button>
         </div>
 
         <div className="overflow-x-auto">
@@ -469,51 +534,98 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              <tr className="hover:bg-slate-50">
-                <td className="py-3 px-4 font-bold text-slate-900">
-                  NEWTON MUREB CLINICA MEDICA LTDA
-                  <span className="block text-[11px] text-slate-400 font-normal">Unidade Matriz Cabo Frio (RJ) · CNPJ 55.937.470/0001-78</span>
-                </td>
-                <td className="py-3 px-4">
-                  <span className="px-2 py-0.5 rounded font-semibold text-purple-700 bg-purple-50 border border-purple-200">
-                    Avançado Multiunidade
-                  </span>
-                </td>
-                <td className="py-3 px-4">
-                  <span className={`px-2 py-0.5 rounded font-semibold ${
-                    organization.status === 'active' 
-                      ? 'text-emerald-700 bg-emerald-50 border border-emerald-200' 
-                      : 'text-rose-700 bg-rose-50 border border-rose-200'
-                  }`}>
-                    {organization.status === 'active' ? 'Assinatura Ativa' : 'Conta Suspensa'}
-                  </span>
-                </td>
-                <td className="py-3 px-4 text-slate-600">
-                  Renova em 09/11/2027
-                </td>
-                <td className="py-3 px-4 text-right">
-                  <div className="flex items-center justify-end gap-2">
-                    <button
-                      onClick={() => impersonateClinic('clinic_mureb_01')}
-                      className="px-2.5 py-1 text-xs font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition inline-flex items-center gap-1.5 shadow-2xs"
-                      title="Acessar o ERP operacional da clínica em modo suporte"
-                    >
-                      <UserCheck className="w-3.5 h-3.5 text-purple-600" />
-                      <span>Acessar como Suporte (Impersonate)</span>
-                    </button>
-                    <button
-                      onClick={toggleTenantStatus}
-                      className={`px-3 py-1 text-xs font-semibold rounded-lg transition ${
-                        organization.status === 'active'
-                          ? 'text-rose-600 hover:bg-rose-50 border border-rose-200'
-                          : 'text-emerald-600 hover:bg-emerald-50 border border-emerald-200'
-                      }`}
-                    >
-                      {organization.status === 'active' ? 'Suspender' : 'Reativar'}
-                    </button>
-                  </div>
-                </td>
-              </tr>
+              {isLoadingOverview ? (
+                <tr>
+                  <td colSpan={5} className="py-10 text-center text-slate-500">
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin text-purple-600" />
+                      <span>Carregando clínicas monitoradas do Supabase...</span>
+                    </span>
+                  </td>
+                </tr>
+              ) : tenantsOverview.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-10 text-center text-slate-400">
+                    Nenhuma clínica encontrada para a sessão atual.
+                  </td>
+                </tr>
+              ) : (
+                tenantsOverview.map((tenant) => {
+                  const orgItem = tenant.organization;
+                  const renewalRaw =
+                    orgItem.status === 'trial'
+                      ? orgItem.trialEndsAt
+                      : orgItem.subscriptionRenewsAt;
+                  const renewalFormatted = renewalRaw
+                    ? new Date(renewalRaw).toLocaleDateString('pt-BR')
+                    : 'Sem data definida';
+
+                  return (
+                    <tr key={orgItem.id} className="hover:bg-slate-50">
+                      <td className="py-3 px-4 font-bold text-slate-900">
+                        {tenant.clinic?.legalName || orgItem.name}
+                        <span className="block text-[11px] text-slate-400 font-normal">
+                          {tenant.clinic?.documentNumber
+                            ? `CNPJ ${tenant.clinic.documentNumber} · `
+                            : ''}
+                          {tenant.branchesCount} {tenant.branchesCount === 1 ? 'filial' : 'filiais'} ·{' '}
+                          {tenant.patientsCount}{' '}
+                          {tenant.patientsCount === 1 ? 'paciente' : 'pacientes'}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className="px-2 py-0.5 rounded font-semibold text-purple-700 bg-purple-50 border border-purple-200">
+                          {tenant.plan?.name || 'Plano Ativo'}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span
+                          className={`px-2 py-0.5 rounded font-semibold ${
+                            orgItem.status === 'active'
+                              ? 'text-emerald-700 bg-emerald-50 border border-emerald-200'
+                              : orgItem.status === 'trial'
+                                ? 'text-amber-700 bg-amber-50 border border-amber-200'
+                                : 'text-rose-700 bg-rose-50 border border-rose-200'
+                          }`}
+                        >
+                          {orgItem.status === 'active'
+                            ? 'Assinatura Ativa'
+                            : orgItem.status === 'trial'
+                              ? 'Período de Teste'
+                              : 'Conta Suspensa'}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-slate-600">
+                        {orgItem.status === 'trial'
+                          ? `Trial até ${renewalFormatted}`
+                          : `Renova em ${renewalFormatted}`}
+                      </td>
+                      <td className="py-3 px-4 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => impersonateClinic(tenant.clinic?.id || orgItem.id)}
+                            className="px-2.5 py-1 text-xs font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition inline-flex items-center gap-1.5 shadow-2xs"
+                            title="Acessar o ERP operacional da clínica em modo suporte"
+                          >
+                            <UserCheck className="w-3.5 h-3.5 text-purple-600" />
+                            <span>Acessar como Suporte</span>
+                          </button>
+                          <button
+                            onClick={() => toggleTenantStatus(orgItem)}
+                            className={`px-3 py-1 text-xs font-semibold rounded-lg transition ${
+                              orgItem.status === 'active'
+                                ? 'text-rose-600 hover:bg-rose-50 border border-rose-200'
+                                : 'text-emerald-600 hover:bg-emerald-50 border border-emerald-200'
+                            }`}
+                          >
+                            {orgItem.status === 'active' ? 'Suspender' : 'Reativar'}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>

@@ -25,6 +25,17 @@ const ALLOWED_CLINICAL_MIME_TYPES = new Set([
   'image/webp',
 ]);
 
+function inferClinicalMimeType(file: File): string {
+  const direct = (file.type || '').trim().toLowerCase();
+  if (ALLOWED_CLINICAL_MIME_TYPES.has(direct)) return direct;
+  const ext = (file.name.split('.').pop() || '').trim().toLowerCase();
+  if (ext === 'pdf') return 'application/pdf';
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'png') return 'image/png';
+  if (ext === 'webp') return 'image/webp';
+  return direct;
+}
+
 export const isUuid = (val?: string | null): val is string =>
   Boolean(val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim()));
 
@@ -208,11 +219,15 @@ async function resolveCloudContext(
         .single();
 
       if (insertProfErr || !createdProf?.id) {
+        const pgErr = insertProfErr as { code?: string } | null;
         return {
-          error: formatPgError(
-            insertProfErr,
-            'Nenhum profissional cadastrado no Supabase e não foi possível registrar o profissional responsável.'
-          ),
+          error:
+            pgErr?.code === '42501'
+              ? 'Nenhum profissional cadastrado nesta clínica. Solicite ao administrador que cadastre um profissional em Equipe / Usuários.'
+              : formatPgError(
+                  insertProfErr,
+                  'Nenhum profissional cadastrado no Supabase e não foi possível registrar o profissional responsável.'
+                ),
         };
       }
       professionalId = String(createdProf.id);
@@ -422,16 +437,19 @@ export const ClinicalCloudService = {
   fetchPatientsFromCloud: async (
     branchFilterId?: string
   ): Promise<{ patients: Patient[]; source: 'supabase' | 'local'; error?: string }> => {
-    const localFiltered = StorageService.getPatients(branchFilterId);
     const supabase = getSupabase();
     if (!supabase) {
-      return { patients: localFiltered, source: 'local' };
+      return {
+        patients: [],
+        source: 'local',
+        error: 'Conexão com o Supabase não configurada neste ambiente.',
+      };
     }
 
     try {
       const ctxRes = await resolveCloudContext(supabase, { branchId: branchFilterId });
       if (!ctxRes.context) {
-        return { patients: localFiltered, source: 'local', error: ctxRes.error };
+        return { patients: [], source: 'supabase', error: ctxRes.error };
       }
 
       const { organizationId } = ctxRes.context;
@@ -444,8 +462,8 @@ export const ClinicalCloudService = {
 
       if (error) {
         return {
-          patients: localFiltered,
-          source: 'local',
+          patients: [],
+          source: 'supabase',
           error: formatPgError(error, 'Erro ao carregar pacientes do Supabase.'),
         };
       }
@@ -465,7 +483,6 @@ export const ClinicalCloudService = {
         if (p.sharingMode === 'model_b_shared' && p.authorizedBranchIds?.includes(branchFilterId)) {
           return true;
         }
-        // Fallback when UI filter still holds non-UUID local branch ID
         if (!isUuid(branchFilterId)) return true;
         return false;
       });
@@ -473,8 +490,42 @@ export const ClinicalCloudService = {
       return { patients: filtered, source: 'supabase' };
     } catch (err) {
       return {
-        patients: localFiltered,
-        source: 'local',
+        patients: [],
+        source: 'supabase',
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  },
+
+  fetchPatientByIdFromCloud: async (
+    patientId: string
+  ): Promise<{ patient?: Patient; error?: string }> => {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { error: 'Conexão com o Supabase não configurada neste ambiente.' };
+    }
+    if (!isUuid(patientId)) {
+      return { error: 'ID de paciente inválido para consulta no banco.' };
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('patients')
+        .select('*, patient_branch_access (branch_id)')
+        .eq('id', patientId)
+        .maybeSingle();
+
+      if (error || !data) {
+        return {
+          error: formatPgError(error, 'Paciente não localizado no banco de dados.'),
+        };
+      }
+
+      const mapped = mapPatientRow(data as Record<string, unknown>);
+      StorageService.upsertPatientCacheById(mapped);
+      return { patient: mapped };
+    } catch (err) {
+      return {
         error: err instanceof Error ? err.message : String(err),
       };
     }
@@ -485,14 +536,11 @@ export const ClinicalCloudService = {
   ): Promise<{ success: boolean; patient?: Patient; source: 'supabase' | 'local'; message?: string }> => {
     const supabase = getSupabase();
 
-    // Offline / local demo mode when Supabase credentials are not configured
     if (!supabase) {
-      const localRes = StorageService.savePatient(patient);
       return {
-        success: localRes.success,
-        patient: localRes.success ? patient : undefined,
+        success: false,
         source: 'local',
-        message: localRes.message,
+        message: 'Conexão com o Supabase não configurada. Não é possível gravar cadastro de paciente fora do banco.',
       };
     }
 
@@ -647,7 +695,13 @@ export const ClinicalCloudService = {
         )
       );
 
-      await supabase.from('patient_branch_access').delete().eq('patient_id', savedPatientId);
+      const { error: deleteAccessErr } = await supabase
+        .from('patient_branch_access')
+        .delete()
+        .eq('patient_id', savedPatientId);
+      if (deleteAccessErr) {
+        console.warn('Aviso ao limpar patient_branch_access:', deleteAccessErr.message);
+      }
       if (targetBranchIds.length > 0) {
         const accessInserts = targetBranchIds.map((bId) => ({
           organization_id: organizationId,
@@ -661,7 +715,14 @@ export const ClinicalCloudService = {
           .from('patient_branch_access')
           .insert(accessInserts);
         if (accessErr) {
-          console.warn('Aviso ao sincronizar patient_branch_access:', accessErr.message);
+          return {
+            success: false,
+            source: 'supabase',
+            message: formatPgError(
+              accessErr,
+              'Paciente salvo parcialmente, mas falhou ao atualizar compartilhamento entre filiais.'
+            ),
+          };
         }
       }
 
@@ -692,30 +753,33 @@ export const ClinicalCloudService = {
   fetchPatientClinicalBundleFromCloud: async (
     patient: Patient
   ): Promise<ClinicalPatientBundle> => {
-    const localBundle: ClinicalPatientBundle = {
-      source: 'local',
+    const emptyCloudBundle = (errorMsg?: string): ClinicalPatientBundle => ({
+      source: 'supabase',
       resolvedPatientId: patient.id,
-      records: StorageService.getMedicalRecords(patient.id),
-      prescriptions: StorageService.getPrescriptions(patient.id),
-      certificates: StorageService.getCertificates(patient.id),
-      labOrders: StorageService.getLabOrders(patient.id),
-      examResults: StorageService.getExamResults(patient.id),
-      documents: StorageService.getMedicalDocuments(patient.id),
-    };
+      records: [],
+      prescriptions: [],
+      certificates: [],
+      labOrders: [],
+      examResults: [],
+      documents: [],
+      error: errorMsg,
+    });
 
     const supabase = getSupabase();
-    if (!supabase) return localBundle;
+    if (!supabase) {
+      return emptyCloudBundle('Conexão com o Supabase não configurada neste ambiente.');
+    }
 
     try {
       const ctxRes = await resolveCloudContext(supabase, { organizationId: patient.organizationId });
       if (!ctxRes.context) {
-        return { ...localBundle, error: ctxRes.error };
+        return emptyCloudBundle(ctxRes.error);
       }
 
       const { organizationId } = ctxRes.context;
       const patRes = await resolveCloudPatientUuid(supabase, organizationId, patient);
       if (!patRes.patientUuid) {
-        return { ...localBundle, error: patRes.error };
+        return emptyCloudBundle(patRes.error);
       }
 
       const patientUuid = patRes.patientUuid;
@@ -780,10 +844,9 @@ export const ClinicalCloudService = {
         docRes.error;
 
       if (firstError) {
-        return {
-          ...localBundle,
-          error: formatPgError(firstError, 'Erro ao carregar documentos médicos do paciente.'),
-        };
+        return emptyCloudBundle(
+          formatPgError(firstError, 'Erro ao carregar documentos médicos do paciente.')
+        );
       }
 
       const profMap = new Map<string, { fullName: string; councilNumber: string }>();
@@ -1035,7 +1098,14 @@ export const ClinicalCloudService = {
       };
     } catch (err) {
       return {
-        ...localBundle,
+        source: 'supabase',
+        resolvedPatientId: patient.id,
+        records: [],
+        prescriptions: [],
+        certificates: [],
+        labOrders: [],
+        examResults: [],
+        documents: [],
         error: err instanceof Error ? err.message : String(err),
       };
     }
@@ -1051,12 +1121,10 @@ export const ClinicalCloudService = {
   ): Promise<{ success: boolean; record?: MedicalRecordEntry; source: 'supabase' | 'local'; message?: string }> => {
     const supabase = getSupabase();
     if (!supabase) {
-      const localRes = StorageService.saveMedicalRecord(record);
       return {
-        success: localRes.success,
-        record: localRes.success ? record : undefined,
+        success: false,
         source: 'local',
-        message: localRes.message,
+        message: 'Conexão com o Supabase não configurada. Não é possível gravar evoluções clínicas fora do banco.',
       };
     }
 
@@ -1193,8 +1261,11 @@ export const ClinicalCloudService = {
   ): Promise<{ success: boolean; addendum?: MedicalRecordAddendum; source: 'supabase' | 'local'; message?: string }> => {
     const supabase = getSupabase();
     if (!supabase) {
-      const res = StorageService.addMedicalRecordAddendum(record.id, addendum);
-      return { success: res.success, addendum: res.success ? addendum : undefined, source: 'local', message: res.message };
+      return {
+        success: false,
+        source: 'local',
+        message: 'Conexão com o Supabase não configurada. Não é possível gravar adendos fora do banco.',
+      };
     }
 
     if (!isUuid(record.id)) {
@@ -1266,8 +1337,11 @@ export const ClinicalCloudService = {
   ): Promise<{ success: boolean; prescription?: Prescription; source: 'supabase' | 'local'; message?: string }> => {
     const supabase = getSupabase();
     if (!supabase) {
-      StorageService.savePrescription(prescription);
-      return { success: true, prescription, source: 'local' };
+      return {
+        success: false,
+        source: 'local',
+        message: 'Conexão com o Supabase não configurada. Não é possível gravar receituários fora do banco.',
+      };
     }
 
     try {
@@ -1392,8 +1466,11 @@ export const ClinicalCloudService = {
   ): Promise<{ success: boolean; certificate?: MedicalCertificate; source: 'supabase' | 'local'; message?: string }> => {
     const supabase = getSupabase();
     if (!supabase) {
-      StorageService.saveCertificate(certificate);
-      return { success: true, certificate, source: 'local' };
+      return {
+        success: false,
+        source: 'local',
+        message: 'Conexão com o Supabase não configurada. Não é possível gravar atestados fora do banco.',
+      };
     }
 
     try {
@@ -1483,8 +1560,11 @@ export const ClinicalCloudService = {
   ): Promise<{ success: boolean; order?: LabOrder; source: 'supabase' | 'local'; message?: string }> => {
     const supabase = getSupabase();
     if (!supabase) {
-      StorageService.saveLabOrder(order);
-      return { success: true, order, source: 'local' };
+      return {
+        success: false,
+        source: 'local',
+        message: 'Conexão com o Supabase não configurada. Não é possível gravar pedidos de exames fora do banco.',
+      };
     }
 
     try {
@@ -1589,6 +1669,7 @@ export const ClinicalCloudService = {
     patient: Patient,
     attachmentFile?: File | null
   ): Promise<{ success: boolean; result?: ExamResult; source: 'supabase' | 'local'; message?: string }> => {
+    const resolvedExamMimeType = attachmentFile ? inferClinicalMimeType(attachmentFile) : '';
     if (attachmentFile) {
       if (attachmentFile.size > MAX_CLINICAL_FILE_BYTES) {
         return {
@@ -1597,7 +1678,7 @@ export const ClinicalCloudService = {
           message: 'O arquivo anexo excede o limite máximo de 15 MB.',
         };
       }
-      if (!ALLOWED_CLINICAL_MIME_TYPES.has(attachmentFile.type)) {
+      if (!ALLOWED_CLINICAL_MIME_TYPES.has(resolvedExamMimeType)) {
         return {
           success: false,
           source: getSupabase() ? 'supabase' : 'local',
@@ -1608,16 +1689,11 @@ export const ClinicalCloudService = {
 
     const supabase = getSupabase();
     if (!supabase) {
-      const localResult: ExamResult = attachmentFile
-        ? {
-            ...result,
-            attachmentFilename: attachmentFile.name,
-            attachmentMimeType: attachmentFile.type,
-            attachmentSizeBytes: attachmentFile.size,
-          }
-        : result;
-      StorageService.saveExamResult(localResult);
-      return { success: true, result: localResult, source: 'local' };
+      return {
+        success: false,
+        source: 'local',
+        message: 'Conexão com o Supabase não configurada. Não é possível gravar resultados fora do banco.',
+      };
     }
 
     let uploadedStoragePath: string | null = null;
@@ -1651,7 +1727,7 @@ export const ClinicalCloudService = {
           .from(MEDICAL_DOCUMENTS_BUCKET)
           .upload(path, attachmentFile, {
             cacheControl: '3600',
-            contentType: attachmentFile.type,
+            contentType: resolvedExamMimeType,
             upsert: false,
           });
 
@@ -1667,7 +1743,7 @@ export const ClinicalCloudService = {
         storageBucket = MEDICAL_DOCUMENTS_BUCKET;
         storagePath = path;
         attachmentFilename = attachmentFile.name;
-        attachmentMimeType = attachmentFile.type;
+        attachmentMimeType = resolvedExamMimeType;
         attachmentSizeBytes = attachmentFile.size;
       }
 
@@ -1757,6 +1833,7 @@ export const ClinicalCloudService = {
     professionalName?: string;
   }): Promise<{ success: boolean; document?: MedicalDocument; source: 'supabase' | 'local'; message?: string }> => {
     const { file, patient } = params;
+    const resolvedDocMimeType = inferClinicalMimeType(file);
     if (file.size > MAX_CLINICAL_FILE_BYTES) {
       return {
         success: false,
@@ -1764,7 +1841,7 @@ export const ClinicalCloudService = {
         message: 'O arquivo excede o tamanho máximo permitido de 15 MB.',
       };
     }
-    if (!ALLOWED_CLINICAL_MIME_TYPES.has(file.type)) {
+    if (!ALLOWED_CLINICAL_MIME_TYPES.has(resolvedDocMimeType)) {
       return {
         success: false,
         source: getSupabase() ? 'supabase' : 'local',
@@ -1774,27 +1851,11 @@ export const ClinicalCloudService = {
 
     const supabase = getSupabase();
     if (!supabase) {
-      const localDoc: MedicalDocument = {
-        id: `mdoc_${Date.now()}`,
-        organizationId: patient.organizationId || 'org_mureb_01',
-        branchId: params.branchId || patient.originBranchId,
-        patientId: patient.id,
-        medicalRecordId: params.medicalRecordId,
-        professionalId: params.professionalId,
-        professionalName: params.professionalName,
-        documentType: params.documentType,
-        title: params.title.trim(),
-        description: nullableText(params.description) || undefined,
-        documentDate: params.documentDate,
-        storageBucket: MEDICAL_DOCUMENTS_BUCKET,
-        storagePath: `local/${patient.id}/${Date.now()}_${sanitizeFileName(file.name)}`,
-        fileName: file.name,
-        mimeType: file.type,
-        fileSizeBytes: file.size,
-        createdAt: new Date().toISOString(),
+      return {
+        success: false,
+        source: 'local',
+        message: 'Conexão com o Supabase não configurada. Não é possível enviar documentos fora do banco.',
       };
-      StorageService.saveMedicalDocument(localDoc);
-      return { success: true, document: localDoc, source: 'local' };
     }
 
     let uploadedPath: string | null = null;
@@ -1822,7 +1883,7 @@ export const ClinicalCloudService = {
         .from(MEDICAL_DOCUMENTS_BUCKET)
         .upload(path, file, {
           cacheControl: '3600',
-          contentType: file.type,
+          contentType: resolvedDocMimeType,
           upsert: false,
         });
 

@@ -194,7 +194,10 @@ const MainAppContent: React.FC = () => {
                   ) : (
                     <>
                       {activeClinicTab === 'dashboard' && (
-                        <ClinicDashboard onNavigateTab={handleTabChange} />
+                        <ClinicDashboard
+                          onNavigateTab={handleTabChange}
+                          onNavigateToRecord={handleNavigateToRecord}
+                        />
                       )}
                       {activeClinicTab === 'appointments' && (
                         <AppointmentsModule onNavigateToRecord={handleNavigateToRecord} />

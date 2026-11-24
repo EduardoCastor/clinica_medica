@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { X, Clock, Trash2, Plus, Loader2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { X, Clock, Trash2, Plus, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import { WaitlistEntry, Patient } from '../../types';
 import { StorageService } from '../../services/storage';
+import { ClinicalCloudService } from '../../services/clinicalCloudService';
 import { useTenant } from '../../contexts/TenantContext';
 
 interface WaitlistModalProps {
@@ -12,53 +13,73 @@ interface WaitlistModalProps {
 
 export const WaitlistModal: React.FC<WaitlistModalProps> = ({ isOpen, onClose, onBookPatient }) => {
   const { activeBranchId, branches, organization } = useTenant();
-  const [waitlist, setWaitlist] = useState<WaitlistEntry[]>(StorageService.getWaitlist(activeBranchId));
-  const [patients, setPatients] = useState<Patient[]>(StorageService.getPatients());
+  const [waitlist, setWaitlist] = useState<WaitlistEntry[]>([]);
+  const [patients, setPatients] = useState<Patient[]>([]);
   const professionals = StorageService.getProfessionals();
 
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
-  const [patientId, setPatientId] = useState(patients[0]?.id || '');
-  const [professionalId, setProfessionalId] = useState(professionals[0]?.id || 'prof_newton');
+  const [patientId, setPatientId] = useState('');
+  const [professionalId, setProfessionalId] = useState(professionals[0]?.id || '');
   const [period, setPeriod] = useState<'qualquer' | 'manha' | 'tarde' | 'noite'>('manha');
   const [notes, setNotes] = useState('');
   const [selectedDays, setSelectedDays] = useState<string[]>(['Segunda', 'Quarta', 'Sexta']);
 
-  const refreshWaitlist = async () => {
+  const refreshWaitlist = useCallback(async () => {
     setIsLoading(true);
-    const list = await StorageService.fetchWaitlistFromCloud(activeBranchId);
-    setWaitlist(list);
+    setErrorMessage('');
+    const res = await StorageService.fetchWaitlistFromCloudDetailed(activeBranchId);
+    setWaitlist(res.waitlist);
+    if (res.error) {
+      setErrorMessage(res.error);
+    }
     setIsLoading(false);
-  };
+  }, [activeBranchId]);
 
   useEffect(() => {
-    if (isOpen) {
-      const latestPatients = StorageService.getPatients();
-      setPatients(latestPatients);
-      if (!patientId && latestPatients[0]) {
-        setPatientId(latestPatients[0].id);
-      }
-      void refreshWaitlist();
-    }
-  }, [isOpen, activeBranchId]);
+    if (!isOpen) return;
+    let cancelled = false;
+
+    const loadInitial = async () => {
+      setErrorMessage('');
+      setProfessionalId((prev) => prev || professionals[0]?.id || '');
+      const [patRes] = await Promise.all([
+        ClinicalCloudService.fetchPatientsFromCloud(activeBranchId),
+        refreshWaitlist(),
+      ]);
+      if (cancelled) return;
+      setPatients(patRes.patients);
+      setPatientId((prev) => prev || patRes.patients[0]?.id || '');
+    };
+
+    void loadInitial();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, activeBranchId, refreshWaitlist]);
 
   if (!isOpen) return null;
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMessage('');
     const patient = patients.find((p) => p.id === patientId);
-    if (!patient) return;
+    if (!patient) {
+      setErrorMessage('Selecione um paciente cadastrado antes de adicionar à lista.');
+      return;
+    }
 
     setIsSaving(true);
     const newEntry: WaitlistEntry = {
       id: `wait_${Date.now()}`,
-      organizationId: organization.id || 'org_mureb_01',
-      branchId: activeBranchId === 'all' ? branches[0]?.id || 'branch_cf_centro' : activeBranchId,
+      organizationId: organization.id || '',
+      branchId: activeBranchId === 'all' ? branches[0]?.id || '' : activeBranchId,
       patientId: patient.id,
       patientName: patient.fullName,
       patientPhone: patient.whatsapp || patient.phone,
-      professionalId,
+      professionalId: professionalId || undefined,
       preferredPeriod: period,
       preferredDays: selectedDays,
       notes,
@@ -66,16 +87,26 @@ export const WaitlistModal: React.FC<WaitlistModalProps> = ({ isOpen, onClose, o
       createdAt: new Date().toISOString(),
     };
 
-    await StorageService.createWaitlistInCloud(newEntry);
-    await refreshWaitlist();
+    const res = await StorageService.createWaitlistInCloud(newEntry);
     setIsSaving(false);
+    if (!res.success) {
+      setErrorMessage(res.error || 'Não foi possível adicionar paciente à lista de espera.');
+      return;
+    }
+
+    await refreshWaitlist();
     setShowAddForm(false);
     setNotes('');
   };
 
   const handleRemove = async (id: string) => {
-    await StorageService.removeWaitlistInCloud(id);
-    setWaitlist(StorageService.getWaitlist(activeBranchId));
+    setErrorMessage('');
+    const res = await StorageService.removeWaitlistInCloud(id);
+    if (!res.success) {
+      setErrorMessage(res.error || 'Erro ao remover paciente da lista de espera.');
+      return;
+    }
+    await refreshWaitlist();
   };
 
   const toggleDay = (day: string) => {
@@ -111,6 +142,23 @@ export const WaitlistModal: React.FC<WaitlistModalProps> = ({ isOpen, onClose, o
 
         {/* Content */}
         <div className="p-6 space-y-5 max-h-[80vh] overflow-y-auto">
+          {errorMessage && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>{errorMessage}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => void refreshWaitlist()}
+                className="px-2.5 py-1 text-[11px] font-semibold bg-white border border-rose-200 rounded-lg hover:bg-rose-100 inline-flex items-center gap-1 shrink-0"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>Tentar novamente</span>
+              </button>
+            </div>
+          )}
+
           <div className="flex items-center justify-between">
             <p className="text-xs text-slate-500 flex items-center gap-2">
               <span>
@@ -246,7 +294,12 @@ export const WaitlistModal: React.FC<WaitlistModalProps> = ({ isOpen, onClose, o
 
           {/* Table / List */}
           <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden">
-            {waitlist.length === 0 ? (
+            {isLoading && waitlist.length === 0 ? (
+              <div className="p-8 text-center text-xs text-slate-500 flex items-center justify-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-sky-600" />
+                <span>Carregando lista de espera do Supabase...</span>
+              </div>
+            ) : waitlist.length === 0 ? (
               <div className="p-8 text-center text-xs text-slate-500">
                 A lista de espera está vazia para a unidade selecionada.
               </div>

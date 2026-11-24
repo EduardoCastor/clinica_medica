@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { Appointment, AppointmentStatus, Patient } from '../../types';
 import { StorageService } from '../../services/storage';
+import { ClinicalCloudService } from '../../services/clinicalCloudService';
 import { useTenant } from '../../contexts/TenantContext';
 import { fetchAvailableSlots, N8nAvailableSlot } from '../../services/n8nService';
 import { formatCpf, formatPhone } from '../../services/brazilianFormatters';
@@ -49,12 +50,12 @@ export const AppointmentFormModal: React.FC<AppointmentFormModalProps> = ({
   const services = StorageService.getServices();
   const rooms = StorageService.getRooms();
 
-  const defaultBranch = activeBranchId !== 'all' ? activeBranchId : branches[0]?.id || 'branch_cf_centro';
+  const defaultBranch = activeBranchId !== 'all' ? activeBranchId : branches[0]?.id || '';
 
   const [patientMode, setPatientMode] = useState<'existing' | 'new'>('existing');
   const [branchId, setBranchId] = useState(defaultBranch);
   const [patientId, setPatientId] = useState(patients[0]?.id || '');
-  const [professionalId, setProfessionalId] = useState(professionals[0]?.id || 'prof_newton');
+  const [professionalId, setProfessionalId] = useState(professionals[0]?.id || '');
   const [serviceId, setServiceId] = useState(services[0]?.id || '');
   const [roomId, setRoomId] = useState(rooms[0]?.id || '');
 
@@ -84,6 +85,7 @@ export const AppointmentFormModal: React.FC<AppointmentFormModalProps> = ({
 
   useEffect(() => {
     if (!isOpen) return;
+    let cancelled = false;
 
     const latestPatients = StorageService.getPatients();
     setPatients(latestPatients);
@@ -99,7 +101,7 @@ export const AppointmentFormModal: React.FC<AppointmentFormModalProps> = ({
       setPatientMode('existing');
       setBranchId(existingAppointment.branchId || defaultBranch);
       setPatientId(existingAppointment.patientId || latestPatients[0]?.id || '');
-      setProfessionalId(existingAppointment.professionalId || professionals[0]?.id || 'prof_newton');
+      setProfessionalId(existingAppointment.professionalId || professionals[0]?.id || '');
       setServiceId(existingAppointment.serviceId || services[0]?.id || '');
       setRoomId(existingAppointment.roomId || rooms[0]?.id || '');
       setDate(localDate);
@@ -114,7 +116,7 @@ export const AppointmentFormModal: React.FC<AppointmentFormModalProps> = ({
       setPatientMode(latestPatients.length > 0 ? 'existing' : 'new');
       setBranchId(defaultBranch);
       setPatientId(preselectedPatientId || latestPatients[0]?.id || '');
-      setProfessionalId(preselectedProfessionalId || professionals[0]?.id || 'prof_newton');
+      setProfessionalId(preselectedProfessionalId || professionals[0]?.id || '');
       setServiceId(services[0]?.id || '');
       setRoomId(rooms[0]?.id || '');
       setDate(defaultDate || getLocalTodayIso());
@@ -131,6 +133,19 @@ export const AppointmentFormModal: React.FC<AppointmentFormModalProps> = ({
       setNewPatientEmail('');
     }
     setSelectedN8nInicio('');
+
+    ClinicalCloudService.fetchPatientsFromCloud(defaultBranch).then((res) => {
+      if (cancelled || res.patients.length === 0) return;
+      setPatients(res.patients);
+      if (!existingAppointment) {
+        setPatientMode((prev) => (prev === 'new' && !newPatientName ? 'existing' : prev));
+        setPatientId((prev) => prev || preselectedPatientId || res.patients[0]?.id || '');
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [
     isOpen,
     existingAppointment,
