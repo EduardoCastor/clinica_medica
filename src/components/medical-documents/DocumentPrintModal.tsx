@@ -569,13 +569,15 @@ const LabOrderCanvas: React.FC<{ order: LabOrder } & CanvasProps> = ({
           Exames Solicitados ({order.items.length}):
         </h3>
 
-        <div className="space-y-3 text-xs">
+        <div className={order.items.length > 8 ? 'space-y-1.5 text-xs' : 'space-y-3 text-xs'}>
           {order.items.map((item, index) => (
             <div
               key={item.id}
-              className="medsync-break-avoid p-3 rounded-lg border border-slate-200 bg-white flex items-start justify-between gap-3"
+              className={`medsync-break-avoid rounded-lg border border-slate-200 bg-white flex items-start justify-between gap-3 ${
+                order.items.length > 8 ? 'px-3 py-2' : 'p-3'
+              }`}
             >
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 <div className="font-bold text-slate-900 text-sm flex items-center gap-2">
                   <span>
                     {index + 1}. {item.examName}

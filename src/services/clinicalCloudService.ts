@@ -1,6 +1,7 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import {
   ExamResult,
+  LabExamCatalogItem,
   LabOrder,
   LabOrderItem,
   MedicalCertificate,
@@ -89,19 +90,11 @@ interface ResolvedCloudContext {
   professionalCouncil: string;
 }
 
-async function resolveCloudContext(
+async function resolveCloudOrganizationId(
   supabase: SupabaseClient,
-  hints?: {
-    organizationId?: string;
-    branchId?: string;
-    professionalId?: string;
-    professionalName?: string;
-    professionalEmail?: string;
-    professionalCouncil?: string;
-  }
-): Promise<{ context?: ResolvedCloudContext; error?: string }> {
-  // 1. Resolve organization UUID
-  let orgId = isUuid(hints?.organizationId) ? hints!.organizationId : undefined;
+  hintOrgId?: string
+): Promise<{ organizationId?: string; error?: string }> {
+  let orgId = isUuid(hintOrgId) ? hintOrgId : undefined;
   if (!orgId) {
     const localOrg = StorageService.getOrganization();
     if (isUuid(localOrg.id)) {
@@ -137,6 +130,41 @@ async function resolveCloudContext(
   if (!orgId) {
     return { error: 'Nenhuma organização encontrada no Supabase. Execute as migrações e a carga inicial (seed).' };
   }
+  return { organizationId: orgId };
+}
+
+const mapLabExamCatalogRow = (row: Record<string, unknown>): LabExamCatalogItem => ({
+  id: String(row.id),
+  organizationId: String(row.organization_id),
+  name: String(row.name || ''),
+  examType:
+    row.exam_type === 'imagem' || row.exam_type === 'outros'
+      ? row.exam_type
+      : 'laboratorial',
+  defaultObservations: row.default_observations ? String(row.default_observations) : undefined,
+  displayOrder: Number.isFinite(Number(row.display_order)) ? Number(row.display_order) : 1000,
+  isActive: row.is_active !== false,
+  createdAt: String(row.created_at || new Date().toISOString()),
+  updatedAt: row.updated_at ? String(row.updated_at) : undefined,
+});
+
+async function resolveCloudContext(
+  supabase: SupabaseClient,
+  hints?: {
+    organizationId?: string;
+    branchId?: string;
+    professionalId?: string;
+    professionalName?: string;
+    professionalEmail?: string;
+    professionalCouncil?: string;
+  }
+): Promise<{ context?: ResolvedCloudContext; error?: string }> {
+  // 1. Resolve organization UUID
+  const orgRes = await resolveCloudOrganizationId(supabase, hints?.organizationId);
+  if (!orgRes.organizationId) {
+    return { error: orgRes.error };
+  }
+  const orgId = orgRes.organizationId;
 
   // 2. Resolve branch UUID
   let branchId = isUuid(hints?.branchId) ? hints!.branchId : undefined;
@@ -1003,15 +1031,23 @@ export const ClinicalCloudService = {
             ),
             orderDate: String(row.order_date).substring(0, 10),
             clinicalIndication: String(row.clinical_indication || ''),
-            items: rawItems.map(
-              (it): LabOrderItem => ({
-                id: String(it.id),
-                examName: String(it.exam_name || ''),
-                examType: (it.exam_type as LabOrderItem['examType']) || 'laboratorial',
-                urgency: it.urgency === 'urgente' ? 'urgente' : 'rotina',
-                observations: it.observations ? String(it.observations) : undefined,
+            items: [...rawItems]
+              .sort((a, b) => {
+                const ta = String(a.created_at || '');
+                const tb = String(b.created_at || '');
+                return ta.localeCompare(tb);
               })
-            ),
+              .map(
+                (it): LabOrderItem => ({
+                  id: String(it.id),
+                  examName: String(it.exam_name || ''),
+                  examType: (it.exam_type as LabOrderItem['examType']) || 'laboratorial',
+                  urgency: it.urgency === 'urgente' ? 'urgente' : 'rotina',
+                  observations: it.observations ? String(it.observations) : undefined,
+                  catalogExamId: it.catalog_exam_id ? String(it.catalog_exam_id) : undefined,
+                  isCustom: Boolean(it.is_custom),
+                })
+              ),
             notes: row.notes ? String(row.notes) : undefined,
             isSigned: Boolean(row.is_signed),
             signatureHash: row.signature_hash ? String(row.signature_hash) : undefined,
@@ -1618,6 +1654,8 @@ export const ClinicalCloudService = {
         exam_type: it.examType || 'laboratorial',
         urgency: it.urgency || 'rotina',
         observations: nullableText(it.observations),
+        catalog_exam_id: !it.isCustom && isUuid(it.catalogExamId) ? it.catalogExamId : null,
+        is_custom: Boolean(it.isCustom),
       }));
 
       const { data: insertedItems, error: itemsErr } = await supabase
@@ -1649,6 +1687,8 @@ export const ClinicalCloudService = {
           examType: (it.exam_type as LabOrderItem['examType']) || 'laboratorial',
           urgency: it.urgency === 'urgente' ? 'urgente' : 'rotina',
           observations: it.observations ? String(it.observations) : undefined,
+          catalogExamId: it.catalog_exam_id ? String(it.catalog_exam_id) : undefined,
+          isCustom: Boolean(it.is_custom),
         })),
         createdAt: String(orderRow.created_at),
       };
@@ -2025,6 +2065,162 @@ export const ClinicalCloudService = {
       return {
         success: false,
         error: err instanceof Error ? err.message : 'Erro ao excluir documento.',
+      };
+    }
+  },
+
+  fetchLabExamCatalogFromCloud: async (
+    organizationId?: string,
+    includeInactive = false
+  ): Promise<{ items: LabExamCatalogItem[]; error?: string }> => {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return {
+        items: [],
+        error: 'Conexão com o Supabase não configurada. Não foi possível carregar o catálogo de exames.',
+      };
+    }
+
+    try {
+      const orgRes = await resolveCloudOrganizationId(supabase, organizationId);
+      if (!orgRes.organizationId) {
+        return { items: [], error: orgRes.error || 'Organização não localizada.' };
+      }
+
+      let query = supabase
+        .from('lab_exam_catalog')
+        .select('*')
+        .eq('organization_id', orgRes.organizationId)
+        .order('display_order', { ascending: true })
+        .order('name', { ascending: true });
+
+      if (!includeInactive) {
+        query = query.eq('is_active', true);
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        return {
+          items: [],
+          error: formatPgError(error, 'Erro ao carregar catálogo de exames laboratoriais no Supabase.'),
+        };
+      }
+
+      return {
+        items: ((data || []) as Array<Record<string, unknown>>).map(mapLabExamCatalogRow),
+      };
+    } catch (err) {
+      return {
+        items: [],
+        error: err instanceof Error ? err.message : 'Erro inesperado ao carregar catálogo de exames.',
+      };
+    }
+  },
+
+  createLabExamCatalogItemInCloud: async (payload: {
+    organizationId?: string;
+    name: string;
+    examType?: 'laboratorial' | 'imagem' | 'outros';
+    defaultObservations?: string;
+  }): Promise<{ success: boolean; item?: LabExamCatalogItem; error?: string }> => {
+    const cleanName = payload.name.trim();
+    if (!cleanName) {
+      return { success: false, error: 'Informe o nome do exame para cadastrar no catálogo.' };
+    }
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      return {
+        success: false,
+        error: 'Conexão com o Supabase não configurada.',
+      };
+    }
+
+    try {
+      const orgRes = await resolveCloudOrganizationId(supabase, payload.organizationId);
+      if (!orgRes.organizationId) {
+        return { success: false, error: orgRes.error || 'Organização não localizada.' };
+      }
+
+      const { data, error } = await supabase
+        .from('lab_exam_catalog')
+        .insert({
+          organization_id: orgRes.organizationId,
+          name: cleanName,
+          exam_type: payload.examType || 'laboratorial',
+          default_observations: nullableText(payload.defaultObservations),
+          display_order: 1000,
+          is_active: true,
+        })
+        .select('*')
+        .single();
+
+      if (error || !data) {
+        const pgErr = error as { code?: string } | null;
+        if (pgErr?.code === '23505') {
+          return { success: false, error: 'Este exame já está cadastrado no catálogo desta clínica.' };
+        }
+        if (pgErr?.code === '42501') {
+          return {
+            success: false,
+            error: 'Permissão negada: apenas usuários autorizados podem incluir exames no catálogo.',
+          };
+        }
+        return {
+          success: false,
+          error: formatPgError(error, 'Erro ao cadastrar exame no catálogo do Supabase.'),
+        };
+      }
+
+      return { success: true, item: mapLabExamCatalogRow(data as Record<string, unknown>) };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Erro inesperado ao cadastrar exame no catálogo.',
+      };
+    }
+  },
+
+  toggleLabExamCatalogItemActiveInCloud: async (
+    catalogId: string,
+    isActive: boolean
+  ): Promise<{ success: boolean; item?: LabExamCatalogItem; error?: string }> => {
+    if (!isUuid(catalogId)) {
+      return { success: false, error: 'Identificador de exame inválido.' };
+    }
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { success: false, error: 'Conexão com o Supabase não configurada.' };
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('lab_exam_catalog')
+        .update({ is_active: isActive })
+        .eq('id', catalogId)
+        .select('*')
+        .single();
+
+      if (error || !data) {
+        const pgErr = error as { code?: string } | null;
+        if (pgErr?.code === '42501') {
+          return {
+            success: false,
+            error: 'Permissão negada: seu perfil não possui autorização para alterar o catálogo.',
+          };
+        }
+        return {
+          success: false,
+          error: formatPgError(error, 'Erro ao atualizar status do exame no catálogo.'),
+        };
+      }
+
+      return { success: true, item: mapLabExamCatalogRow(data as Record<string, unknown>) };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Erro inesperado ao atualizar o catálogo.',
       };
     }
   },

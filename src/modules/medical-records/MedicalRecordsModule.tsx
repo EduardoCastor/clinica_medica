@@ -1504,9 +1504,23 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
                   </div>
 
                   <div className="flex flex-wrap gap-2 pt-1">
-                    {order.items.map(it => (
-                      <span key={it.id} className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-800">
-                        {it.examName} ({it.examType})
+                    {order.items.map((it, idx) => (
+                      <span
+                        key={it.id}
+                        className={`px-2.5 py-1 border rounded-lg text-xs font-medium inline-flex items-center gap-1.5 ${
+                          it.isCustom
+                            ? 'bg-amber-50 border-amber-200 text-amber-950'
+                            : 'bg-slate-50 border-slate-200 text-slate-800'
+                        }`}
+                      >
+                        <span>
+                          {idx + 1}. {it.examName} ({it.examType})
+                        </span>
+                        {it.isCustom && (
+                          <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">
+                            Personalizado
+                          </span>
+                        )}
                       </span>
                     ))}
                   </div>

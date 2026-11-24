@@ -452,12 +452,26 @@ export interface MedicalCertificate {
   createdAt: string;
 }
 
+export interface LabExamCatalogItem {
+  id: string;
+  organizationId: string;
+  name: string;
+  examType: 'laboratorial' | 'imagem' | 'outros';
+  defaultObservations?: string;
+  displayOrder: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface LabOrderItem {
   id: string;
   examName: string;
   examType: 'laboratorial' | 'imagem' | 'outros';
   urgency: 'rotina' | 'urgente';
   observations?: string;
+  catalogExamId?: string;
+  isCustom?: boolean;
 }
 
 export interface LabOrder {
