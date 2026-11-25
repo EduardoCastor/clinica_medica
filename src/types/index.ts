@@ -338,6 +338,107 @@ export interface MedicalRecordAddendum {
   signatureHash: string;
 }
 
+export type TriStateAnswer = 'sim' | 'nao' | '';
+
+export interface StructuredAnamnesis {
+  // 4.1 Histórico patológico e antecedentes pessoais
+  internacoes?: string;
+  historiaPatologicaPregressa?: string;
+  pressaoArterial?: string;
+  diabetes?: TriStateAnswer;
+  diabetesDetalhes?: string;
+  doencasTireoide?: TriStateAnswer;
+  doencasTireoideDetalhes?: string;
+  doencasTireoideFamilia?: TriStateAnswer;
+  doencasTireoideFamiliaDetalhes?: string;
+  fumante?: TriStateAnswer;
+  fumanteDetalhes?: string;
+  etilismo?: TriStateAnswer;
+  etilismoDetalhes?: string;
+  cancer?: TriStateAnswer;
+  cancerDetalhes?: string;
+  outrosAntecedentes?: string;
+
+  // 4.2 Histórico cirúrgico e condições clínicas
+  cirurgiasPrevias?: TriStateAnswer;
+  cirurgiaQual?: string;
+  cirurgiaQuando?: string;
+  transfusaoSanguinea?: TriStateAnswer;
+  dor?: TriStateAnswer;
+  dorDescricao?: string;
+  alergiasAlimentares?: string;
+
+  // 4.3 Hábitos e condições gerais
+  atividadeFisica?: string;
+  sono?: string;
+  estresse?: string;
+  ansiedade?: string;
+  funcaoIntestinal?: string;
+  ingestaoHidrica?: string;
+  diurese?: string;
+
+  // 4.4 Histórico alérgico e hormonal
+  antecedentesAlergicos?: string;
+  reposicaoHormonal?: TriStateAnswer;
+  reposicaoHormonalDetalhes?: string;
+  cicloMenstrual?: string;
+
+  // 4.5 Histórico reprodutivo
+  gestacoes?: number | null;
+  nascidos?: number | null;
+  abortos?: number | null;
+  natimortos?: number | null;
+
+  // 4.6 Objetivo e histórico familiar
+  objetivoConsulta?: string;
+  antecedentesPatologicosFamiliares?: string;
+  antecedentesPatologicosPaciente?: string;
+}
+
+export interface PatientAnamnesisEntry {
+  id: string;
+  organizationId: string;
+  branchId: string;
+  patientId: string;
+  medicalRecordId?: string;
+  professionalId: string;
+  professionalName: string;
+  professionalCouncil?: string;
+  evaluationDate: string;
+  status: 'draft' | 'signed';
+  structuredData: StructuredAnamnesis;
+  isSigned: boolean;
+  signedAt?: string;
+  signatureHash?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export type AnthropometrySourceType = 'manual' | 'soap_evolution' | 'bioimpedance';
+
+export interface AnthropometricMeasurement {
+  id: string;
+  organizationId: string;
+  branchId: string;
+  patientId: string;
+  medicalRecordId?: string;
+  professionalId?: string;
+  professionalName?: string;
+  measuredAt: string;
+  weightKg?: number | null;
+  abdominalCircumferenceCm?: number | null;
+  rightArmCircumferenceCm?: number | null;
+  leftArmCircumferenceCm?: number | null;
+  rightLegCircumferenceCm?: number | null;
+  leftLegCircumferenceCm?: number | null;
+  thoracicCircumferenceCm?: number | null;
+  hipCircumferenceCm?: number | null;
+  sourceType: AnthropometrySourceType;
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface MedicalRecordEntry {
   id: string;
   organizationId: string;
@@ -354,6 +455,7 @@ export interface MedicalRecordEntry {
   // Método SOAP
   chiefComplaint: string;         // S: Queixa Principal & HDA
   clinicalHistory: string;        // S: Anamnese, Hábitos, Antecedentes
+  structuredAnamnesis?: StructuredAnamnesis; // Anamnese estruturada complementar (Páginas 1-2)
   vitalSigns?: VitalSigns;        // O: Sinais Vitais
   physicalExam?: string;          // O: Exame Físico & Avaliação Funcional
   diagnosticHypothesis?: string;  // A: Hipótese Diagnóstica & Avaliação

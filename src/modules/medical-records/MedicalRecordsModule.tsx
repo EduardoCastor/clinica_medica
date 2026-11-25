@@ -21,7 +21,13 @@ import {
   Paperclip,
   X,
   ExternalLink,
-  RefreshCw
+  RefreshCw,
+  Scale,
+  Edit3,
+  Phone,
+  MapPin,
+  Mail,
+  ClipboardCheck
 } from 'lucide-react';
 import { 
   MedicalRecordEntry, 
@@ -32,7 +38,9 @@ import {
   ExamResult, 
   MedicalDocument,
   MedicalDocumentType,
-  VitalSigns 
+  VitalSigns,
+  PatientAnamnesisEntry,
+  AnthropometricMeasurement
 } from '../../types';
 import { StorageService } from '../../services/storage';
 import { ClinicalCloudService } from '../../services/clinicalCloudService';
@@ -40,13 +48,17 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useTenant } from '../../contexts/TenantContext';
 import { calculateBmi, calculateAge } from '../../services/brazilianFormatters';
 import { searchCid10, Cid10Item } from '../../services/cid10Data';
+import { formatMetricDisplay } from '../../services/pepClinicalUtils';
 
-// Modals
+// Modals & Sub-tabs
 import { AddendumModal } from './AddendumModal';
 import { PrescriptionFormModal } from './PrescriptionFormModal';
 import { CertificateFormModal } from './CertificateFormModal';
 import { LabOrderFormModal } from './LabOrderFormModal';
 import { ExamResultModal } from './ExamResultModal';
+import { StructuredAnamnesisTab } from './StructuredAnamnesisTab';
+import { AnthropometryBioimpedanceTab } from './AnthropometryBioimpedanceTab';
+import { PatientFormModal } from '../patients/PatientFormModal';
 import { DocumentPrintModal, PrintableDocumentType } from '../../components/medical-documents/DocumentPrintModal';
 
 interface MedicalRecordsModuleProps {
@@ -73,6 +85,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
   const canCreateClinicalDoc = canCreateInMenu('medical_records');
   const canEditClinicalDoc = canEditInMenu('medical_records');
   const canDeleteClinicalDoc = canDeleteInMenu('medical_records') || canEditInMenu('medical_records');
+  const canEditPatientRecord = canEditInMenu('patients');
   const { organization, activeBranchId, branches } = useTenant();
 
   const [patients, setPatients] = useState<Patient[]>(() => {
@@ -89,11 +102,19 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
   const selectedPatient = patients.find(p => p.id === selectedPatientId) || patients[0] || null;
 
   // Active Tab within Medical Records
-  const [activeTab, setActiveTab] = useState<'evolutions' | 'prescriptions' | 'certificates' | 'exams' | 'timeline'>('evolutions');
+  const [activeTab, setActiveTab] = useState<
+    'anamnesis' | 'evolutions' | 'anthropometry' | 'prescriptions' | 'certificates' | 'exams' | 'timeline'
+  >('evolutions');
 
   // Data Collections for selected patient
   const [records, setRecords] = useState<MedicalRecordEntry[]>(
     selectedPatient ? StorageService.getMedicalRecords(selectedPatient.id) : []
+  );
+  const [anamnesisRecords, setAnamnesisRecords] = useState<PatientAnamnesisEntry[]>(
+    selectedPatient ? StorageService.getAnamnesisRecords(selectedPatient.id) : []
+  );
+  const [anthropometryMeasurements, setAnthropometryMeasurements] = useState<AnthropometricMeasurement[]>(
+    selectedPatient ? StorageService.getAnthropometryMeasurements(selectedPatient.id) : []
   );
   const [prescriptions, setPrescriptions] = useState<Prescription[]>(
     selectedPatient ? StorageService.getPrescriptions(selectedPatient.id) : []
@@ -169,6 +190,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
   const [isCertModalOpen, setIsCertModalOpen] = useState(false);
   const [isLabOrderModalOpen, setIsLabOrderModalOpen] = useState(false);
   const [isExamResultModalOpen, setIsExamResultModalOpen] = useState(false);
+  const [isPatientEditModalOpen, setIsPatientEditModalOpen] = useState(false);
 
   // Print Document Modal State
   const [printableDoc, setPrintableDoc] = useState<PrintableDocumentType | null>(null);
@@ -185,6 +207,8 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
       if (!patientObj) return;
       // Clear current collections before cloud fetch so stale records from another patient never flash
       setRecords([]);
+      setAnamnesisRecords([]);
+      setAnthropometryMeasurements([]);
       setPrescriptions([]);
       setCertificates([]);
       setLabOrders([]);
@@ -195,6 +219,8 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
       try {
         const bundle = await ClinicalCloudService.fetchPatientClinicalBundleFromCloud(patientObj);
         setRecords(bundle.records);
+        setAnamnesisRecords(bundle.anamnesisRecords);
+        setAnthropometryMeasurements(bundle.anthropometryMeasurements);
         setPrescriptions(bundle.prescriptions);
         setCertificates(bundle.certificates);
         setLabOrders(bundle.labOrders);
@@ -252,6 +278,8 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
       void loadPatientBundle(selectedPatient);
     } else {
       setRecords([]);
+      setAnamnesisRecords([]);
+      setAnthropometryMeasurements([]);
       setPrescriptions([]);
       setCertificates([]);
       setLabOrders([]);
@@ -496,43 +524,83 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
   const patientBmi = selectedPatient && selectedPatient.weightKg && selectedPatient.heightCm 
     ? calculateBmi(selectedPatient.weightKg, selectedPatient.heightCm) 
     : null;
+  const resolvedBranchIdForPatient =
+    activeBranchId !== 'all'
+      ? activeBranchId
+      : selectedPatient?.originBranchId || branches[0]?.id || '';
+  const resolvedOrgIdForPatient = selectedPatient?.organizationId || organization.id || '';
+
+  const formattedPatientAddress = selectedPatient
+    ? [
+        [selectedPatient.address, selectedPatient.addressNumber].filter(Boolean).join(', '),
+        selectedPatient.complement,
+        selectedPatient.neighborhood,
+        [selectedPatient.city, selectedPatient.state].filter(Boolean).join('/'),
+        selectedPatient.postalCode ? `CEP ${selectedPatient.postalCode}` : '',
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : '';
+
+  const formattedEmergencyRecado = selectedPatient
+    ? selectedPatient.emergencyContactPhone || selectedPatient.emergencyContactName
+      ? [
+          selectedPatient.emergencyContactName || 'Contato de Recado',
+          selectedPatient.emergencyContactKinship ? `(${selectedPatient.emergencyContactKinship})` : '',
+          selectedPatient.emergencyContactPhone || '',
+        ]
+          .filter(Boolean)
+          .join(' ')
+      : selectedPatient.administrativeNotes || 'Não informado'
+    : 'Não informado';
+
+  const patientBiologicalSexLabel = selectedPatient
+    ? selectedPatient.biologicalSex === 'M'
+      ? 'Masculino'
+      : selectedPatient.biologicalSex === 'F'
+        ? 'Feminino'
+        : selectedPatient.biologicalSex === 'outro'
+          ? 'Outro'
+          : selectedPatient.gender || 'N/I'
+    : 'N/I';
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-slate-200">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">
+      {/* Header (Densidade otimizada para 1440x900) */}
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 pb-2 border-b border-slate-200">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-xl xl:text-2xl font-extrabold tracking-tight text-slate-900">
               Prontuário Eletrônico do Paciente (PEP)
             </h1>
-            <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200 flex items-center gap-1">
+            <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200 inline-flex items-center gap-1">
               <ShieldCheck className="w-3.5 h-3.5" />
               <span>Conforme CFM 1.638/2002 & LGPD</span>
             </span>
           </div>
-          <p className="text-xs text-slate-500 mt-1">
-            Evoluções clínicas imutáveis, método SOAP, sinais vitais, emissão de receituários ANVISA e atestados.
+          <p className="text-xs text-slate-500 mt-0.5">
+            Identificação clínica, anamnese estruturada, evoluções SOAP imutáveis, antropometria, receituários ANVISA e atestados.
           </p>
         </div>
 
         {canCreateClinicalDoc ? (
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
             <button
               onClick={() => {
                 setEditingRecordId(null);
+                setActiveTab('evolutions');
                 setIsFormOpen(!isFormOpen);
               }}
-              className="px-3.5 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5"
+              className="px-3 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-xl shadow-xs transition flex items-center gap-1.5"
             >
               <Plus className="w-4 h-4" />
-              <span>{isFormOpen ? 'Fechar Formulário' : 'Nova Evolução (SOAP)'}</span>
+              <span>{isFormOpen ? 'Fechar SOAP' : 'Nova Evolução (SOAP)'}</span>
             </button>
             
             <button
               onClick={() => setIsRxModalOpen(true)}
-              className="px-3 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition flex items-center gap-1.5 shadow-xs"
+              className="px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition flex items-center gap-1.5 shadow-xs"
             >
               <Pill className="w-4 h-4 text-sky-600" />
               <span>Nova Receita</span>
@@ -540,7 +608,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
 
             <button
               onClick={() => setIsCertModalOpen(true)}
-              className="px-3 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition flex items-center gap-1.5 shadow-xs"
+              className="px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition flex items-center gap-1.5 shadow-xs"
             >
               <FileText className="w-4 h-4 text-emerald-600" />
               <span>Novo Atestado</span>
@@ -548,7 +616,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
 
             <button
               onClick={() => setIsLabOrderModalOpen(true)}
-              className="px-3 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition flex items-center gap-1.5 shadow-xs"
+              className="px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition flex items-center gap-1.5 shadow-xs"
             >
               <ClipboardList className="w-4 h-4 text-amber-600" />
               <span>Pedir Exames</span>
@@ -562,78 +630,135 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
         )}
       </div>
 
-      {/* Patient Selector and Clinical Identification Bar */}
-      <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-sky-100 text-sky-700 flex items-center justify-center font-bold text-sm">
-            <User className="w-5 h-5" />
+      {/* Patient Selector & Complete Page 1 Clinical Identification Header */}
+      <div className="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-2.5">
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-sky-100 text-sky-700 flex items-center justify-center font-bold text-sm shrink-0">
+              <User className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                Paciente em Atendimento no PEP:
+              </label>
+              <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                <select
+                  value={selectedPatientId}
+                  disabled={isLoadingPatients || patients.length === 0}
+                  onChange={(e) => handlePatientChange(e.target.value)}
+                  className="px-2.5 py-1.5 text-xs font-bold text-slate-900 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500 bg-slate-50 disabled:opacity-60 max-w-[340px]"
+                >
+                  {patients.length === 0 ? (
+                    <option value="">
+                      {isLoadingPatients ? 'Carregando pacientes...' : 'Nenhum paciente cadastrado'}
+                    </option>
+                  ) : (
+                    patients.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.fullName} {p.socialName ? `(${p.socialName})` : ''} · CPF: {p.documentCpf}
+                      </option>
+                    ))
+                  )}
+                </select>
+                {selectedPatient && canEditPatientRecord && (
+                  <button
+                    type="button"
+                    onClick={() => setIsPatientEditModalOpen(true)}
+                    className="px-2.5 py-1.5 text-[11px] font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-xl transition inline-flex items-center gap-1"
+                    title="Editar ficha cadastral completa do paciente sem duplicar registro"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>Editar Cadastro</span>
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
-          <div>
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-              Paciente em Atendimento no PEP:
-            </label>
-            <select
-              value={selectedPatientId}
-              disabled={isLoadingPatients || patients.length === 0}
-              onChange={(e) => handlePatientChange(e.target.value)}
-              className="mt-0.5 px-3 py-1.5 text-xs font-bold text-slate-900 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500 bg-slate-50 disabled:opacity-60"
-            >
-              {patients.length === 0 ? (
-                <option value="">
-                  {isLoadingPatients ? 'Carregando pacientes...' : 'Nenhum paciente cadastrado'}
-                </option>
-              ) : (
-                patients.map(p => (
-                  <option key={p.id} value={p.id}>
-                    {p.fullName} {p.socialName ? `(${p.socialName})` : ''} · CPF: {p.documentCpf}
-                  </option>
-                ))
-              )}
-            </select>
-          </div>
+
+          {selectedPatient && (
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 shrink-0">
+              <div>
+                <span className="block text-[10px] text-slate-400 uppercase">Nascimento / Idade / Sexo</span>
+                <span className="font-semibold text-slate-900">
+                  {selectedPatient.birthDate
+                    ? new Date(`${selectedPatient.birthDate}T00:00:00`).toLocaleDateString('pt-BR')
+                    : 'N/I'}{' '}
+                  ({patientAge !== null ? `${patientAge}a` : 'N/A'}) &bull; {patientBiologicalSexLabel}
+                </span>
+              </div>
+
+              <div className="h-6 w-px bg-slate-200 hidden sm:block" />
+
+              <div>
+                <span className="block text-[10px] text-slate-400 uppercase">Tipo Sanguíneo</span>
+                <span className="font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                  {selectedPatient.bloodType || 'N/I'}
+                </span>
+              </div>
+
+              <div className="h-6 w-px bg-slate-200 hidden sm:block" />
+
+              <div>
+                <span className="block text-[10px] text-slate-400 uppercase">Peso / Altura / IMC</span>
+                <span className="font-semibold text-slate-900">
+                  {selectedPatient.weightKg ? `${selectedPatient.weightKg} kg` : '—'} &bull;{' '}
+                  {selectedPatient.heightCm ? `${selectedPatient.heightCm} cm` : '—'}
+                  {patientBmi && (
+                    <span className="ml-1 text-[11px] font-bold text-sky-700 bg-sky-50 px-1.5 py-0.5 rounded">
+                      IMC {patientBmi.bmi}
+                    </span>
+                  )}
+                </span>
+              </div>
+
+              <div className="h-6 w-px bg-slate-200 hidden sm:block" />
+
+              <div>
+                <span className="block text-[10px] text-slate-400 uppercase">Convênio</span>
+                <span className="font-medium text-slate-800">
+                  {selectedPatient.healthPlanType === 'convenio' 
+                    ? `${selectedPatient.healthPlanOperator || 'Convênio'} (${selectedPatient.healthPlanNumber || ''})` 
+                    : 'Particular'}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
 
+        {/* Page 1 Complete Identification Strip */}
         {selectedPatient && (
-          <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600">
-            <div>
-              <span className="block text-[10px] text-slate-400 uppercase">Idade / Sexo</span>
-              <span className="font-semibold text-slate-900">
-                {patientAge ? `${patientAge} anos` : 'N/A'} &bull; {selectedPatient.gender}
+          <div className="pt-2 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-4 gap-y-1.5 text-[11px] text-slate-700">
+            <div className="min-w-0 truncate">
+              <span className="font-semibold text-slate-500">CPF / RG: </span>
+              <span className="font-mono text-slate-900">{selectedPatient.documentCpf || '—'}</span>
+              {selectedPatient.documentRg && (
+                <span className="text-slate-700">
+                  {' '}
+                  · RG {selectedPatient.documentRg}
+                  {selectedPatient.documentRgIssuer ? ` (${selectedPatient.documentRgIssuer})` : ''}
+                </span>
+              )}
+            </div>
+            <div className="min-w-0 truncate flex items-center gap-1">
+              <Phone className="w-3 h-3 text-slate-400 shrink-0" />
+              <span className="font-semibold text-slate-500">Tel/WhatsApp: </span>
+              <span className="font-mono text-slate-900 truncate">
+                {selectedPatient.whatsapp || selectedPatient.phone || '—'}
               </span>
             </div>
-
-            <div className="h-6 w-px bg-slate-200 hidden sm:block" />
-
-            <div>
-              <span className="block text-[10px] text-slate-400 uppercase">Tipo Sanguíneo</span>
-              <span className="font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
-                {selectedPatient.bloodType || 'Não informado'}
-              </span>
+            <div className="min-w-0 truncate flex items-center gap-1">
+              <Mail className="w-3 h-3 text-slate-400 shrink-0" />
+              <span className="font-semibold text-slate-500">E-mail: </span>
+              <span className="text-slate-900 truncate">{selectedPatient.email || '—'}</span>
             </div>
-
-            <div className="h-6 w-px bg-slate-200 hidden sm:block" />
-
-            <div>
-              <span className="block text-[10px] text-slate-400 uppercase">Peso / Altura / IMC</span>
-              <span className="font-semibold text-slate-900">
-                {selectedPatient.weightKg ? `${selectedPatient.weightKg} kg` : '-'} &bull; {selectedPatient.heightCm ? `${selectedPatient.heightCm} cm` : '-'}
-                {patientBmi && (
-                  <span className="ml-1.5 text-[11px] font-bold text-sky-700 bg-sky-50 px-1.5 py-0.5 rounded">
-                    IMC {patientBmi.bmi}
-                  </span>
-                )}
-              </span>
+            <div className="min-w-0 truncate">
+              <span className="font-semibold text-slate-500">Recado: </span>
+              <span className="text-slate-900">{formattedEmergencyRecado}</span>
             </div>
-
-            <div className="h-6 w-px bg-slate-200 hidden sm:block" />
-
-            <div>
-              <span className="block text-[10px] text-slate-400 uppercase">Convênio</span>
-              <span className="font-medium text-slate-800">
-                {selectedPatient.healthPlanType === 'convenio' 
-                  ? `${selectedPatient.healthPlanOperator || 'Convênio'} (${selectedPatient.healthPlanNumber || ''})` 
-                  : 'Particular'}
-              </span>
+            <div className="sm:col-span-2 lg:col-span-4 min-w-0 truncate flex items-center gap-1 text-slate-600">
+              <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
+              <span className="font-semibold text-slate-500">Endereço: </span>
+              <span className="text-slate-800 truncate">{formattedPatientAddress || 'Não informado'}</span>
             </div>
           </div>
         )}
@@ -641,76 +766,98 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
 
       {/* BANNER DE ALERTA DE ALERGIAS EM DESTAQUE VERMELHO NO TOPO (Segurança do Paciente ANVISA/CFM) */}
       {selectedPatient?.allergies && selectedPatient.allergies.length > 0 && (
-        <div className="p-4 bg-rose-600 text-white rounded-2xl shadow-sm flex items-start gap-3 animate-pulse">
-          <AlertTriangle className="w-5 h-5 text-white shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <h4 className="text-xs font-black uppercase tracking-wider flex items-center gap-2">
-              <span>ALERTA DE SEGURANÇA &bull; ALERGIAS MEDICAMENTOSAS / ALIMENTARES:</span>
+        <div className="p-3 bg-rose-600 text-white rounded-xl shadow-xs flex items-start gap-2.5">
+          <AlertTriangle className="w-4 h-4 text-white shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h4 className="text-xs font-black uppercase tracking-wider">
+                ALERTA DE SEGURANÇA &bull; ALERGIAS:
+              </h4>
               <span className="px-2 py-0.5 bg-white text-rose-700 font-bold rounded-full text-[10px]">
                 {selectedPatient.allergies.length} ALERTA(S)
               </span>
-            </h4>
-            <div className="flex flex-wrap gap-2 mt-1.5">
-              {selectedPatient.allergies.map((allergy, i) => (
-                <span key={i} className="px-2.5 py-1 bg-white/20 text-white font-bold rounded-lg text-xs border border-white/30">
-                  &bull; {allergy}
-                </span>
-              ))}
+              <div className="flex flex-wrap gap-1.5">
+                {selectedPatient.allergies.map((allergy, i) => (
+                  <span key={i} className="px-2 py-0.5 bg-white/20 text-white font-bold rounded-md text-xs border border-white/30">
+                    &bull; {allergy}
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Navegação entre Abas do Prontuário */}
-      <div className="flex items-center gap-2 border-b border-slate-200 pb-2 text-xs font-semibold overflow-x-auto">
+      {/* Navegação entre Abas do Prontuário (wrap limpo em 1440px sem overflow horizontal) */}
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 pb-2 text-xs font-semibold">
+        <button
+          onClick={() => setActiveTab('anamnesis')}
+          className={`px-2.5 py-1.5 rounded-xl transition flex items-center gap-1.5 whitespace-nowrap ${
+            activeTab === 'anamnesis' ? 'bg-sky-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <ClipboardCheck className="w-3.5 h-3.5" />
+          <span>Anamnese ({anamnesisRecords.length})</span>
+        </button>
+
         <button
           onClick={() => setActiveTab('evolutions')}
-          className={`px-3 py-2 rounded-xl transition flex items-center gap-1.5 ${
+          className={`px-2.5 py-1.5 rounded-xl transition flex items-center gap-1.5 whitespace-nowrap ${
             activeTab === 'evolutions' ? 'bg-sky-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
           }`}
         >
-          <Stethoscope className="w-4 h-4" />
+          <Stethoscope className="w-3.5 h-3.5" />
           <span>Evoluções & SOAP ({records.length})</span>
         </button>
 
         <button
+          onClick={() => setActiveTab('anthropometry')}
+          className={`px-2.5 py-1.5 rounded-xl transition flex items-center gap-1.5 whitespace-nowrap ${
+            activeTab === 'anthropometry' ? 'bg-sky-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Scale className="w-3.5 h-3.5" />
+          <span>Antropometria & Bioimpedância ({anthropometryMeasurements.length})</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('prescriptions')}
-          className={`px-3 py-2 rounded-xl transition flex items-center gap-1.5 ${
+          className={`px-2.5 py-1.5 rounded-xl transition flex items-center gap-1.5 whitespace-nowrap ${
             activeTab === 'prescriptions' ? 'bg-sky-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
           }`}
         >
-          <Pill className="w-4 h-4" />
+          <Pill className="w-3.5 h-3.5" />
           <span>Receituários ({prescriptions.length})</span>
         </button>
 
         <button
           onClick={() => setActiveTab('certificates')}
-          className={`px-3 py-2 rounded-xl transition flex items-center gap-1.5 ${
+          className={`px-2.5 py-1.5 rounded-xl transition flex items-center gap-1.5 whitespace-nowrap ${
             activeTab === 'certificates' ? 'bg-sky-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
           }`}
         >
-          <FileText className="w-4 h-4" />
+          <FileText className="w-3.5 h-3.5" />
           <span>Atestados ({certificates.length})</span>
         </button>
 
         <button
           onClick={() => setActiveTab('exams')}
-          className={`px-3 py-2 rounded-xl transition flex items-center gap-1.5 ${
+          className={`px-2.5 py-1.5 rounded-xl transition flex items-center gap-1.5 whitespace-nowrap ${
             activeTab === 'exams' ? 'bg-sky-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
           }`}
         >
-          <ClipboardList className="w-4 h-4" />
+          <ClipboardList className="w-3.5 h-3.5" />
           <span>Exames & Documentos ({labOrders.length + examResults.length + medicalDocuments.length})</span>
         </button>
 
         <button
           onClick={() => setActiveTab('timeline')}
-          className={`px-3 py-2 rounded-xl transition flex items-center gap-1.5 ${
+          className={`px-2.5 py-1.5 rounded-xl transition flex items-center gap-1.5 whitespace-nowrap ${
             activeTab === 'timeline' ? 'bg-sky-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
           }`}
         >
-          <Clock className="w-4 h-4" />
-          <span>Linha do Tempo Clínica</span>
+          <Clock className="w-3.5 h-3.5" />
+          <span>Linha do Tempo</span>
         </button>
       </div>
 
@@ -1075,6 +1222,58 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
           </div>
 
         </div>
+      )}
+
+      {/* =========================================================================
+          TAB ANAMNESE ESTRUTURADA (PÁGINAS 1 & 2)
+          ========================================================================= */}
+      {activeTab === 'anamnesis' && selectedPatient && (
+        <StructuredAnamnesisTab
+          patient={selectedPatient}
+          organizationId={resolvedOrgIdForPatient}
+          branchId={resolvedBranchIdForPatient}
+          professionalId={activeProf?.id || currentUser.id}
+          professionalName={currentUser.fullName}
+          professionalCouncil={councilNumber}
+          anamnesisRecords={anamnesisRecords}
+          canCreate={canCreateClinicalDoc && canEditMedicalRecords}
+          canEdit={canEditClinicalDoc && canEditMedicalRecords}
+          onRefreshBundle={() => loadPatientBundle(selectedPatient)}
+          onPrintAnamnesis={(entry) =>
+            setPrintableDoc({
+              type: 'anamnesis',
+              data: entry,
+              patient: selectedPatient,
+            })
+          }
+        />
+      )}
+
+      {/* =========================================================================
+          TAB ANTROPOMETRIA E BIOIMPEDÂNCIA (PÁGINAS 3 & 9)
+          ========================================================================= */}
+      {activeTab === 'anthropometry' && selectedPatient && (
+        <AnthropometryBioimpedanceTab
+          patient={selectedPatient}
+          organizationId={resolvedOrgIdForPatient}
+          branchId={resolvedBranchIdForPatient}
+          professionalId={activeProf?.id || currentUser.id}
+          professionalName={currentUser.fullName}
+          measurements={anthropometryMeasurements}
+          canCreate={canCreateClinicalDoc && canEditMedicalRecords}
+          canEdit={canEditClinicalDoc && canEditMedicalRecords}
+          onRefreshBundle={() => loadPatientBundle(selectedPatient)}
+          onPrintHistory={(orderedMeasurements) =>
+            setPrintableDoc({
+              type: 'anthropometry_history',
+              data: {
+                branchId: resolvedBranchIdForPatient,
+                patient: selectedPatient,
+                measurements: orderedMeasurements,
+              },
+            })
+          }
+        />
       )}
 
       {/* =========================================================================
@@ -1803,7 +2002,7 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
       )}
 
       {/* =========================================================================
-          TAB 5: LINHA DO TEMPO CLÍNICA COMPLETA (TIMELINE UNIFICADA)
+          TAB 5: LINHA DO TEMPO CLÍNICA COMPLETA (TIMELINE CRONOLÓGICA UNIFICADA)
           ========================================================================= */}
       {activeTab === 'timeline' && (
         <div className="space-y-4">
@@ -1811,67 +2010,132 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
             Linha do Tempo Cronológica Unificada de Saúde
           </h3>
 
-          <div className="relative pl-6 border-l-2 border-slate-200 space-y-6">
-            
-            {/* Combine all records, prescriptions, certificates, lab orders sorted by date */}
-            {records.map(rec => (
-              <div key={rec.id} className="relative">
-                <div className="absolute -left-[31px] top-1 w-4 h-4 rounded-full bg-sky-600 border-2 border-white ring-2 ring-sky-200" />
-                <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-1 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-slate-900 text-sm">Evolução Clínica &bull; {rec.professionalName}</span>
-                    <span className="text-[11px] text-slate-400">{new Date(rec.recordDate).toLocaleDateString('pt-BR')}</span>
-                  </div>
-                  <p className="text-slate-600">{rec.chiefComplaint}</p>
-                  {rec.diagnosticHypothesis && (
-                    <span className="inline-block mt-1 font-semibold text-sky-800 bg-sky-50 px-2 py-0.5 rounded text-[11px]">
-                      Hipótese: {rec.diagnosticHypothesis}
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))}
+          {(() => {
+            type TimelineItem = {
+              id: string;
+              timestamp: number;
+              dateLabel: string;
+              dotClass: string;
+              title: string;
+              body: string;
+              badge?: string;
+            };
 
-            {prescriptions.map(rx => (
-              <div key={rx.id} className="relative">
-                <div className="absolute -left-[31px] top-1 w-4 h-4 rounded-full bg-indigo-600 border-2 border-white ring-2 ring-indigo-200" />
-                <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-1 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-indigo-950 text-sm">Prescrição Médica ({rx.items.length} itens)</span>
-                    <span className="text-[11px] text-slate-400">{new Date(rx.prescriptionDate + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
-                  </div>
-                  <p className="text-slate-600">{rx.items.map(it => it.medicineName).join(', ')}</p>
-                </div>
-              </div>
-            ))}
+            const items: TimelineItem[] = [
+              ...anamnesisRecords.map((anam) => ({
+                id: `anam-${anam.id}`,
+                timestamp: new Date(anam.evaluationDate).getTime() || 0,
+                dateLabel: new Date(anam.evaluationDate).toLocaleDateString('pt-BR'),
+                dotClass: 'bg-teal-600 ring-teal-200',
+                title: `Anamnese Estruturada • ${anam.professionalName}`,
+                body:
+                  anam.structuredData?.objetivoConsulta ||
+                  anam.structuredData?.historiaPatologicaPregressa ||
+                  anam.structuredData?.outrosAntecedentes ||
+                  'Avaliação clínica estruturada registrada no PEP.',
+                badge: anam.status === 'signed' ? 'Assinada' : 'Rascunho',
+              })),
+              ...anthropometryMeasurements.map((m) => {
+                const metricsSummary = [
+                  m.weightKg !== null && m.weightKg !== undefined
+                    ? `Peso: ${formatMetricDisplay(m.weightKg, 1, 'kg')}`
+                    : null,
+                  m.abdominalCircumferenceCm !== null && m.abdominalCircumferenceCm !== undefined
+                    ? `Abd: ${formatMetricDisplay(m.abdominalCircumferenceCm, 1, 'cm')}`
+                    : null,
+                  m.hipCircumferenceCm !== null && m.hipCircumferenceCm !== undefined
+                    ? `Quadril: ${formatMetricDisplay(m.hipCircumferenceCm, 1, 'cm')}`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ');
+                return {
+                  id: `anth-${m.id}`,
+                  timestamp: new Date(m.measuredAt).getTime() || 0,
+                  dateLabel: new Date(m.measuredAt).toLocaleString('pt-BR', {
+                    dateStyle: 'short',
+                    timeStyle: 'short',
+                  }),
+                  dotClass: 'bg-cyan-600 ring-cyan-200',
+                  title: `Antropometria (${
+                    m.sourceType === 'soap_evolution'
+                      ? 'Evolução SOAP'
+                      : m.sourceType === 'bioimpedance'
+                        ? 'Bioimpedância'
+                        : 'Manual'
+                  }) • ${m.professionalName || 'Equipe Clínica'}`,
+                  body: metricsSummary || 'Medidas corporais registradas.',
+                };
+              }),
+              ...records.map((rec) => ({
+                id: `rec-${rec.id}`,
+                timestamp: new Date(rec.recordDate).getTime() || 0,
+                dateLabel: new Date(rec.recordDate).toLocaleDateString('pt-BR'),
+                dotClass: 'bg-sky-600 ring-sky-200',
+                title: `Evolução Clínica • ${rec.professionalName}`,
+                body: rec.chiefComplaint,
+                badge: rec.diagnosticHypothesis ? `Hipótese: ${rec.diagnosticHypothesis}` : undefined,
+              })),
+              ...prescriptions.map((rx) => ({
+                id: `rx-${rx.id}`,
+                timestamp: new Date(`${rx.prescriptionDate}T00:00:00`).getTime() || 0,
+                dateLabel: new Date(`${rx.prescriptionDate}T00:00:00`).toLocaleDateString('pt-BR'),
+                dotClass: 'bg-indigo-600 ring-indigo-200',
+                title: `Prescrição Médica (${rx.items.length} itens)`,
+                body: rx.items.map((it) => it.medicineName).join(', '),
+              })),
+              ...certificates.map((cert) => ({
+                id: `cert-${cert.id}`,
+                timestamp: new Date(`${cert.issueDate}T00:00:00`).getTime() || 0,
+                dateLabel: new Date(`${cert.issueDate}T00:00:00`).toLocaleDateString('pt-BR'),
+                dotClass: 'bg-emerald-600 ring-emerald-200',
+                title: `Atestado Médico (${cert.type})`,
+                body: cert.daysOff
+                  ? `Afastamento concedido de ${cert.daysOff} dias.`
+                  : 'Declaração de comparecimento / aptidão.',
+              })),
+              ...labOrders.map((order) => ({
+                id: `lab-${order.id}`,
+                timestamp: new Date(`${order.orderDate}T00:00:00`).getTime() || 0,
+                dateLabel: new Date(`${order.orderDate}T00:00:00`).toLocaleDateString('pt-BR'),
+                dotClass: 'bg-amber-600 ring-amber-200',
+                title: `Solicitação de Exames (${order.items.length})`,
+                body: `Indicação: ${order.clinicalIndication}`,
+              })),
+            ].sort((a, b) => b.timestamp - a.timestamp);
 
-            {certificates.map(cert => (
-              <div key={cert.id} className="relative">
-                <div className="absolute -left-[31px] top-1 w-4 h-4 rounded-full bg-emerald-600 border-2 border-white ring-2 ring-emerald-200" />
-                <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-1 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-emerald-950 text-sm">Atestado Médico ({cert.type})</span>
-                    <span className="text-[11px] text-slate-400">{new Date(cert.issueDate + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
-                  </div>
-                  {cert.daysOff && <p className="text-slate-600">Afastamento concedido de {cert.daysOff} dias.</p>}
+            if (items.length === 0) {
+              return (
+                <div className="p-8 text-center bg-white rounded-2xl border border-slate-200 text-xs text-slate-400">
+                  Nenhum evento clínico registrado para este paciente até o momento.
                 </div>
-              </div>
-            ))}
+              );
+            }
 
-            {labOrders.map(order => (
-              <div key={order.id} className="relative">
-                <div className="absolute -left-[31px] top-1 w-4 h-4 rounded-full bg-amber-600 border-2 border-white ring-2 ring-amber-200" />
-                <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-1 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-amber-950 text-sm">Solicitação de Exames ({order.items.length})</span>
-                    <span className="text-[11px] text-slate-400">{new Date(order.orderDate + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
+            return (
+              <div className="relative pl-6 border-l-2 border-slate-200 space-y-4">
+                {items.map((item) => (
+                  <div key={item.id} className="relative">
+                    <div
+                      className={`absolute -left-[31px] top-1 w-4 h-4 rounded-full border-2 border-white ring-2 ${item.dotClass}`}
+                    />
+                    <div className="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-1 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-slate-900 text-sm">{item.title}</span>
+                        <span className="text-[11px] text-slate-400 shrink-0">{item.dateLabel}</span>
+                      </div>
+                      <p className="text-slate-600">{item.body}</p>
+                      {item.badge && (
+                        <span className="inline-block mt-1 font-semibold text-sky-800 bg-sky-50 px-2 py-0.5 rounded text-[11px]">
+                          {item.badge}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <p className="text-slate-600">Indicação: {order.clinicalIndication}</p>
-                </div>
+                ))}
               </div>
-            ))}
-
-          </div>
+            );
+          })()}
         </div>
       )}
 
@@ -1987,6 +2251,28 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
           </div>
         </div>
       )}
+
+      {/* Patient Inline Edit Modal (reuses source-of-truth Patient record) */}
+      <PatientFormModal
+        isOpen={isPatientEditModalOpen}
+        onClose={() => setIsPatientEditModalOpen(false)}
+        existingPatient={selectedPatient}
+        onSaveSuccess={(savedPatient) => {
+          if (savedPatient) {
+            setPatients((prev) =>
+              prev.map((p) => (p.id === savedPatient.id ? savedPatient : p))
+            );
+            setSelectedPatientId(savedPatient.id);
+            if (savedPatient.weightKg !== undefined) {
+              setVitalWeightKg(savedPatient.weightKg.toString());
+            }
+            if (savedPatient.heightCm !== undefined) {
+              setVitalHeightCm(savedPatient.heightCm.toString());
+            }
+          }
+          void loadPatientsList();
+        }}
+      />
 
       {/* Document Print Modal */}
       <DocumentPrintModal

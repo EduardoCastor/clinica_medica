@@ -1,5 +1,7 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import {
+  AnthropometricMeasurement,
+  AnthropometrySourceType,
   ExamResult,
   LabExamCatalogItem,
   LabOrder,
@@ -10,12 +12,19 @@ import {
   MedicalRecordAddendum,
   MedicalRecordEntry,
   Patient,
+  PatientAnamnesisEntry,
   PatientSharingMode,
   Prescription,
   PrescriptionItem,
+  StructuredAnamnesis,
 } from '../types';
 import { getSupabase } from './supabaseClient';
 import { StorageService } from './storage';
+import {
+  buildSoapWeightMeasurementPayload,
+  hasAnyAnthropometricMetric,
+  normalizeStructuredAnamnesis,
+} from './pepClinicalUtils';
 
 export const MEDICAL_DOCUMENTS_BUCKET = 'medical-documents';
 const MAX_CLINICAL_FILE_BYTES = 15 * 1024 * 1024; // 15 MB
@@ -426,6 +435,10 @@ function mapMedicalRecordRow(
     consultationType: row.consultation_type === 'free_text' ? 'free_text' : 'soap',
     chiefComplaint: String(row.chief_complaint || ''),
     clinicalHistory: String(row.clinical_history || ''),
+    structuredAnamnesis:
+      row.structured_anamnesis && typeof row.structured_anamnesis === 'object'
+        ? normalizeStructuredAnamnesis(row.structured_anamnesis as Partial<StructuredAnamnesis>)
+        : undefined,
     vitalSigns: (row.vital_signs as MedicalRecordEntry['vitalSigns']) || undefined,
     physicalExam: row.physical_exam ? String(row.physical_exam) : undefined,
     diagnosticHypothesis: row.diagnostic_hypothesis ? String(row.diagnostic_hypothesis) : undefined,
@@ -445,6 +458,78 @@ function mapMedicalRecordRow(
   };
 }
 
+function mapAnamnesisRecordRow(
+  row: Record<string, unknown>,
+  profMap: Map<string, { fullName: string; councilNumber: string }>
+): PatientAnamnesisEntry {
+  const profId = String(row.professional_id || '');
+  const profInfo = profMap.get(profId);
+  return {
+    id: String(row.id),
+    organizationId: String(row.organization_id),
+    branchId: String(row.branch_id),
+    patientId: String(row.patient_id),
+    medicalRecordId: row.medical_record_id ? String(row.medical_record_id) : undefined,
+    professionalId: profId,
+    professionalName: String(row.professional_name || profInfo?.fullName || 'Dr. Newton Mureb'),
+    professionalCouncil: String(
+      row.professional_council || profInfo?.councilNumber || 'CRM/RJ 52-444985'
+    ),
+    evaluationDate: String(row.evaluation_date || row.created_at || new Date().toISOString()),
+    status: row.status === 'signed' ? 'signed' : 'draft',
+    structuredData: normalizeStructuredAnamnesis(
+      (row.structured_data as Partial<StructuredAnamnesis>) || {}
+    ),
+    isSigned: Boolean(row.is_signed),
+    signedAt: row.signed_at ? String(row.signed_at) : undefined,
+    signatureHash: row.signature_hash ? String(row.signature_hash) : undefined,
+    createdAt: String(row.created_at || new Date().toISOString()),
+    updatedAt: row.updated_at ? String(row.updated_at) : undefined,
+  };
+}
+
+const mapPositiveDecimalOrNull = (val: unknown): number | null => {
+  if (val === null || val === undefined || val === '') return null;
+  const n = Number(val);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+function mapAnthropometricMeasurementRow(
+  row: Record<string, unknown>,
+  profMap: Map<string, { fullName: string; councilNumber: string }>
+): AnthropometricMeasurement {
+  const profId = row.professional_id ? String(row.professional_id) : undefined;
+  const profInfo = profId ? profMap.get(profId) : undefined;
+  const rawSource = String(row.source_type || 'manual');
+  const sourceType: AnthropometrySourceType =
+    rawSource === 'soap_evolution' || rawSource === 'bioimpedance' ? rawSource : 'manual';
+
+  return {
+    id: String(row.id),
+    organizationId: String(row.organization_id),
+    branchId: String(row.branch_id),
+    patientId: String(row.patient_id),
+    medicalRecordId: row.medical_record_id ? String(row.medical_record_id) : undefined,
+    professionalId: profId,
+    professionalName: row.professional_name
+      ? String(row.professional_name)
+      : profInfo?.fullName || undefined,
+    measuredAt: String(row.measured_at || row.created_at || new Date().toISOString()),
+    weightKg: mapPositiveDecimalOrNull(row.weight_kg),
+    abdominalCircumferenceCm: mapPositiveDecimalOrNull(row.abdominal_circumference_cm),
+    rightArmCircumferenceCm: mapPositiveDecimalOrNull(row.right_arm_circumference_cm),
+    leftArmCircumferenceCm: mapPositiveDecimalOrNull(row.left_arm_circumference_cm),
+    rightLegCircumferenceCm: mapPositiveDecimalOrNull(row.right_leg_circumference_cm),
+    leftLegCircumferenceCm: mapPositiveDecimalOrNull(row.left_leg_circumference_cm),
+    thoracicCircumferenceCm: mapPositiveDecimalOrNull(row.thoracic_circumference_cm),
+    hipCircumferenceCm: mapPositiveDecimalOrNull(row.hip_circumference_cm),
+    sourceType,
+    notes: row.notes ? String(row.notes) : undefined,
+    createdAt: String(row.created_at || new Date().toISOString()),
+    updatedAt: row.updated_at ? String(row.updated_at) : undefined,
+  };
+}
+
 export interface ClinicalPatientBundle {
   source: 'supabase' | 'local';
   resolvedPatientId: string;
@@ -454,6 +539,8 @@ export interface ClinicalPatientBundle {
   labOrders: LabOrder[];
   examResults: ExamResult[];
   documents: MedicalDocument[];
+  anamnesisRecords: PatientAnamnesisEntry[];
+  anthropometryMeasurements: AnthropometricMeasurement[];
   error?: string;
 }
 
@@ -790,6 +877,8 @@ export const ClinicalCloudService = {
       labOrders: [],
       examResults: [],
       documents: [],
+      anamnesisRecords: [],
+      anthropometryMeasurements: [],
       error: errorMsg,
     });
 
@@ -820,6 +909,8 @@ export const ClinicalCloudService = {
         orderRes,
         examRes,
         docRes,
+        anamnesisRes,
+        anthropometryRes,
       ] = await Promise.all([
         supabase
           .from('professionals')
@@ -861,6 +952,18 @@ export const ClinicalCloudService = {
           .eq('organization_id', organizationId)
           .eq('patient_id', patientUuid)
           .order('document_date', { ascending: false }),
+        supabase
+          .from('patient_anamnesis_records')
+          .select('*')
+          .eq('organization_id', organizationId)
+          .eq('patient_id', patientUuid)
+          .order('evaluation_date', { ascending: false }),
+        supabase
+          .from('patient_anthropometric_measurements')
+          .select('*')
+          .eq('organization_id', organizationId)
+          .eq('patient_id', patientUuid)
+          .order('measured_at', { ascending: false }),
       ]);
 
       const firstError =
@@ -1112,6 +1215,18 @@ export const ClinicalCloudService = {
         })
       );
 
+      const anamnesisRecords: PatientAnamnesisEntry[] = anamnesisRes.error
+        ? []
+        : ((anamnesisRes.data || []) as Array<Record<string, unknown>>).map((row) =>
+            mapAnamnesisRecordRow(row, profMap)
+          );
+
+      const anthropometryMeasurements: AnthropometricMeasurement[] = anthropometryRes.error
+        ? []
+        : ((anthropometryRes.data || []) as Array<Record<string, unknown>>).map((row) =>
+            mapAnthropometricMeasurementRow(row, profMap)
+          );
+
       // Update local caches per patient cleanly
       StorageService.replacePatientClinicalCache(patientUuid, {
         records,
@@ -1120,6 +1235,8 @@ export const ClinicalCloudService = {
         labOrders,
         examResults,
         documents,
+        anamnesisRecords,
+        anthropometryMeasurements,
       });
 
       return {
@@ -1131,6 +1248,8 @@ export const ClinicalCloudService = {
         labOrders,
         examResults,
         documents,
+        anamnesisRecords,
+        anthropometryMeasurements,
       };
     } catch (err) {
       return {
@@ -1142,6 +1261,8 @@ export const ClinicalCloudService = {
         labOrders: [],
         examResults: [],
         documents: [],
+        anamnesisRecords: [],
+        anthropometryMeasurements: [],
         error: err instanceof Error ? err.message : String(err),
       };
     }
@@ -1192,6 +1313,9 @@ export const ClinicalCloudService = {
         consultation_type: record.consultationType || 'soap',
         chief_complaint: record.chiefComplaint.trim(),
         clinical_history: nullableText(record.clinicalHistory),
+        structured_anamnesis: record.structuredAnamnesis
+          ? normalizeStructuredAnamnesis(record.structuredAnamnesis)
+          : null,
         vital_signs: record.vitalSigns || null,
         physical_exam: nullableText(record.physicalExam),
         diagnostic_hypothesis: nullableText(record.diagnosticHypothesis),
@@ -1281,12 +1405,334 @@ export const ClinicalCloudService = {
       const mapped = mapMedicalRecordRow(savedRow, record.addendums || [], profMap);
       StorageService.saveMedicalRecord(mapped);
 
+      // Idempotent SOAP Weight -> Anthropometry synchronization ONLY when finalized/signed
+      const soapWeightPayload = buildSoapWeightMeasurementPayload(mapped, {
+        organizationId: ctxRes.context.organizationId,
+        branchId: ctxRes.context.branchId,
+        patientId: patRes.patientUuid,
+        professionalId: ctxRes.context.professionalId,
+        professionalName: mapped.professionalName || ctxRes.context.professionalName,
+      });
+
+      if (soapWeightPayload) {
+        const { data: existingSoapWeight } = await supabase
+          .from('patient_anthropometric_measurements')
+          .select('id')
+          .eq('medical_record_id', mapped.id)
+          .eq('source_type', 'soap_evolution')
+          .maybeSingle();
+
+        if (!existingSoapWeight?.id) {
+          const { data: insertedMeasure, error: measureErr } = await supabase
+            .from('patient_anthropometric_measurements')
+            .insert(soapWeightPayload)
+            .select('*')
+            .maybeSingle();
+
+          // Ignore 23505 (partial unique index guarantees idempotency across concurrent calls)
+          if (measureErr && (measureErr as { code?: string }).code !== '23505') {
+            console.warn('Aviso ao sincronizar peso do SOAP para Antropometria:', measureErr.message);
+          } else if (insertedMeasure) {
+            StorageService.saveAnthropometryMeasurement(
+              mapAnthropometricMeasurementRow(insertedMeasure as Record<string, unknown>, profMap)
+            );
+          }
+        }
+      }
+
       return { success: true, record: mapped, source: 'supabase' };
     } catch (err) {
       return {
         success: false,
         source: 'supabase',
         message: err instanceof Error ? err.message : 'Erro ao persistir evolução clínica.',
+      };
+    }
+  },
+
+  saveAnamnesisRecordToCloud: async (
+    entry: PatientAnamnesisEntry,
+    patient: Patient
+  ): Promise<{
+    success: boolean;
+    record?: PatientAnamnesisEntry;
+    source: 'supabase' | 'local';
+    message?: string;
+  }> => {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return {
+        success: false,
+        source: 'local',
+        message: 'Conexão com o Supabase não configurada. Não é possível gravar anamnese fora do banco.',
+      };
+    }
+
+    try {
+      const ctxRes = await resolveCloudContext(supabase, {
+        organizationId: entry.organizationId,
+        branchId: entry.branchId,
+        professionalId: entry.professionalId,
+        professionalName: entry.professionalName,
+        professionalCouncil: entry.professionalCouncil,
+      });
+      if (!ctxRes.context) {
+        return { success: false, source: 'supabase', message: ctxRes.error };
+      }
+
+      const patRes = await resolveCloudPatientUuid(supabase, ctxRes.context.organizationId, patient);
+      if (!patRes.patientUuid) {
+        return { success: false, source: 'supabase', message: patRes.error };
+      }
+
+      const normalizedData = normalizeStructuredAnamnesis(entry.structuredData);
+      const isSigned = entry.status === 'signed';
+
+      const payload: Record<string, unknown> = {
+        organization_id: ctxRes.context.organizationId,
+        branch_id: ctxRes.context.branchId,
+        patient_id: patRes.patientUuid,
+        medical_record_id: isUuid(entry.medicalRecordId) ? entry.medicalRecordId : null,
+        professional_id: ctxRes.context.professionalId,
+        professional_name: entry.professionalName || ctxRes.context.professionalName,
+        professional_council: entry.professionalCouncil || ctxRes.context.professionalCouncil,
+        evaluation_date: entry.evaluationDate || new Date().toISOString(),
+        status: isSigned ? 'signed' : 'draft',
+        structured_data: normalizedData,
+        is_signed: isSigned,
+        signed_at: isSigned ? entry.signedAt || new Date().toISOString() : null,
+        signature_hash: isSigned ? entry.signatureHash || null : null,
+      };
+
+      const isUpdate = isUuid(entry.id);
+      let savedRow: Record<string, unknown> | null = null;
+
+      if (isUpdate) {
+        const { data: existing, error: fetchErr } = await supabase
+          .from('patient_anamnesis_records')
+          .select('id, is_signed, status')
+          .eq('id', entry.id)
+          .single();
+
+        if (fetchErr || !existing) {
+          return {
+            success: false,
+            source: 'supabase',
+            message: formatPgError(fetchErr, 'Avaliação de anamnese não encontrada para atualização.'),
+          };
+        }
+
+        if (existing.is_signed || existing.status === 'signed') {
+          return {
+            success: false,
+            source: 'supabase',
+            message:
+              'Anamnese finalizada e assinada é imutável. Inicie uma "Nova Avaliação" para registrar atualizações.',
+          };
+        }
+
+        const { data, error } = await supabase
+          .from('patient_anamnesis_records')
+          .update(payload)
+          .eq('id', entry.id)
+          .select('*')
+          .single();
+
+        if (error || !data) {
+          return {
+            success: false,
+            source: 'supabase',
+            message: formatPgError(error, 'Erro ao atualizar rascunho de anamnese no Supabase.'),
+          };
+        }
+        savedRow = data as Record<string, unknown>;
+      } else {
+        const { data, error } = await supabase
+          .from('patient_anamnesis_records')
+          .insert(payload)
+          .select('*')
+          .single();
+
+        if (error || !data) {
+          return {
+            success: false,
+            source: 'supabase',
+            message: formatPgError(error, 'Erro ao gravar anamnese estruturada no Supabase.'),
+          };
+        }
+        savedRow = data as Record<string, unknown>;
+      }
+
+      const profMap = new Map([
+        [
+          ctxRes.context.professionalId,
+          {
+            fullName: entry.professionalName || ctxRes.context.professionalName,
+            councilNumber: entry.professionalCouncil || ctxRes.context.professionalCouncil,
+          },
+        ],
+      ]);
+
+      const mapped = mapAnamnesisRecordRow(savedRow, profMap);
+      StorageService.saveAnamnesisRecord(mapped);
+      void StorageService.addAuditLogToCloud({
+        organizationId: ctxRes.context.organizationId,
+        action: isSigned ? 'Assinou Anamnese Estruturada' : 'Salvou Rascunho Anamnese',
+        entity: 'Anamnese',
+        entityId: mapped.id,
+        details: `Paciente ${patient.fullName} · Avaliação ${mapped.evaluationDate.substring(0, 10)}`,
+      });
+
+      return { success: true, record: mapped, source: 'supabase' };
+    } catch (err) {
+      return {
+        success: false,
+        source: 'supabase',
+        message: err instanceof Error ? err.message : 'Erro ao persistir anamnese estruturada.',
+      };
+    }
+  },
+
+  saveAnthropometricMeasurementToCloud: async (
+    measurement: AnthropometricMeasurement,
+    patient: Patient
+  ): Promise<{
+    success: boolean;
+    measurement?: AnthropometricMeasurement;
+    source: 'supabase' | 'local';
+    message?: string;
+  }> => {
+    if (!hasAnyAnthropometricMetric(measurement)) {
+      return {
+        success: false,
+        source: 'supabase',
+        message: 'Informe ao menos o Peso (kg) ou uma das circunferências corporais (cm).',
+      };
+    }
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      return {
+        success: false,
+        source: 'local',
+        message:
+          'Conexão com o Supabase não configurada. Não é possível gravar antropometria fora do banco.',
+      };
+    }
+
+    try {
+      const ctxRes = await resolveCloudContext(supabase, {
+        organizationId: measurement.organizationId,
+        branchId: measurement.branchId,
+        professionalId: measurement.professionalId,
+        professionalName: measurement.professionalName,
+      });
+      if (!ctxRes.context) {
+        return { success: false, source: 'supabase', message: ctxRes.error };
+      }
+
+      const patRes = await resolveCloudPatientUuid(supabase, ctxRes.context.organizationId, patient);
+      if (!patRes.patientUuid) {
+        return { success: false, source: 'supabase', message: patRes.error };
+      }
+
+      if (measurement.sourceType === 'soap_evolution') {
+        return {
+          success: false,
+          source: 'supabase',
+          message:
+            'Aferições geradas automaticamente por evolução SOAP assinada são imutáveis. Crie uma nova aferição se necessário.',
+        };
+      }
+
+      const positiveOrNull = (v?: number | null): number | null => {
+        if (v === null || v === undefined) return null;
+        const n = Number(v);
+        return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null;
+      };
+
+      const payload: Record<string, unknown> = {
+        organization_id: ctxRes.context.organizationId,
+        branch_id: ctxRes.context.branchId,
+        patient_id: patRes.patientUuid,
+        medical_record_id: isUuid(measurement.medicalRecordId) ? measurement.medicalRecordId : null,
+        professional_id: ctxRes.context.professionalId,
+        professional_name: measurement.professionalName || ctxRes.context.professionalName,
+        measured_at: measurement.measuredAt || new Date().toISOString(),
+        weight_kg: positiveOrNull(measurement.weightKg),
+        abdominal_circumference_cm: positiveOrNull(measurement.abdominalCircumferenceCm),
+        right_arm_circumference_cm: positiveOrNull(measurement.rightArmCircumferenceCm),
+        left_arm_circumference_cm: positiveOrNull(measurement.leftArmCircumferenceCm),
+        right_leg_circumference_cm: positiveOrNull(measurement.rightLegCircumferenceCm),
+        left_leg_circumference_cm: positiveOrNull(measurement.leftLegCircumferenceCm),
+        thoracic_circumference_cm: positiveOrNull(measurement.thoracicCircumferenceCm),
+        hip_circumference_cm: positiveOrNull(measurement.hipCircumferenceCm),
+        source_type: measurement.sourceType === 'bioimpedance' ? 'bioimpedance' : 'manual',
+        notes: nullableText(measurement.notes),
+      };
+
+      const isUpdate = isUuid(measurement.id);
+      let savedRow: Record<string, unknown> | null = null;
+
+      if (isUpdate) {
+        const { data, error } = await supabase
+          .from('patient_anthropometric_measurements')
+          .update(payload)
+          .eq('id', measurement.id)
+          .select('*')
+          .single();
+
+        if (error || !data) {
+          return {
+            success: false,
+            source: 'supabase',
+            message: formatPgError(error, 'Erro ao atualizar avaliação antropométrica no Supabase.'),
+          };
+        }
+        savedRow = data as Record<string, unknown>;
+      } else {
+        const { data, error } = await supabase
+          .from('patient_anthropometric_measurements')
+          .insert(payload)
+          .select('*')
+          .single();
+
+        if (error || !data) {
+          return {
+            success: false,
+            source: 'supabase',
+            message: formatPgError(error, 'Erro ao registrar avaliação antropométrica no Supabase.'),
+          };
+        }
+        savedRow = data as Record<string, unknown>;
+      }
+
+      const profMap = new Map([
+        [
+          ctxRes.context.professionalId,
+          {
+            fullName: measurement.professionalName || ctxRes.context.professionalName,
+            councilNumber: ctxRes.context.professionalCouncil,
+          },
+        ],
+      ]);
+
+      const mapped = mapAnthropometricMeasurementRow(savedRow, profMap);
+      StorageService.saveAnthropometryMeasurement(mapped);
+      void StorageService.addAuditLogToCloud({
+        organizationId: ctxRes.context.organizationId,
+        action: isUpdate ? 'Atualizou Antropometria' : 'Registrou Antropometria',
+        entity: 'Antropometria',
+        entityId: mapped.id,
+        details: `Paciente ${patient.fullName} · Data ${mapped.measuredAt.substring(0, 10)}`,
+      });
+
+      return { success: true, measurement: mapped, source: 'supabase' };
+    } catch (err) {
+      return {
+        success: false,
+        source: 'supabase',
+        message: err instanceof Error ? err.message : 'Erro ao salvar aferição antropométrica.',
       };
     }
   },

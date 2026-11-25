@@ -26,6 +26,8 @@ import {
   ExamResult,
   MedicalRecordAddendum,
   MedicalDocument,
+  PatientAnamnesisEntry,
+  AnthropometricMeasurement,
   SaasPlan,
   WhatsAppAutomationTrigger,
   AutomationExecutionRecord,
@@ -85,6 +87,8 @@ const STORAGE_KEYS = {
   LAB_ORDERS: 'medsync_lab_orders',
   EXAM_RESULTS: 'medsync_exam_results',
   MEDICAL_DOCUMENTS: 'medsync_medical_documents',
+  ANAMNESIS_RECORDS: 'medsync_anamnesis_records',
+  ANTHROPOMETRY_MEASUREMENTS: 'medsync_anthropometry_measurements',
   TEMPLATES: 'medsync_templates',
   MESSAGES: 'medsync_messages',
   AUTOMATION_TRIGGERS: 'medsync_whatsapp_triggers',
@@ -111,6 +115,8 @@ const OPERATIONAL_STORAGE_KEYS = new Set<string>([
   STORAGE_KEYS.LAB_ORDERS,
   STORAGE_KEYS.EXAM_RESULTS,
   STORAGE_KEYS.MEDICAL_DOCUMENTS,
+  STORAGE_KEYS.ANAMNESIS_RECORDS,
+  STORAGE_KEYS.ANTHROPOMETRY_MEASUREMENTS,
   STORAGE_KEYS.FINANCIAL,
   STORAGE_KEYS.AUDIT_LOGS,
   STORAGE_KEYS.MESSAGES,
@@ -598,6 +604,8 @@ export const StorageService = {
     setStored(STORAGE_KEYS.LAB_ORDERS, []);
     setStored(STORAGE_KEYS.EXAM_RESULTS, []);
     setStored(STORAGE_KEYS.MEDICAL_DOCUMENTS, []);
+    setStored(STORAGE_KEYS.ANAMNESIS_RECORDS, []);
+    setStored(STORAGE_KEYS.ANTHROPOMETRY_MEASUREMENTS, []);
     setStored(STORAGE_KEYS.TEMPLATES, INITIAL_TEMPLATES);
     setStored(STORAGE_KEYS.MESSAGES, []);
     setStored(STORAGE_KEYS.AUTOMATION_EXECUTIONS, []);
@@ -1629,6 +1637,37 @@ export const StorageService = {
     filtered.unshift(patient);
     setStored(STORAGE_KEYS.PATIENTS, filtered);
   },
+  getAnamnesisRecords: (patientId?: string): PatientAnamnesisEntry[] => {
+    const list = getStored<PatientAnamnesisEntry[]>(STORAGE_KEYS.ANAMNESIS_RECORDS, []);
+    if (!patientId) return list;
+    return list.filter((r) => r.patientId === patientId);
+  },
+  saveAnamnesisRecord: (entry: PatientAnamnesisEntry): void => {
+    const list = getStored<PatientAnamnesisEntry[]>(STORAGE_KEYS.ANAMNESIS_RECORDS, []);
+    const index = list.findIndex((r) => r.id === entry.id);
+    if (index >= 0) {
+      list[index] = entry;
+    } else {
+      list.unshift(entry);
+    }
+    setStored(STORAGE_KEYS.ANAMNESIS_RECORDS, list);
+  },
+  getAnthropometryMeasurements: (patientId?: string): AnthropometricMeasurement[] => {
+    const list = getStored<AnthropometricMeasurement[]>(STORAGE_KEYS.ANTHROPOMETRY_MEASUREMENTS, []);
+    if (!patientId) return list;
+    return list.filter((m) => m.patientId === patientId);
+  },
+  saveAnthropometryMeasurement: (measurement: AnthropometricMeasurement): void => {
+    const list = getStored<AnthropometricMeasurement[]>(STORAGE_KEYS.ANTHROPOMETRY_MEASUREMENTS, []);
+    const index = list.findIndex((m) => m.id === measurement.id);
+    if (index >= 0) {
+      list[index] = measurement;
+    } else {
+      list.unshift(measurement);
+    }
+    setStored(STORAGE_KEYS.ANTHROPOMETRY_MEASUREMENTS, list);
+  },
+
   replacePatientClinicalCache: (
     patientId: string,
     bundle: {
@@ -1638,6 +1677,8 @@ export const StorageService = {
       labOrders: LabOrder[];
       examResults: ExamResult[];
       documents: MedicalDocument[];
+      anamnesisRecords?: PatientAnamnesisEntry[];
+      anthropometryMeasurements?: AnthropometricMeasurement[];
     }
   ): void => {
     const mergeForPatient = <T extends { patientId: string }>(key: string, incoming: T[]) => {
@@ -1651,6 +1692,12 @@ export const StorageService = {
     mergeForPatient(STORAGE_KEYS.LAB_ORDERS, bundle.labOrders);
     mergeForPatient(STORAGE_KEYS.EXAM_RESULTS, bundle.examResults);
     mergeForPatient(STORAGE_KEYS.MEDICAL_DOCUMENTS, bundle.documents);
+    if (bundle.anamnesisRecords) {
+      mergeForPatient(STORAGE_KEYS.ANAMNESIS_RECORDS, bundle.anamnesisRecords);
+    }
+    if (bundle.anthropometryMeasurements) {
+      mergeForPatient(STORAGE_KEYS.ANTHROPOMETRY_MEASUREMENTS, bundle.anthropometryMeasurements);
+    }
   },
 
   // Message Templates & Logs

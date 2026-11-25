@@ -10,6 +10,9 @@ import {
   FinancialTransaction,
   Branch,
   Clinic,
+  Patient,
+  PatientAnamnesisEntry,
+  AnthropometricMeasurement,
 } from '../../types';
 import { useTenant } from '../../contexts/TenantContext';
 import {
@@ -21,6 +24,8 @@ import {
   PAYMENT_METHOD_LABELS,
   formatDatePtBr,
 } from '../../services/financialDateUtils';
+import { formatMetricDisplay } from '../../services/pepClinicalUtils';
+import { calculateAge } from '../../services/brazilianFormatters';
 
 export type PrintableDocumentType =
   | { type: 'prescription'; data: Prescription }
@@ -28,7 +33,16 @@ export type PrintableDocumentType =
   | { type: 'lab_order'; data: LabOrder }
   | { type: 'medical_record'; data: MedicalRecordEntry; patientName?: string; patientCpf?: string }
   | { type: 'exam_result'; data: ExamResult; patientName?: string; patientCpf?: string }
-  | { type: 'financial_receipt'; data: FinancialTransaction; patientName?: string; patientCpf?: string };
+  | { type: 'financial_receipt'; data: FinancialTransaction; patientName?: string; patientCpf?: string }
+  | { type: 'anamnesis'; data: PatientAnamnesisEntry; patient: Patient }
+  | {
+      type: 'anthropometry_history';
+      data: {
+        branchId: string;
+        patient: Patient;
+        measurements: AnthropometricMeasurement[];
+      };
+    };
 
 interface DocumentPrintModalProps {
   isOpen: boolean;
@@ -130,6 +144,24 @@ export const DocumentPrintModal: React.FC<DocumentPrintModalProps> = ({
           transaction={document.data}
           patientName={document.patientName}
           patientCpf={document.patientCpf}
+          clinic={clinic}
+          branch={resolvedBranch}
+        />
+      )}
+
+      {document.type === 'anamnesis' && (
+        <AnamnesisCanvas
+          entry={document.data}
+          patient={document.patient}
+          clinic={clinic}
+          branch={resolvedBranch}
+        />
+      )}
+
+      {document.type === 'anthropometry_history' && (
+        <AnthropometryHistoryCanvas
+          patient={document.data.patient}
+          measurements={document.data.measurements}
           clinic={clinic}
           branch={resolvedBranch}
         />
@@ -1017,6 +1049,267 @@ const FinancialReceiptCanvas: React.FC<{
         professionalName={displayPhysician}
         cityState={branch ? `${branch.city} - ${branch.state}` : undefined}
         clinicLegalName={displayLegalName}
+      />
+    </div>
+  );
+};
+
+/* =========================================================================
+   SUB-CANVAS 7: FICHA DE ANAMNESE CLÍNICA ESTRUTURADA (PÁGINAS 1-2)
+   ========================================================================= */
+const AnamnesisCanvas: React.FC<{
+  entry: PatientAnamnesisEntry;
+  patient: Patient;
+} & CanvasProps> = ({ entry, patient, clinic, branch }) => {
+  const s = entry.structuredData || {};
+  const age = calculateAge(patient.birthDate);
+  const fullAddress = [
+    patient.address,
+    patient.addressNumber,
+    patient.complement,
+    patient.neighborhood,
+    patient.city && patient.state ? `${patient.city}/${patient.state}` : patient.city || patient.state,
+  ]
+    .filter(Boolean)
+    .join(', ');
+
+  const tri = (val?: string, detail?: string) => {
+    const base = val === 'sim' ? 'Sim' : val === 'nao' ? 'Não' : 'Não informado';
+    return detail ? `${base} — ${detail}` : base;
+  };
+
+  return (
+    <div className="flex flex-col justify-between h-full min-h-[235mm] print:h-auto print:min-h-0 space-y-4">
+      <MedicalDocumentHeader
+        badgeTitle="Prontuário Médico · Anamnese"
+        badgeSubtitle="Ficha Clínica Estruturada"
+        badgeTone="gold"
+        clinic={clinic}
+        branch={branch}
+      />
+
+      {/* Identificação do Paciente */}
+      <div className="medsync-break-avoid bg-slate-50 p-3 rounded-lg border border-slate-200 text-[11px] grid grid-cols-2 sm:grid-cols-3 gap-2">
+        <div>
+          <span className="text-[9px] uppercase font-bold text-slate-400 block">Paciente</span>
+          <strong className="text-slate-900">{patient.fullName}</strong>
+        </div>
+        <div>
+          <span className="text-[9px] uppercase font-bold text-slate-400 block">Nascimento / Idade</span>
+          <span>
+            {patient.birthDate
+              ? new Date(patient.birthDate + 'T00:00:00').toLocaleDateString('pt-BR')
+              : '—'}{' '}
+            {age !== null ? `(${age} anos)` : ''}
+          </span>
+        </div>
+        <div>
+          <span className="text-[9px] uppercase font-bold text-slate-400 block">Sexo / CPF / RG</span>
+          <span>
+            {patient.gender || '—'} · CPF {patient.documentCpf || '—'}
+            {patient.documentRg ? ` · RG ${patient.documentRg}` : ''}
+          </span>
+        </div>
+        <div className="col-span-2">
+          <span className="text-[9px] uppercase font-bold text-slate-400 block">Endereço</span>
+          <span>{fullAddress || '—'} {patient.postalCode ? `· CEP ${patient.postalCode}` : ''}</span>
+        </div>
+        <div>
+          <span className="text-[9px] uppercase font-bold text-slate-400 block">Contato / Recado</span>
+          <span>
+            {patient.whatsapp || patient.phone || '—'}
+            {patient.emergencyContactPhone ? ` · Recado: ${patient.emergencyContactPhone}` : ''}
+          </span>
+        </div>
+      </div>
+
+      <div className="space-y-3 text-[11px] flex-1 print:flex-none">
+        <div className="medsync-break-avoid p-3 rounded-lg border border-slate-200 space-y-1.5">
+          <h4 className="font-bold uppercase text-[10px] text-slate-800 border-b border-slate-100 pb-1">
+            1. Histórico Patológico & Antecedentes Pessoais
+          </h4>
+          <p><strong>Internações:</strong> {s.internacoes || '—'}</p>
+          <p><strong>HPP:</strong> {s.historiaPatologicaPregressa || '—'}</p>
+          <p><strong>Pressão Arterial:</strong> {s.pressaoArterial || '—'}</p>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 pt-1">
+            <p><strong>Diabetes:</strong> {tri(s.diabetes, s.diabetesDetalhes)}</p>
+            <p><strong>Tireoide:</strong> {tri(s.doencasTireoide, s.doencasTireoideDetalhes)}</p>
+            <p><strong>Tireoide na família:</strong> {tri(s.doencasTireoideFamilia, s.doencasTireoideFamiliaDetalhes)}</p>
+            <p><strong>Fumante:</strong> {tri(s.fumante, s.fumanteDetalhes)}</p>
+            <p><strong>Etilismo:</strong> {tri(s.etilismo, s.etilismoDetalhes)}</p>
+            <p><strong>Câncer:</strong> {tri(s.cancer, s.cancerDetalhes)}</p>
+          </div>
+          {s.outrosAntecedentes && <p><strong>Outros Antecedentes:</strong> {s.outrosAntecedentes}</p>}
+        </div>
+
+        <div className="medsync-break-avoid p-3 rounded-lg border border-slate-200 space-y-1">
+          <h4 className="font-bold uppercase text-[10px] text-slate-800 border-b border-slate-100 pb-1">
+            2. Histórico Cirúrgico, Alergias & Condições Clínicas
+          </h4>
+          <p>
+            <strong>Cirurgias Prévias:</strong>{' '}
+            {s.cirurgiasPrevias === 'sim'
+              ? `Sim (${s.cirurgiaQual || 'Não especificada'}${s.cirurgiaQuando ? ` — ${s.cirurgiaQuando}` : ''})`
+              : tri(s.cirurgiasPrevias)}
+          </p>
+          <p><strong>Transfusão Sanguínea:</strong> {tri(s.transfusaoSanguinea)}</p>
+          <p><strong>Dor:</strong> {tri(s.dor, s.dorDescricao)}</p>
+          <p>
+            <strong>Alergias Medicamentosas:</strong>{' '}
+            {patient.allergies && patient.allergies.length > 0 ? patient.allergies.join(', ') : 'Nenhuma registrada'}
+          </p>
+          <p><strong>Alergias Alimentares:</strong> {s.alergiasAlimentares || '—'}</p>
+          <p><strong>Antecedentes Alérgicos:</strong> {s.antecedentesAlergicos || '—'}</p>
+        </div>
+
+        <div className="medsync-break-avoid p-3 rounded-lg border border-slate-200 space-y-1">
+          <h4 className="font-bold uppercase text-[10px] text-slate-800 border-b border-slate-100 pb-1">
+            3. Hábitos, Hormonal & Reprodutivo
+          </h4>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+            <p><strong>Atividade Física:</strong> {s.atividadeFisica || '—'}</p>
+            <p><strong>Sono:</strong> {s.sono || '—'}</p>
+            <p><strong>Estresse:</strong> {s.estresse || '—'}</p>
+            <p><strong>Ansiedade:</strong> {s.ansiedade || '—'}</p>
+            <p><strong>Função Intestinal:</strong> {s.funcaoIntestinal || '—'}</p>
+            <p><strong>Ingestão Hídrica:</strong> {s.ingestaoHidrica || '—'}</p>
+            <p><strong>Diurese:</strong> {s.diurese || '—'}</p>
+            <p><strong>Reposição Hormonal:</strong> {tri(s.reposicaoHormonal, s.reposicaoHormonalDetalhes)}</p>
+            <p><strong>Ciclo Menstrual:</strong> {s.cicloMenstrual || '—'}</p>
+            <p>
+              <strong>Histórico Reprodutivo:</strong> G{s.gestacoes ?? '—'} P{s.nascidos ?? '—'} A{s.abortos ?? '—'} N{s.natimortos ?? '—'}
+            </p>
+          </div>
+        </div>
+
+        <div className="medsync-break-avoid p-3 rounded-lg border border-slate-200 space-y-1">
+          <h4 className="font-bold uppercase text-[10px] text-slate-800 border-b border-slate-100 pb-1">
+            4. Objetivo da Consulta & Antecedentes Familiares
+          </h4>
+          <p><strong>Objetivo da Consulta:</strong> {s.objetivoConsulta || '—'}</p>
+          <p><strong>Antecedentes Patológicos Familiares:</strong> {s.antecedentesPatologicosFamiliares || '—'}</p>
+          <p><strong>Antecedentes Patológicos do Paciente:</strong> {s.antecedentesPatologicosPaciente || '—'}</p>
+        </div>
+      </div>
+
+      <MedicalDocumentFooter
+        dateLabel="Data da Avaliação"
+        dateValue={new Date(entry.evaluationDate).toLocaleString('pt-BR')}
+        extraLeftText={
+          entry.isSigned ? 'Anamnese Assinada no PEP' : 'Avaliação em Elaboração (Pré-visualização)'
+        }
+        signatureHash={entry.signatureHash}
+        useLockIcon={entry.isSigned}
+        roleSubtitle="Médico Assistente"
+        professionalName={entry.professionalName}
+        professionalCouncil={entry.professionalCouncil}
+        cityState={branch ? `${branch.city} - ${branch.state}` : undefined}
+        clinicLegalName={clinic?.legalName || clinic?.tradeName}
+      />
+    </div>
+  );
+};
+
+/* =========================================================================
+   SUB-CANVAS 8: RELATÓRIO CRONOLÓGICO DE ANTROPOMETRIA E BIOIMPEDÂNCIA (PÁGINAS 3 & 9)
+   ========================================================================= */
+const AnthropometryHistoryCanvas: React.FC<{
+  patient: Patient;
+  measurements: AnthropometricMeasurement[];
+} & CanvasProps> = ({ patient, measurements, clinic, branch }) => {
+  return (
+    <div className="flex flex-col justify-between h-full min-h-[235mm] print:h-auto print:min-h-0 space-y-5">
+      <MedicalDocumentHeader
+        badgeTitle="Antropometria & Bioimpedância"
+        badgeSubtitle="Evolução Ponderal e Perimetria (PEP)"
+        badgeTone="gold"
+        clinic={clinic}
+        branch={branch}
+      />
+
+      <div className="medsync-break-avoid bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <div>
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">Paciente:</span>
+          <span className="font-bold text-slate-900">{patient.fullName}</span>
+        </div>
+        <div>
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">CPF:</span>
+          <span className="font-mono text-slate-800">{patient.documentCpf || '—'}</span>
+        </div>
+        <div>
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">Total de Aferições:</span>
+          <span className="font-semibold text-slate-800">{measurements.length} registro(s)</span>
+        </div>
+      </div>
+
+      <div className="flex-1 print:flex-none">
+        <table className="w-full text-left border-collapse text-[10px] border border-slate-300">
+          <thead>
+            <tr className="bg-slate-100 border-b border-slate-300 font-bold text-slate-700">
+              <th className="py-2 px-2 border-r border-slate-200">Data</th>
+              <th className="py-2 px-1.5 text-right border-r border-slate-200">Peso (kg)</th>
+              <th className="py-2 px-1.5 text-right border-r border-slate-200">Abd. (cm)</th>
+              <th className="py-2 px-1.5 text-right border-r border-slate-200">Braço D</th>
+              <th className="py-2 px-1.5 text-right border-r border-slate-200">Braço E</th>
+              <th className="py-2 px-1.5 text-right border-r border-slate-200">Perna D</th>
+              <th className="py-2 px-1.5 text-right border-r border-slate-200">Perna E</th>
+              <th className="py-2 px-1.5 text-right border-r border-slate-200">Tórax</th>
+              <th className="py-2 px-1.5 text-right">Quadril</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-200">
+            {measurements.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="py-6 text-center text-slate-400">
+                  Nenhuma aferição registrada até o momento.
+                </td>
+              </tr>
+            ) : (
+              measurements.map((m) => (
+                <tr key={m.id} className="medsync-break-avoid">
+                  <td className="py-1.5 px-2 border-r border-slate-200 font-semibold">
+                    {new Date(m.measuredAt).toLocaleDateString('pt-BR')}
+                  </td>
+                  <td className="py-1.5 px-1.5 text-right border-r border-slate-200 font-bold tabular-nums">
+                    {formatMetricDisplay(m.weightKg, 1)}
+                  </td>
+                  <td className="py-1.5 px-1.5 text-right border-r border-slate-200 tabular-nums">
+                    {formatMetricDisplay(m.abdominalCircumferenceCm, 1)}
+                  </td>
+                  <td className="py-1.5 px-1.5 text-right border-r border-slate-200 tabular-nums">
+                    {formatMetricDisplay(m.rightArmCircumferenceCm, 1)}
+                  </td>
+                  <td className="py-1.5 px-1.5 text-right border-r border-slate-200 tabular-nums">
+                    {formatMetricDisplay(m.leftArmCircumferenceCm, 1)}
+                  </td>
+                  <td className="py-1.5 px-1.5 text-right border-r border-slate-200 tabular-nums">
+                    {formatMetricDisplay(m.rightLegCircumferenceCm, 1)}
+                  </td>
+                  <td className="py-1.5 px-1.5 text-right border-r border-slate-200 tabular-nums">
+                    {formatMetricDisplay(m.leftLegCircumferenceCm, 1)}
+                  </td>
+                  <td className="py-1.5 px-1.5 text-right border-r border-slate-200 tabular-nums">
+                    {formatMetricDisplay(m.thoracicCircumferenceCm, 1)}
+                  </td>
+                  <td className="py-1.5 px-1.5 text-right tabular-nums">
+                    {formatMetricDisplay(m.hipCircumferenceCm, 1)}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <MedicalDocumentFooter
+        dateLabel="Data da Emissão"
+        dateValue={new Date().toLocaleDateString('pt-BR')}
+        extraLeftText="Relatório cronológico oficial de antropometria e perimetria (PEP)"
+        roleSubtitle="Médico Responsável"
+        professionalName={CLINIC_OFFICIAL_DATA.physicianName}
+        professionalCouncil={CLINIC_OFFICIAL_DATA.crm}
+        cityState={branch ? `${branch.city} - ${branch.state}` : undefined}
+        clinicLegalName={clinic?.legalName || clinic?.tradeName}
       />
     </div>
   );
