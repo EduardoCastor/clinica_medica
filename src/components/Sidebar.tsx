@@ -2,6 +2,7 @@ import React from 'react';
 import { 
   LayoutDashboard, 
   CalendarDays, 
+  Megaphone,
   Users, 
   FileText, 
   MessageSquare, 
@@ -17,6 +18,7 @@ import { ClinicBrandLogo, CLINIC_OFFICIAL_DATA } from './ClinicBrandLogo';
 export type ClinicTab = 
   | 'dashboard'
   | 'appointments'
+  | 'call_panel'
   | 'patients'
   | 'medical_records'
   | 'communication'
@@ -52,6 +54,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {
       icon: <CalendarDays className="w-4 h-4" />,
       badge: 'Prioritário',
       visible: canViewMenu('appointments'),
+    },
+    {
+      id: 'call_panel',
+      label: 'Painel de Chamada',
+      icon: <Megaphone className="w-4 h-4" />,
+      badge: 'TV / Fila',
+      visible: canViewMenu('call_panel'),
     },
     {
       id: 'patients',

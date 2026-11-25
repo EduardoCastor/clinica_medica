@@ -127,6 +127,7 @@ export interface Room {
 export type MenuKey =
   | 'dashboard'
   | 'appointments'
+  | 'call_panel'
   | 'patients'
   | 'medical_records'
   | 'communication'
@@ -962,3 +963,90 @@ export interface ResolvedTenantContext {
   impersonatingClinicId?: string;
 }
 
+export type AttendanceCallStatus =
+  | 'aguardando'
+  | 'chamado'
+  | 'em_andamento'
+  | 'concluido'
+  | 'cancelado';
+
+export type AttendanceOrigin = 'manual' | 'automatic';
+
+export type AttendanceCallEventType =
+  | 'called'
+  | 'recalled'
+  | 'started_manual'
+  | 'started_auto'
+  | 'completed_manual'
+  | 'completed_auto'
+  | 'cancelled';
+
+export type PatientNameDisplayMode = 'full' | 'first_last' | 'initials';
+
+export interface AttendanceCallRecord {
+  id: string;
+  organizationId: string;
+  branchId: string;
+  appointmentId: string;
+  patientId: string;
+  professionalId: string;
+  roomId?: string;
+  serviceId?: string;
+  patientName: string;
+  professionalName: string;
+  roomName: string;
+  procedureName: string;
+  attendanceDate: string; // YYYY-MM-DD (America/Sao_Paulo)
+  status: AttendanceCallStatus;
+  calledAt?: string;
+  startedAt?: string;
+  endedAt?: string;
+  durationSeconds?: number;
+  startOrigin?: AttendanceOrigin;
+  endOrigin?: AttendanceOrigin;
+  autoEndReason?: string;
+  callCount: number;
+  autoStartDelaySeconds: number;
+  lastCalledBy?: string;
+  startedBy?: string;
+  endedBy?: string;
+  cancelledBy?: string;
+  cancellationReason?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface AttendanceCallEvent {
+  id: string;
+  organizationId: string;
+  branchId: string;
+  attendanceCallId: string;
+  appointmentId: string;
+  patientId: string;
+  professionalId: string;
+  roomId?: string;
+  patientName: string;
+  professionalName: string;
+  roomName: string;
+  procedureName: string;
+  eventType: AttendanceCallEventType;
+  actorUserProfileId?: string;
+  actorName?: string;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface CallPanelSettings {
+  id?: string;
+  organizationId: string;
+  branchId?: string | null;
+  defaultProfessionalId?: string;
+  defaultRoomId?: string;
+  physicianDisplayLabel?: string;
+  soundEnabled: boolean;
+  voiceEnabled: boolean;
+  chimeVolume: number; // 0..1
+  autoStartDelaySeconds: number; // default 120
+  patientNameDisplayMode: PatientNameDisplayMode;
+  updatedAt?: string;
+}

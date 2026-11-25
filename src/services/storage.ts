@@ -1204,6 +1204,96 @@ export const StorageService = {
     }
     setStored(STORAGE_KEYS.ROOMS, list);
   },
+  saveRoomToCloud: async (
+    room: Room
+  ): Promise<{ success: boolean; room: Room; syncedCloud: boolean; error?: string }> => {
+    const isUuid = (val?: string) =>
+      Boolean(
+        val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val)
+      );
+
+    const supabase = getSupabase();
+    if (!supabase || !isUuid(room.branchId)) {
+      StorageService.saveRoom(room);
+      return { success: true, room, syncedCloud: false };
+    }
+
+    try {
+      let targetOrgId = isUuid(room.organizationId) ? room.organizationId : undefined;
+      if (!targetOrgId) {
+        const localOrg = StorageService.getOrganization();
+        if (isUuid(localOrg.id)) {
+          targetOrgId = localOrg.id;
+        } else {
+          const { data: branchRow } = await supabase
+            .from('branches')
+            .select('organization_id')
+            .eq('id', room.branchId)
+            .maybeSingle();
+          if (branchRow?.organization_id) {
+            targetOrgId = String(branchRow.organization_id);
+          }
+        }
+      }
+
+      if (!targetOrgId) {
+        StorageService.saveRoom(room);
+        return { success: true, room, syncedCloud: false };
+      }
+
+      const payload: Record<string, unknown> = {
+        organization_id: targetOrgId,
+        branch_id: room.branchId,
+        name: room.name.trim(),
+        description: room.description || '',
+        color: room.color || '#0284c7',
+        is_active: room.isActive !== false,
+      };
+      if (isUuid(room.id)) {
+        payload.id = room.id;
+      }
+
+      const { data, error } = await supabase
+        .from('rooms')
+        .upsert(payload)
+        .select('*')
+        .single();
+
+      if (error || !data) {
+        StorageService.saveRoom(room);
+        return {
+          success: false,
+          room,
+          syncedCloud: false,
+          error: error?.message || 'Não foi possível salvar a sala no Supabase.',
+        };
+      }
+
+      const savedRoom: Room = {
+        id: String(data.id),
+        organizationId: String(data.organization_id),
+        branchId: String(data.branch_id),
+        name: String(data.name || room.name),
+        description: String(data.description || ''),
+        color: String(data.color || '#0284c7'),
+        isActive: data.is_active !== false,
+      };
+
+      const filtered = StorageService.getRooms().filter(
+        (r) => r.id !== room.id && r.id !== savedRoom.id
+      );
+      setStored(STORAGE_KEYS.ROOMS, [...filtered, savedRoom]);
+      return { success: true, room: savedRoom, syncedCloud: true };
+    } catch (err) {
+      StorageService.saveRoom(room);
+      return {
+        success: false,
+        room,
+        syncedCloud: false,
+        error: err instanceof Error ? err.message : 'Erro ao salvar sala no Supabase.',
+      };
+    }
+  },
 
   // Users
   getUsers: (): UserProfile[] => getStored<UserProfile[]>(STORAGE_KEYS.USERS, INITIAL_USERS),

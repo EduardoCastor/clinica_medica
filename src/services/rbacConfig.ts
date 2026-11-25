@@ -39,6 +39,13 @@ export const MENU_DEFINITIONS: MenuDefinition[] = [
     supportsAdmin: true,
   },
   {
+    key: 'call_panel',
+    label: 'Painel de Chamada',
+    description: 'Chamada visual e sonora de pacientes, controle de atendimentos e tempos em sala.',
+    supportsDelete: true,
+    supportsAdmin: true,
+  },
+  {
     key: 'patients',
     label: 'Gestão de Pacientes',
     description: 'Cadastro completo, dados administrativos, convênios e consentimento LGPD.',
@@ -204,6 +211,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, RolePermissionTemplate> 
   super_admin: {
     dashboard: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
     appointments: FULL_ACCESS,
+    call_panel: FULL_ACCESS,
     patients: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true, canAdmin: true }),
     medical_records: perm({ canView: true, canConsult: true, canAdmin: true }),
     communication: FULL_ACCESS,
@@ -215,6 +223,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, RolePermissionTemplate> 
   clinic_admin: {
     dashboard: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
     appointments: FULL_ACCESS,
+    call_panel: FULL_ACCESS,
     patients: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true, canAdmin: true }),
     medical_records: perm({ canView: true, canConsult: true }),
     communication: FULL_ACCESS,
@@ -226,6 +235,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, RolePermissionTemplate> 
   branch_admin: {
     dashboard: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
     appointments: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true, canDelete: true }),
+    call_panel: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
     patients: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
     medical_records: perm({ canView: false, canConsult: false }),
     communication: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
@@ -237,6 +247,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, RolePermissionTemplate> 
   doctor: {
     dashboard: perm({ canView: true, canConsult: true, canEdit: true }),
     appointments: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
+    call_panel: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
     patients: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
     medical_records: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
     communication: perm({ canView: true, canConsult: true }),
@@ -248,6 +259,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, RolePermissionTemplate> 
   physiotherapist: {
     dashboard: perm({ canView: true, canConsult: true, canEdit: true }),
     appointments: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
+    call_panel: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
     patients: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
     medical_records: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
     communication: perm({ canView: true, canConsult: true }),
@@ -259,6 +271,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, RolePermissionTemplate> 
   receptionist: {
     dashboard: perm({ canView: true, canConsult: true, canEdit: true }),
     appointments: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
+    call_panel: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
     patients: perm({ canView: true, canConsult: true, canCreate: true, canEdit: true }),
     medical_records: NONE,
     communication: perm({ canView: true, canConsult: true, canCreate: true }),
@@ -270,6 +283,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, RolePermissionTemplate> 
   financial: {
     dashboard: perm({ canView: true, canConsult: true }),
     appointments: perm({ canView: false, canConsult: false }),
+    call_panel: NONE,
     patients: perm({ canView: false, canConsult: false }),
     medical_records: NONE,
     communication: NONE,
@@ -281,6 +295,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, RolePermissionTemplate> 
   patient: {
     dashboard: NONE,
     appointments: NONE,
+    call_panel: NONE,
     patients: NONE,
     medical_records: NONE,
     communication: NONE,

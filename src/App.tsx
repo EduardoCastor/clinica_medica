@@ -9,6 +9,7 @@ import { SupabaseConfigModal } from './components/SupabaseConfigModal';
 // Modules
 import { ClinicDashboard } from './modules/clinic/ClinicDashboard';
 import { AppointmentsModule } from './modules/appointments/AppointmentsModule';
+import { CallPanelModule } from './modules/call-panel/CallPanelModule';
 import { PatientsModule } from './modules/patients/PatientsModule';
 import { MedicalRecordsModule } from './modules/medical-records/MedicalRecordsModule';
 import { CommunicationModule } from './modules/communication/CommunicationModule';
@@ -188,7 +189,11 @@ const MainAppContent: React.FC = () => {
                   onTabChange={handleTabChange}
                 />
 
-                <section className="flex-1 min-w-0 p-4 sm:p-5 lg:p-5 xl:p-6 max-w-7xl mx-auto w-full">
+                <section
+                  className={`flex-1 min-w-0 p-4 sm:p-5 lg:p-5 xl:p-6 mx-auto w-full ${
+                    activeClinicTab === 'call_panel' ? 'max-w-[1680px]' : 'max-w-7xl'
+                  }`}
+                >
                   {!isCurrentTabAuthorized ? (
                     <div className="max-w-lg mx-auto mt-12 p-8 bg-white rounded-2xl border border-slate-200 shadow-xs text-center space-y-3">
                       <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto">
@@ -213,6 +218,7 @@ const MainAppContent: React.FC = () => {
                       {activeClinicTab === 'appointments' && (
                         <AppointmentsModule onNavigateToRecord={handleNavigateToRecord} />
                       )}
+                      {activeClinicTab === 'call_panel' && <CallPanelModule />}
                       {activeClinicTab === 'patients' && (
                         <PatientsModule
                           onNavigateToRecord={handleNavigateToRecord}

@@ -15,12 +15,14 @@ import {
   AlertTriangle,
   CheckCircle2,
   ExternalLink,
+  Megaphone,
 } from 'lucide-react';
 import { useTenant } from '../../contexts/TenantContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { StorageService } from '../../services/storage';
 import { ClinicalCloudService } from '../../services/clinicalCloudService';
 import { FinancialCloudService } from '../../services/financialCloudService';
+import { AttendanceCloudService } from '../../services/attendanceCloudService';
 import {
   addDaysToYmdSaoPaulo,
   computeFinancialEffectiveStatus,
@@ -33,9 +35,11 @@ import {
 } from '../../services/financialDateUtils';
 import { FinancialSettleModal } from '../financial/FinancialSettleAndCancelModals';
 import { FinancialDeepLink } from '../financial/FinancialModule';
+import { AttendanceAnalyticsSection } from './AttendanceAnalyticsSection';
 import {
   Appointment,
   AppointmentStatus,
+  AttendanceCallRecord,
   AuditLog,
   FinancialTransaction,
   Patient,
@@ -95,6 +99,7 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
   const canOpenAppointments = canViewMenu('appointments');
   const canEditAppointments = canEditInMenu('appointments');
   const canOpenMedicalRecords = canViewMenu('medical_records') || canConsultMenu('medical_records');
+  const canOpenCallPanel = canViewMenu('call_panel') || canConsultMenu('call_panel');
   const canOpenFinancial = canViewMenu('financial') || canConsultMenu('financial');
   const canEditFinancial = canEditInMenu('financial');
   const canOpenSettings = canViewMenu('settings');
@@ -109,6 +114,8 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
   const [professionalFilter, setProfessionalFilter] = useState<string>('all');
 
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [attendanceCalls, setAttendanceCalls] = useState<AttendanceCallRecord[]>([]);
+  const [attendanceError, setAttendanceError] = useState('');
   const [waitlist, setWaitlist] = useState<WaitlistEntry[]>([]);
   const [financial, setFinancial] = useState<FinancialTransaction[]>([]);
   const [financialError, setFinancialError] = useState('');
@@ -125,10 +132,15 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
     setIsLoading(true);
     setLoadError('');
     setFinancialError('');
+    setAttendanceError('');
     try {
-      const [aptRes, waitRes, finRes, auditRes] = await Promise.all([
+      const [aptRes, waitRes, attRes, finRes, auditRes] = await Promise.all([
         StorageService.fetchAppointmentsFromCloudDetailed(),
         StorageService.fetchWaitlistFromCloudDetailed(activeBranchId),
+        AttendanceCloudService.fetchAttendanceCallsForDashboard(
+          organization.id,
+          activeBranchId
+        ),
         canOpenFinancial
           ? FinancialCloudService.fetchFinancialFromCloud(activeBranchId, organization.id)
           : Promise.resolve({ transactions: [] as FinancialTransaction[] } as {
@@ -143,6 +155,9 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
       const errors: string[] = [];
       if (aptRes.error) errors.push(`Agenda: ${aptRes.error}`);
       if (waitRes.error) errors.push(`Lista de espera: ${waitRes.error}`);
+      if (attRes.error) {
+        setAttendanceError(attRes.error);
+      }
       if ('error' in finRes && finRes.error) {
         setFinancialError(finRes.error);
         errors.push(`Financeiro: ${finRes.error}`);
@@ -150,6 +165,7 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
 
       setAppointments(aptRes.appointments);
       setWaitlist(waitRes.waitlist);
+      setAttendanceCalls(attRes.calls);
       setFinancial(finRes.transactions);
       setAuditLogs(auditRes.logs);
       if (errors.length > 0) {
@@ -430,6 +446,16 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
             <span>Atualizar</span>
           </button>
 
+          {canOpenCallPanel && (
+            <button
+              onClick={() => onNavigateTab('call_panel')}
+              className="px-3.5 py-2 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl transition flex items-center gap-1.5"
+            >
+              <Megaphone className="w-3.5 h-3.5 text-emerald-700" />
+              <span>Painel de Chamada</span>
+            </button>
+          )}
+
           {canOpenAppointments && (
             <button
               onClick={() => onNavigateTab('appointments')}
@@ -546,6 +572,19 @@ export const ClinicDashboard: React.FC<ClinicDashboardProps> = ({
           )}
         </div>
       </div>
+
+      {/* Indicadores Gerenciais de Chamada e Atendimentos */}
+      <AttendanceAnalyticsSection
+        attendanceCalls={attendanceCalls}
+        appointments={appointments}
+        professionals={professionals}
+        organizationId={organization.id}
+        activeBranchId={activeBranchId}
+        isLoading={isLoading}
+        loadError={attendanceError}
+        canOpenCallPanel={canOpenCallPanel}
+        onOpenCallPanel={() => onNavigateTab('call_panel')}
+      />
 
       {/* Resumo Financeiro Real (Visível apenas para perfis autorizados ao Financeiro) */}
       {canOpenFinancial && (
