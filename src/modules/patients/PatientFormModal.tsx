@@ -1166,7 +1166,7 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Telefone de Emergência
+                      Telefone para Recado / Emergência
                     </label>
                     <input
                       type="text"

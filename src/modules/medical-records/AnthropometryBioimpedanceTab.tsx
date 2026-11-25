@@ -23,6 +23,7 @@ import {
   hasAnyAnthropometricMetric,
   parseOptionalPositiveMetric,
   sortAnthropometryDesc,
+  toLocalDateTimeInputValue,
   WeightChartPeriod,
 } from '../../services/pepClinicalUtils';
 
@@ -110,7 +111,7 @@ export const AnthropometryBioimpedanceTab: React.FC<AnthropometryBioimpedanceTab
 
   const openNewModal = () => {
     setEditingEntry(null);
-    setMeasuredAt(new Date().toISOString().slice(0, 16));
+    setMeasuredAt(toLocalDateTimeInputValue());
     setSourceType('manual');
     setWeightInput('');
     setAbdominalInput('');
@@ -128,7 +129,7 @@ export const AnthropometryBioimpedanceTab: React.FC<AnthropometryBioimpedanceTab
   const openEditModal = (item: AnthropometricMeasurement) => {
     if (item.sourceType === 'soap_evolution') return;
     setEditingEntry(item);
-    setMeasuredAt(new Date(item.measuredAt).toISOString().slice(0, 16));
+    setMeasuredAt(toLocalDateTimeInputValue(item.measuredAt));
     setSourceType(item.sourceType === 'bioimpedance' ? 'bioimpedance' : 'manual');
     setWeightInput(item.weightKg != null ? String(item.weightKg) : '');
     setAbdominalInput(

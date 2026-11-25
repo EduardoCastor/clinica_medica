@@ -42,6 +42,14 @@ export type PrintableDocumentType =
         patient: Patient;
         measurements: AnthropometricMeasurement[];
       };
+    }
+  | {
+      type: 'medical_records_history';
+      data: {
+        branchId: string;
+        patient: Patient;
+        records: MedicalRecordEntry[];
+      };
     };
 
 interface DocumentPrintModalProps {
@@ -162,6 +170,15 @@ export const DocumentPrintModal: React.FC<DocumentPrintModalProps> = ({
         <AnthropometryHistoryCanvas
           patient={document.data.patient}
           measurements={document.data.measurements}
+          clinic={clinic}
+          branch={resolvedBranch}
+        />
+      )}
+
+      {document.type === 'medical_records_history' && (
+        <MedicalRecordsHistoryCanvas
+          patient={document.data.patient}
+          records={document.data.records}
           clinic={clinic}
           branch={resolvedBranch}
         />
@@ -1118,6 +1135,9 @@ const AnamnesisCanvas: React.FC<{
           <span className="text-[9px] uppercase font-bold text-slate-400 block">Contato / Recado</span>
           <span>
             {patient.whatsapp || patient.phone || '—'}
+            {patient.phone && patient.whatsapp && patient.phone !== patient.whatsapp
+              ? ` · Tel: ${patient.phone}`
+              : ''}
             {patient.emergencyContactPhone ? ` · Recado: ${patient.emergencyContactPhone}` : ''}
           </span>
         </div>
@@ -1152,6 +1172,10 @@ const AnamnesisCanvas: React.FC<{
               ? `Sim (${s.cirurgiaQual || 'Não especificada'}${s.cirurgiaQuando ? ` — ${s.cirurgiaQuando}` : ''})`
               : tri(s.cirurgiasPrevias)}
           </p>
+          <p>
+            <strong>Indicação de Cirurgia:</strong>{' '}
+            {tri(s.indicacaoCirurgia, s.indicacaoCirurgiaDetalhes)}
+          </p>
           <p><strong>Transfusão Sanguínea:</strong> {tri(s.transfusaoSanguinea)}</p>
           <p><strong>Dor:</strong> {tri(s.dor, s.dorDescricao)}</p>
           <p>
@@ -1172,7 +1196,7 @@ const AnamnesisCanvas: React.FC<{
             <p><strong>Estresse:</strong> {s.estresse || '—'}</p>
             <p><strong>Ansiedade:</strong> {s.ansiedade || '—'}</p>
             <p><strong>Função Intestinal:</strong> {s.funcaoIntestinal || '—'}</p>
-            <p><strong>Ingestão Hídrica:</strong> {s.ingestaoHidrica || '—'}</p>
+            <p><strong>Consumo Hídrico / Água:</strong> {s.ingestaoHidrica || '—'}</p>
             <p><strong>Diurese:</strong> {s.diurese || '—'}</p>
             <p><strong>Reposição Hormonal:</strong> {tri(s.reposicaoHormonal, s.reposicaoHormonalDetalhes)}</p>
             <p><strong>Ciclo Menstrual:</strong> {s.cicloMenstrual || '—'}</p>
@@ -1305,6 +1329,149 @@ const AnthropometryHistoryCanvas: React.FC<{
         dateLabel="Data da Emissão"
         dateValue={new Date().toLocaleDateString('pt-BR')}
         extraLeftText="Relatório cronológico oficial de antropometria e perimetria (PEP)"
+        roleSubtitle="Médico Responsável"
+        professionalName={CLINIC_OFFICIAL_DATA.physicianName}
+        professionalCouncil={CLINIC_OFFICIAL_DATA.crm}
+        cityState={branch ? `${branch.city} - ${branch.state}` : undefined}
+        clinicLegalName={clinic?.legalName || clinic?.tradeName}
+      />
+    </div>
+  );
+};
+
+/* =========================================================================
+   SUB-CANVAS 9: HISTÓRICO CRONOLÓGICO COMPLETO DE EVOLUÇÕES MÉDICAS (PÁGINAS 4–8)
+   ========================================================================= */
+const MedicalRecordsHistoryCanvas: React.FC<{
+  patient: Patient;
+  records: MedicalRecordEntry[];
+} & CanvasProps> = ({ patient, records, clinic, branch }) => {
+  const chronological = [...records].sort(
+    (a, b) => new Date(a.recordDate).getTime() - new Date(b.recordDate).getTime()
+  );
+
+  return (
+    <div className="flex flex-col justify-between h-full min-h-[235mm] print:h-auto print:min-h-0 space-y-5">
+      <MedicalDocumentHeader
+        badgeTitle="Prontuário Médico · Evoluções"
+        badgeSubtitle="Histórico Cronológico Completo (CFM nº 1.821/2007)"
+        badgeTone="gold"
+        clinic={clinic}
+        branch={branch}
+      />
+
+      <div className="medsync-break-avoid bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <div>
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">Paciente:</span>
+          <span className="font-bold text-slate-900">{patient.fullName}</span>
+        </div>
+        <div>
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">CPF:</span>
+          <span className="font-mono text-slate-800">{patient.documentCpf || '—'}</span>
+        </div>
+        <div>
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">Total de Evoluções:</span>
+          <span className="font-semibold text-slate-800">{chronological.length} atendimento(s)</span>
+        </div>
+      </div>
+
+      <div className="space-y-4 flex-1 print:flex-none text-[11px]">
+        {chronological.length === 0 ? (
+          <div className="p-6 text-center text-slate-400 border border-slate-200 rounded-lg">
+            Nenhuma evolução médica registrada até o momento.
+          </div>
+        ) : (
+          chronological.map((rec, idx) => (
+            <div
+              key={rec.id}
+              className="medsync-break-avoid p-3.5 rounded-lg border border-slate-300 bg-white space-y-2"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-1.5">
+                <div className="font-bold text-slate-900">
+                  #{idx + 1} · {new Date(rec.recordDate).toLocaleString('pt-BR')} ·{' '}
+                  {rec.professionalName} ({rec.professionalCouncilNumber || CLINIC_OFFICIAL_DATA.crm})
+                </div>
+                <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-700">
+                  {rec.isSigned
+                    ? `Assinado${rec.signatureHash ? ` (${rec.signatureHash.slice(0, 12)}...)` : ''}`
+                    : 'Rascunho'}
+                </span>
+              </div>
+
+              {rec.vitalSigns && (
+                <div className="text-[10px] text-slate-700 bg-slate-50 px-2.5 py-1.5 rounded border border-slate-200 flex flex-wrap gap-3">
+                  {rec.vitalSigns.bloodPressureSystolic && (
+                    <span>
+                      <strong>PA:</strong> {rec.vitalSigns.bloodPressureSystolic}/
+                      {rec.vitalSigns.bloodPressureDiastolic} mmHg
+                    </span>
+                  )}
+                  {rec.vitalSigns.heartRateBpm && (
+                    <span><strong>FC:</strong> {rec.vitalSigns.heartRateBpm} bpm</span>
+                  )}
+                  {rec.vitalSigns.weightKg && (
+                    <span><strong>Peso:</strong> {rec.vitalSigns.weightKg} kg</span>
+                  )}
+                  {rec.vitalSigns.heightCm && (
+                    <span><strong>Alt:</strong> {rec.vitalSigns.heightCm} cm</span>
+                  )}
+                  {rec.vitalSigns.bmi && (
+                    <span><strong>IMC:</strong> {rec.vitalSigns.bmi} kg/m²</span>
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <p className="whitespace-pre-line">
+                  <strong>S (Queixa / Subjetivo):</strong> {rec.chiefComplaint}
+                </p>
+                {rec.clinicalHistory && (
+                  <p className="whitespace-pre-line text-slate-700">
+                    <strong>Histórico:</strong> {rec.clinicalHistory}
+                  </p>
+                )}
+                {rec.physicalExam && (
+                  <p className="whitespace-pre-line text-slate-700">
+                    <strong>O (Exame Físico):</strong> {rec.physicalExam}
+                  </p>
+                )}
+                <p>
+                  <strong>A (Avaliação / Diagnóstico):</strong>{' '}
+                  {rec.diagnosticHypothesis || 'Avaliação ambulatorial.'}
+                  {rec.cid10Codes && rec.cid10Codes.length > 0
+                    ? ` [${rec.cid10Codes.map((c) => `${c.code} - ${c.description}`).join('; ')}]`
+                    : ''}
+                </p>
+                <p className="whitespace-pre-line">
+                  <strong>P (Plano Terapêutico):</strong> {rec.therapeuticPlan}
+                </p>
+                {rec.evolutionNotes && (
+                  <p className="italic text-slate-600">
+                    <strong>Notas de Evolução:</strong> {rec.evolutionNotes}
+                  </p>
+                )}
+              </div>
+
+              {rec.addendums && rec.addendums.length > 0 && (
+                <div className="pt-1.5 border-t border-amber-200 space-y-1 text-[10px]">
+                  <strong className="text-amber-900 uppercase">Adendos / Erratas:</strong>
+                  {rec.addendums.map((ad) => (
+                    <p key={ad.id} className="text-slate-700">
+                      • {new Date(ad.createdAt).toLocaleString('pt-BR')} — {ad.authorName}:{' '}
+                      <span className="italic">{ad.note}</span>
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+
+      <MedicalDocumentFooter
+        dateLabel="Data da Emissão"
+        dateValue={new Date().toLocaleDateString('pt-BR')}
+        extraLeftText="Histórico integral de evoluções clínicas (Resolução CFM nº 1.821/2007)"
         roleSubtitle="Médico Responsável"
         professionalName={CLINIC_OFFICIAL_DATA.physicianName}
         professionalCouncil={CLINIC_OFFICIAL_DATA.crm}

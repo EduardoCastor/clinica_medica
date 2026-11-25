@@ -23,6 +23,7 @@ import { StorageService } from './storage';
 import {
   buildSoapWeightMeasurementPayload,
   hasAnyAnthropometricMetric,
+  mergeLegacyAnamnesisFromRecords,
   normalizeStructuredAnamnesis,
 } from './pepClinicalUtils';
 
@@ -542,6 +543,7 @@ export interface ClinicalPatientBundle {
   anamnesisRecords: PatientAnamnesisEntry[];
   anthropometryMeasurements: AnthropometricMeasurement[];
   error?: string;
+  warning?: string;
 }
 
 export const ClinicalCloudService = {
@@ -1215,17 +1217,31 @@ export const ClinicalCloudService = {
         })
       );
 
-      const anamnesisRecords: PatientAnamnesisEntry[] = anamnesisRes.error
+      const officialAnamnesisRecords: PatientAnamnesisEntry[] = anamnesisRes.error
         ? []
         : ((anamnesisRes.data || []) as Array<Record<string, unknown>>).map((row) =>
             mapAnamnesisRecordRow(row, profMap)
           );
+
+      const anamnesisRecords = mergeLegacyAnamnesisFromRecords(
+        officialAnamnesisRecords,
+        records
+      );
 
       const anthropometryMeasurements: AnthropometricMeasurement[] = anthropometryRes.error
         ? []
         : ((anthropometryRes.data || []) as Array<Record<string, unknown>>).map((row) =>
             mapAnthropometricMeasurementRow(row, profMap)
           );
+
+      const subErrors = [
+        anamnesisRes.error
+          ? `Anamnese estruturada: ${formatPgError(anamnesisRes.error, 'erro ao consultar patient_anamnesis_records.')}`
+          : null,
+        anthropometryRes.error
+          ? `Antropometria: ${formatPgError(anthropometryRes.error, 'erro ao consultar patient_anthropometric_measurements.')}`
+          : null,
+      ].filter((msg): msg is string => Boolean(msg));
 
       // Update local caches per patient cleanly
       StorageService.replacePatientClinicalCache(patientUuid, {
@@ -1250,6 +1266,7 @@ export const ClinicalCloudService = {
         documents,
         anamnesisRecords,
         anthropometryMeasurements,
+        warning: subErrors.length > 0 ? subErrors.join(' | ') : undefined,
       };
     } catch (err) {
       return {

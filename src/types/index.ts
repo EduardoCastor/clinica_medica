@@ -363,6 +363,8 @@ export interface StructuredAnamnesis {
   cirurgiasPrevias?: TriStateAnswer;
   cirurgiaQual?: string;
   cirurgiaQuando?: string;
+  indicacaoCirurgia?: TriStateAnswer;
+  indicacaoCirurgiaDetalhes?: string;
   transfusaoSanguinea?: TriStateAnswer;
   dor?: TriStateAnswer;
   dorDescricao?: string;

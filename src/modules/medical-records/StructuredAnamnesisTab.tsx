@@ -11,6 +11,7 @@ import {
   AlertCircle,
   Loader2,
   Eye,
+  Edit3,
 } from 'lucide-react';
 import {
   Patient,
@@ -23,6 +24,7 @@ import {
   EMPTY_STRUCTURED_ANAMNESIS,
   hasStructuredAnamnesisContent,
   normalizeStructuredAnamnesis,
+  toLocalDateTimeInputValue,
 } from '../../services/pepClinicalUtils';
 
 interface StructuredAnamnesisTabProps {
@@ -37,6 +39,7 @@ interface StructuredAnamnesisTabProps {
   canEdit: boolean;
   onRefreshBundle: () => Promise<void>;
   onPrintAnamnesis: (entry: PatientAnamnesisEntry) => void;
+  onEditPatientRegistration?: () => void;
 }
 
 const TriStateSelector: React.FC<{
@@ -92,14 +95,16 @@ export const StructuredAnamnesisTab: React.FC<StructuredAnamnesisTabProps> = ({
   canEdit,
   onRefreshBundle,
   onPrintAnamnesis,
+  onEditPatientRegistration,
 }) => {
   const [selectedId, setSelectedId] = useState<string>('new');
   const [formData, setFormData] = useState<StructuredAnamnesis>({
     ...EMPTY_STRUCTURED_ANAMNESIS,
   });
   const [evaluationDate, setEvaluationDate] = useState<string>(
-    new Date().toISOString().slice(0, 16)
+    toLocalDateTimeInputValue()
   );
+  const [showMaleReproductiveFields, setShowMaleReproductiveFields] = useState<boolean>(false);
   const [isSaving, setIsSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(
     null
@@ -108,15 +113,16 @@ export const StructuredAnamnesisTab: React.FC<StructuredAnamnesisTabProps> = ({
   // Sync selection when patient or loaded list changes
   useEffect(() => {
     setFeedback(null);
+    setShowMaleReproductiveFields(false);
     if (anamnesisRecords.length > 0) {
       const latest = anamnesisRecords[0];
       setSelectedId(latest.id);
       setFormData(normalizeStructuredAnamnesis(latest.structuredData));
-      setEvaluationDate(new Date(latest.evaluationDate).toISOString().slice(0, 16));
+      setEvaluationDate(toLocalDateTimeInputValue(latest.evaluationDate));
     } else {
       setSelectedId('new');
       setFormData({ ...EMPTY_STRUCTURED_ANAMNESIS });
-      setEvaluationDate(new Date().toISOString().slice(0, 16));
+      setEvaluationDate(toLocalDateTimeInputValue());
     }
   }, [patient.id, anamnesisRecords]);
 
@@ -127,27 +133,38 @@ export const StructuredAnamnesisTab: React.FC<StructuredAnamnesisTabProps> = ({
   const canModifyCurrent =
     !isSignedReadOnly && (selectedId === 'new' ? canCreate : canEdit);
 
+  const hasAnyReproductiveData = Boolean(
+    (formData.cicloMenstrual && formData.cicloMenstrual.trim().length > 0) ||
+      formData.gestacoes !== null && formData.gestacoes !== undefined ||
+      formData.nascidos !== null && formData.nascidos !== undefined ||
+      formData.abortos !== null && formData.abortos !== undefined ||
+      formData.natimortos !== null && formData.natimortos !== undefined
+  );
+  const shouldShowReproductiveSection =
+    patient.biologicalSex !== 'M' || hasAnyReproductiveData || showMaleReproductiveFields;
+
   const handleSelectEvaluation = (id: string) => {
     setFeedback(null);
     setSelectedId(id);
     if (id === 'new') {
       setFormData({ ...EMPTY_STRUCTURED_ANAMNESIS });
-      setEvaluationDate(new Date().toISOString().slice(0, 16));
+      setEvaluationDate(toLocalDateTimeInputValue());
       return;
     }
     const found = anamnesisRecords.find((r) => r.id === id);
     if (found) {
       setFormData(normalizeStructuredAnamnesis(found.structuredData));
-      setEvaluationDate(new Date(found.evaluationDate).toISOString().slice(0, 16));
+      setEvaluationDate(toLocalDateTimeInputValue(found.evaluationDate));
     }
   };
 
-  const handleStartNewEvaluation = (copyLatest: boolean) => {
+  const handleStartNewEvaluation = (copyCurrentOrLatest: boolean) => {
     setFeedback(null);
     setSelectedId('new');
-    setEvaluationDate(new Date().toISOString().slice(0, 16));
-    if (copyLatest && anamnesisRecords.length > 0) {
-      setFormData(normalizeStructuredAnamnesis(anamnesisRecords[0].structuredData));
+    setEvaluationDate(toLocalDateTimeInputValue());
+    const sourceEntry = selectedEntry || anamnesisRecords[0];
+    if (copyCurrentOrLatest && sourceEntry) {
+      setFormData(normalizeStructuredAnamnesis(sourceEntry.structuredData));
     } else {
       setFormData({ ...EMPTY_STRUCTURED_ANAMNESIS });
     }
@@ -362,9 +379,22 @@ export const StructuredAnamnesisTab: React.FC<StructuredAnamnesisTabProps> = ({
       {/* Allergies & Chronic Diseases from Patient Master Record (Single Source of Truth) */}
       <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
         <div>
-          <span className="text-[10px] font-bold uppercase tracking-wider text-rose-700 block">
-            Alergias Medicamentosas (Cadastro do Paciente)
-          </span>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-rose-700 block">
+              Alergias Medicamentosas (Cadastro do Paciente)
+            </span>
+            {onEditPatientRegistration && (
+              <button
+                type="button"
+                onClick={onEditPatientRegistration}
+                className="text-[10px] font-semibold text-sky-700 hover:text-sky-900 inline-flex items-center gap-1"
+                title="Atualizar alergias, comorbidades e medicações no cadastro único do paciente"
+              >
+                <Edit3 className="w-3 h-3" />
+                <span>Editar</span>
+              </button>
+            )}
+          </div>
           <p className="font-semibold text-slate-800 mt-0.5">
             {patient.allergies && patient.allergies.length > 0
               ? patient.allergies.join(', ')
@@ -579,7 +609,7 @@ export const StructuredAnamnesisTab: React.FC<StructuredAnamnesisTabProps> = ({
           2. Histórico Cirúrgico & Condições Clínicas
         </h3>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2">
             <TriStateSelector
               label="Cirurgias Prévias"
@@ -606,6 +636,25 @@ export const StructuredAnamnesisTab: React.FC<StructuredAnamnesisTabProps> = ({
                   className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white"
                 />
               </div>
+            )}
+          </div>
+
+          <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2">
+            <TriStateSelector
+              label="Indicação de Cirurgia"
+              value={formData.indicacaoCirurgia}
+              disabled={!canModifyCurrent}
+              onChange={(v) => updateField('indicacaoCirurgia', v)}
+            />
+            {formData.indicacaoCirurgia === 'sim' && (
+              <input
+                type="text"
+                disabled={!canModifyCurrent}
+                value={formData.indicacaoCirurgiaDetalhes || ''}
+                onChange={(e) => updateField('indicacaoCirurgiaDetalhes', e.target.value)}
+                placeholder="Procedimento indicado / observações..."
+                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white"
+              />
             )}
           </div>
 
@@ -727,7 +776,7 @@ export const StructuredAnamnesisTab: React.FC<StructuredAnamnesisTabProps> = ({
           </div>
           <div>
             <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-              Ingestão Hídrica
+              Consumo Hídrico / Ingestão de Água
             </label>
             <input
               type="text"
@@ -794,84 +843,112 @@ export const StructuredAnamnesisTab: React.FC<StructuredAnamnesisTabProps> = ({
             )}
           </div>
 
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-              Ciclo Menstrual (Opcional / Quando aplicável)
-            </label>
-            <input
-              type="text"
-              disabled={!canModifyCurrent}
-              value={formData.cicloMenstrual || ''}
-              onChange={(e) => updateField('cicloMenstrual', e.target.value)}
-              placeholder="Regular, irregular, amenorreia, menopausa, DIU, ACO..."
-              className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white disabled:bg-slate-50"
-            />
-          </div>
+          {shouldShowReproductiveSection ? (
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <label className="block text-[11px] font-semibold text-slate-700">
+                  Ciclo Menstrual (Opcional / Quando aplicável)
+                </label>
+                {patient.biologicalSex === 'M' && !hasAnyReproductiveData && (
+                  <button
+                    type="button"
+                    onClick={() => setShowMaleReproductiveFields(false)}
+                    className="text-[10px] font-semibold text-slate-500 hover:text-slate-700"
+                  >
+                    Ocultar campos reprodutivos
+                  </button>
+                )}
+              </div>
+              <input
+                type="text"
+                disabled={!canModifyCurrent}
+                value={formData.cicloMenstrual || ''}
+                onChange={(e) => updateField('cicloMenstrual', e.target.value)}
+                placeholder="Regular, irregular, amenorreia, menopausa, DIU, ACO..."
+                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white disabled:bg-slate-50"
+              />
+            </div>
+          ) : (
+            <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-2 text-[11px] text-slate-600">
+              <span>Campos ginecológicos/reprodutivos ocultos para sexo biológico masculino.</span>
+              <button
+                type="button"
+                onClick={() => setShowMaleReproductiveFields(true)}
+                className="font-semibold text-sky-700 hover:text-sky-900 shrink-0"
+              >
+                Exibir (opcional)
+              </button>
+            </div>
+          )}
         </section>
 
         <section className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3 shadow-xs">
-          <h3 className="text-xs font-extrabold uppercase tracking-wider text-sky-900 border-b border-slate-100 pb-2">
-            5. Histórico Reprodutivo (Opcional)
-          </h3>
+          {shouldShowReproductiveSection && (
+            <>
+              <h3 className="text-xs font-extrabold uppercase tracking-wider text-sky-900 border-b border-slate-100 pb-2">
+                5. Histórico Reprodutivo (Opcional)
+              </h3>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                Gestações
-              </label>
-              <input
-                type="number"
-                min={0}
-                disabled={!canModifyCurrent}
-                value={formData.gestacoes ?? ''}
-                onChange={(e) => handleIntField('gestacoes', e.target.value)}
-                placeholder="—"
-                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white text-center font-bold disabled:bg-slate-50"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                Nascidos
-              </label>
-              <input
-                type="number"
-                min={0}
-                disabled={!canModifyCurrent}
-                value={formData.nascidos ?? ''}
-                onChange={(e) => handleIntField('nascidos', e.target.value)}
-                placeholder="—"
-                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white text-center font-bold disabled:bg-slate-50"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                Abortos
-              </label>
-              <input
-                type="number"
-                min={0}
-                disabled={!canModifyCurrent}
-                value={formData.abortos ?? ''}
-                onChange={(e) => handleIntField('abortos', e.target.value)}
-                placeholder="—"
-                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white text-center font-bold disabled:bg-slate-50"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                Natimortos
-              </label>
-              <input
-                type="number"
-                min={0}
-                disabled={!canModifyCurrent}
-                value={formData.natimortos ?? ''}
-                onChange={(e) => handleIntField('natimortos', e.target.value)}
-                placeholder="—"
-                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white text-center font-bold disabled:bg-slate-50"
-              />
-            </div>
-          </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Gestações
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    disabled={!canModifyCurrent}
+                    value={formData.gestacoes ?? ''}
+                    onChange={(e) => handleIntField('gestacoes', e.target.value)}
+                    placeholder="—"
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white text-center font-bold disabled:bg-slate-50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Nascidos
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    disabled={!canModifyCurrent}
+                    value={formData.nascidos ?? ''}
+                    onChange={(e) => handleIntField('nascidos', e.target.value)}
+                    placeholder="—"
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white text-center font-bold disabled:bg-slate-50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Abortos
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    disabled={!canModifyCurrent}
+                    value={formData.abortos ?? ''}
+                    onChange={(e) => handleIntField('abortos', e.target.value)}
+                    placeholder="—"
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white text-center font-bold disabled:bg-slate-50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Natimortos
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    disabled={!canModifyCurrent}
+                    value={formData.natimortos ?? ''}
+                    onChange={(e) => handleIntField('natimortos', e.target.value)}
+                    placeholder="—"
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white text-center font-bold disabled:bg-slate-50"
+                  />
+                </div>
+              </div>
+            </>
+          )}
 
           <div className="pt-2 space-y-2.5">
             <h4 className="text-xs font-extrabold uppercase tracking-wider text-sky-900 border-b border-slate-100 pb-1.5">

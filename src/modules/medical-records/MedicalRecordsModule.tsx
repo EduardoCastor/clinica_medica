@@ -228,6 +228,8 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
         setMedicalDocuments(bundle.documents);
         if (bundle.error) {
           setClinicalSyncError(bundle.error);
+        } else if (bundle.warning) {
+          setClinicalSyncError(bundle.warning);
         }
       } catch (err) {
         setClinicalSyncError(
@@ -744,6 +746,11 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
               <span className="font-semibold text-slate-500">Tel/WhatsApp: </span>
               <span className="font-mono text-slate-900 truncate">
                 {selectedPatient.whatsapp || selectedPatient.phone || '—'}
+                {selectedPatient.phone &&
+                selectedPatient.whatsapp &&
+                selectedPatient.phone !== selectedPatient.whatsapp
+                  ? ` · ${selectedPatient.phone}`
+                  : ''}
               </span>
             </div>
             <div className="min-w-0 truncate flex items-center gap-1">
@@ -1239,6 +1246,9 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
           canCreate={canCreateClinicalDoc && canEditMedicalRecords}
           canEdit={canEditClinicalDoc && canEditMedicalRecords}
           onRefreshBundle={() => loadPatientBundle(selectedPatient)}
+          onEditPatientRegistration={
+            canEditPatientRecord ? () => setIsPatientEditModalOpen(true) : undefined
+          }
           onPrintAnamnesis={(entry) =>
             setPrintableDoc({
               type: 'anamnesis',
@@ -1279,12 +1289,31 @@ export const MedicalRecordsModule: React.FC<MedicalRecordsModuleProps> = ({ init
       {/* =========================================================================
           TAB 1: EVOLUÇÕES CLÍNICAS (SOAP & CFM IMMUTABILITY)
           ========================================================================= */}
-      {activeTab === 'evolutions' && (
+      {activeTab === 'evolutions' && selectedPatient && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
               Histórico de Evoluções Clínicas do Paciente ({records.length})
             </h3>
+            {records.length > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setPrintableDoc({
+                    type: 'medical_records_history',
+                    data: {
+                      branchId: resolvedBranchIdForPatient,
+                      patient: selectedPatient,
+                      records,
+                    },
+                  })
+                }
+                className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl transition inline-flex items-center gap-1.5"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Imprimir Histórico Completo</span>
+              </button>
+            )}
           </div>
 
           {records.length === 0 ? (

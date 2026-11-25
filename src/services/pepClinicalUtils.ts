@@ -1,6 +1,7 @@
 import {
   AnthropometricMeasurement,
   MedicalRecordEntry,
+  PatientAnamnesisEntry,
   StructuredAnamnesis,
   TriStateAnswer,
 } from '../types';
@@ -25,6 +26,8 @@ export const EMPTY_STRUCTURED_ANAMNESIS: StructuredAnamnesis = {
   cirurgiasPrevias: '',
   cirurgiaQual: '',
   cirurgiaQuando: '',
+  indicacaoCirurgia: '',
+  indicacaoCirurgiaDetalhes: '',
   transfusaoSanguinea: '',
   dor: '',
   dorDescricao: '',
@@ -71,6 +74,7 @@ export function normalizeStructuredAnamnesis(
 ): StructuredAnamnesis {
   const src = raw || {};
   const cirurgias = cleanTriState(src.cirurgiasPrevias);
+  const indicacaoCirurgia = cleanTriState(src.indicacaoCirurgia);
   const dor = cleanTriState(src.dor);
   const diabetes = cleanTriState(src.diabetes);
   const tireoide = cleanTriState(src.doencasTireoide);
@@ -101,6 +105,9 @@ export function normalizeStructuredAnamnesis(
     cirurgiasPrevias: cirurgias,
     cirurgiaQual: cirurgias === 'sim' ? cleanText(src.cirurgiaQual) : '',
     cirurgiaQuando: cirurgias === 'sim' ? cleanText(src.cirurgiaQuando) : '',
+    indicacaoCirurgia,
+    indicacaoCirurgiaDetalhes:
+      indicacaoCirurgia === 'sim' ? cleanText(src.indicacaoCirurgiaDetalhes) : '',
     transfusaoSanguinea: cleanTriState(src.transfusaoSanguinea),
     dor,
     dorDescricao: dor === 'sim' ? cleanText(src.dorDescricao) : '',
@@ -315,4 +322,63 @@ export function formatMetricDisplay(
     maximumFractionDigits: decimals,
   });
   return unit ? `${formatted} ${unit}` : formatted;
+}
+
+/**
+ * Converte ISO/Date para o formato esperado por <input type="datetime-local">
+ * no fuso horário local (evita deslocamento UTC de .toISOString().slice(0, 16)).
+ */
+export function toLocalDateTimeInputValue(isoOrDate?: string | Date | null): string {
+  const parsed = isoOrDate ? new Date(isoOrDate) : new Date();
+  const d = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * Reconcilia eventuais registros históricos que gravaram `structured_anamnesis`
+ * diretamente em `medical_records` sem entrada correspondente em `patient_anamnesis_records`.
+ * Mantém `patient_anamnesis_records` como fonte oficial sem duplicar registros.
+ */
+export function mergeLegacyAnamnesisFromRecords(
+  officialEntries: PatientAnamnesisEntry[],
+  medicalRecords: MedicalRecordEntry[]
+): PatientAnamnesisEntry[] {
+  const linkedRecordIds = new Set(
+    officialEntries
+      .map((entry) => entry.medicalRecordId)
+      .filter((id): id is string => Boolean(id))
+  );
+
+  const legacyProjected: PatientAnamnesisEntry[] = [];
+  for (const rec of medicalRecords) {
+    if (linkedRecordIds.has(rec.id)) continue;
+    if (!rec.structuredAnamnesis || !hasStructuredAnamnesisContent(rec.structuredAnamnesis)) {
+      continue;
+    }
+    legacyProjected.push({
+      id: `legacy_mr_${rec.id}`,
+      organizationId: rec.organizationId,
+      branchId: rec.branchId,
+      patientId: rec.patientId,
+      medicalRecordId: rec.id,
+      professionalId: rec.professionalId,
+      professionalName: rec.professionalName,
+      professionalCouncil: rec.professionalCouncilNumber,
+      evaluationDate: rec.recordDate,
+      status: rec.status === 'signed' || rec.isSigned ? 'signed' : 'draft',
+      structuredData: normalizeStructuredAnamnesis(rec.structuredAnamnesis),
+      isSigned: Boolean(rec.isSigned || rec.status === 'signed'),
+      signedAt: rec.signedAt,
+      signatureHash: rec.signatureHash,
+      createdAt: rec.createdAt,
+      updatedAt: rec.updatedAt,
+    });
+  }
+
+  return [...officialEntries, ...legacyProjected].sort((a, b) => {
+    const tA = new Date(a.evaluationDate).getTime() || 0;
+    const tB = new Date(b.evaluationDate).getTime() || 0;
+    return tB - tA;
+  });
 }
