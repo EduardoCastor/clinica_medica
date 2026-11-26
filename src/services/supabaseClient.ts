@@ -87,8 +87,9 @@ const getStoredConfig = (): { url: string; anonKey: string } => {
     }
   }
 
-  const envUrl = cleanUrl(import.meta.env.VITE_SUPABASE_URL);
-  const envKey = cleanKey(import.meta.env.VITE_SUPABASE_ANON_KEY);
+  const metaEnv = (import.meta as { env?: Record<string, string | undefined> }).env;
+  const envUrl = cleanUrl(metaEnv?.VITE_SUPABASE_URL);
+  const envKey = cleanKey(metaEnv?.VITE_SUPABASE_ANON_KEY);
 
   return {
     url: envUrl,

@@ -28,13 +28,24 @@ import { DomainSimulatorBanner } from './components/DomainSimulatorBanner';
 import { DomainResolver, PRODUCTION_DOMAINS } from './services/domainResolver';
 import { isAttendanceDisplayPath } from './services/attendanceQueueUtils';
 import { MENU_DEFINITIONS } from './services/rbacConfig';
+import { useAttendanceAutoStartWatcher } from './hooks/useAttendanceAutoStartWatcher';
 
 import { Patient } from './types';
 import { ShieldCheck, LogOut, Database, X, Lock, Loader2 } from 'lucide-react';
 
 const MainAppContent: React.FC = () => {
-  const { tenantContext } = useTenant();
-  const { isAuthenticated, isAuthLoading, isSuperAdmin, logout, canViewMenu, currentUser } = useAuth();
+  const { tenantContext, organization, activeBranchId } = useTenant();
+  const {
+    isAuthenticated,
+    isAuthLoading,
+    isSuperAdmin,
+    logout,
+    canViewMenu,
+    canCreateInMenu,
+    canEditInMenu,
+    canAdminMenu,
+    currentUser,
+  } = useAuth();
 
   const [activeClinicTab, setActiveClinicTab] = useState<ClinicTab>('dashboard');
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
@@ -84,6 +95,22 @@ const MainAppContent: React.FC = () => {
   const isStandaloneDisplayRoute =
     typeof window !== 'undefined' &&
     isAttendanceDisplayPath(window.location.pathname, import.meta.env.BASE_URL || '/');
+
+  const canOperateCallPanel =
+    canCreateInMenu('call_panel') ||
+    canEditInMenu('call_panel') ||
+    canAdminMenu('call_panel');
+
+  useAttendanceAutoStartWatcher({
+    enabled:
+      currentMode === 'CLINIC_APP' &&
+      isAuthenticated &&
+      !isStandaloneDisplayRoute &&
+      activeClinicTab !== 'call_panel' &&
+      canOperateCallPanel,
+    organizationId: organization.id,
+    branchId: activeBranchId,
+  });
 
   if (isStandaloneDisplayRoute) {
     return <PublicAttendanceDisplayPage />;

@@ -30,6 +30,8 @@ import { getSupabase } from '../../services/supabaseClient';
 import { DomainResolver } from '../../services/domainResolver';
 import {
   AttendanceCloudService,
+  CALL_PANEL_BROADCAST_CHANNEL_NAME,
+  CallPanelSyncSignalPayload,
   ensureSupabaseRealtimeAuth,
   getCallPanelRealtimeBroadcastTopic,
   getDefaultCallPanelSettings,
@@ -47,9 +49,13 @@ import {
   formatTimeWithSecondsSaoPaulo,
   getAttendanceCallEventKey,
   getAutoStartRemainingSeconds,
-  hasAutoStartElapsed,
   resolvePhysicianPanelSnapshot,
 } from '../../services/attendanceQueueUtils';
+import {
+  clearAutoStartRetryState,
+  getNextAutoStartWakeDelayMs,
+  processDueAutoStartCalls,
+} from '../../services/attendanceAutoStartService';
 import {
   triggerPatientCallAlert,
   unlockCallAudioContext,
@@ -83,7 +89,6 @@ export const CallPanelModule: React.FC = () => {
   const canEditSettings = canEditInMenu('call_panel') || canAdminMenu('call_panel');
 
   const panelRootRef = useRef<HTMLDivElement | null>(null);
-  const autoStartInFlightKeyRef = useRef<string | null>(null);
   const lastAnnouncedEventKeyRef = useRef<string | null>(null);
 
   const professionals = useMemo(
@@ -291,6 +296,37 @@ export const CallPanelModule: React.FC = () => {
     };
   }, [organization.id, activeBranchId, loadAllPanelData]);
 
+  // Same-browser cross-tab BroadcastChannel + foreground visibility resync
+  useEffect(() => {
+    if (!organization.id) return;
+    let bc: BroadcastChannel | null = null;
+    if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
+      bc = new BroadcastChannel(CALL_PANEL_BROADCAST_CHANNEL_NAME);
+      bc.onmessage = (msg: MessageEvent<CallPanelSyncSignalPayload>) => {
+        if (msg?.data?.organizationId === organization.id) {
+          void loadAllPanelData();
+        }
+      };
+    }
+
+    const onForegroundOrOnline = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+      void loadAllPanelData();
+    };
+
+    document.addEventListener('visibilitychange', onForegroundOrOnline);
+    window.addEventListener('focus', onForegroundOrOnline);
+    window.addEventListener('online', onForegroundOrOnline);
+
+    return () => {
+      if (bc) bc.close();
+      document.removeEventListener('visibilitychange', onForegroundOrOnline);
+      window.removeEventListener('focus', onForegroundOrOnline);
+      window.removeEventListener('online', onForegroundOrOnline);
+    };
+  }, [organization.id, loadAllPanelData]);
+
   // Fullscreen change listener
   useEffect(() => {
     const onFsChange = () => {
@@ -374,28 +410,42 @@ export const CallPanelModule: React.FC = () => {
     settings.chimeVolume,
   ]);
 
-  // Automatic start driven by persisted DB timestamp (calledAt + autoStartDelaySeconds)
+  // Reliable DB-timestamp automatic start for ALL active called attendances (survives clock skew & tab switches)
   useEffect(() => {
-    const called = snapshot.activeCalled;
-    if (!canOperatePanel || !called || isSubmitting) return;
-    if (!hasAutoStartElapsed(called, nowMs)) return;
+    if (isLoading || !canOperatePanel || isSubmitting || calls.length === 0) return;
 
-    const key = `${called.id}:${called.calledAt}`;
-    if (autoStartInFlightKeyRef.current === key) return;
-    autoStartInFlightKeyRef.current = key;
+    let cancelled = false;
+    const runSweep = () => {
+      if (cancelled) return;
+      void processDueAutoStartCalls(calls, {
+        onStarted: (call, res) => {
+          if (!res.alreadyStarted) {
+            setStatusFeedback(
+              `Atendimento de ${call.patientName} iniciado automaticamente após ${call.autoStartDelaySeconds}s.`
+            );
+          }
+          setActionError('');
+        },
+        onError: (call, message) => {
+          setActionError(
+            `Falha ao iniciar automaticamente o atendimento de ${call.patientName}: ${message}`
+          );
+        },
+        onRefreshNeeded: () => loadAllPanelData(),
+      });
+    };
 
-    void (async () => {
-      const res = await AttendanceCloudService.startAttendanceRpc(called.id, 'automatic');
-      if (res.success) {
-        setStatusFeedback(
-          `Atendimento de ${called.patientName} iniciado automaticamente após ${called.autoStartDelaySeconds}s.`
-        );
-        await loadAllPanelData();
-      } else if (res.code !== 'AUTO_START_NOT_DUE') {
-        autoStartInFlightKeyRef.current = null;
-      }
-    })();
-  }, [snapshot.activeCalled, nowMs, canOperatePanel, isSubmitting, loadAllPanelData]);
+    runSweep();
+
+    const delayMs = getNextAutoStartWakeDelayMs(calls, nowMs);
+    if (delayMs === null) return;
+
+    const wakeTimer = window.setTimeout(runSweep, delayMs);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(wakeTimer);
+    };
+  }, [isLoading, calls, nowMs, canOperatePanel, isSubmitting, loadAllPanelData]);
 
   const toggleFullscreen = async () => {
     try {
@@ -594,15 +644,13 @@ export const CallPanelModule: React.FC = () => {
 
   const handleManualStart = async () => {
     if (!canOperatePanel || !snapshot.activeCalled) return;
+    const targetCall = snapshot.activeCalled;
     await unlockCallAudioContext();
     setActionError('');
     setStatusFeedback('');
     setIsSubmitting(true);
 
-    const res = await AttendanceCloudService.startAttendanceRpc(
-      snapshot.activeCalled.id,
-      'manual'
-    );
+    const res = await AttendanceCloudService.startAttendanceRpc(targetCall.id, 'manual');
     setIsSubmitting(false);
 
     if (!res.success) {
@@ -610,9 +658,17 @@ export const CallPanelModule: React.FC = () => {
       return;
     }
 
-    setStatusFeedback(
-      `Atendimento de ${snapshot.activeCalled.patientName} iniciado manualmente.`
-    );
+    clearAutoStartRetryState(targetCall.id);
+
+    if (res.alreadyStarted) {
+      setStatusFeedback(
+        `Atendimento de ${targetCall.patientName} já havia sido iniciado automaticamente.`
+      );
+    } else {
+      setStatusFeedback(
+        `Atendimento de ${targetCall.patientName} iniciado manualmente.`
+      );
+    }
     await loadAllPanelData();
   };
 
@@ -689,7 +745,7 @@ export const CallPanelModule: React.FC = () => {
         setActionError(res.error || 'Não foi possível cancelar a chamada.');
         return;
       }
-      autoStartInFlightKeyRef.current = null;
+      clearAutoStartRetryState(modal.attendanceCallId);
       setStatusFeedback('Chamada cancelada com segurança. Agendamento preservado.');
       await loadAllPanelData();
     }

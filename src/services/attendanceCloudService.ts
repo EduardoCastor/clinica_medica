@@ -22,6 +22,8 @@ export interface CallPanelRpcResult {
   eventType?: AttendanceCallEventType;
   alreadyStarted?: boolean;
   remainingSeconds?: number;
+  serverNow?: string;
+  dueAt?: string;
   attendance?: AttendanceCallRecord;
   autoClosedAttendance?: AttendanceCallRecord;
   activeAttendance?: AttendanceCallRecord;
@@ -378,6 +380,33 @@ export const AttendanceCloudService = {
     }
   },
 
+  fetchPendingCalledCalls: async (
+    organizationId?: string,
+    branchId?: string
+  ): Promise<AttendanceCallRecord[]> => {
+    const supabase = getSupabase();
+    if (!supabase || !isUuid(organizationId)) return [];
+    try {
+      let query = supabase
+        .from('attendance_calls')
+        .select('*')
+        .eq('organization_id', organizationId)
+        .in('status', ['chamado', 'em_andamento'])
+        .order('called_at', { ascending: true })
+        .limit(50);
+
+      if (branchId && branchId !== 'all' && isUuid(branchId)) {
+        query = query.eq('branch_id', branchId);
+      }
+
+      const { data, error } = await query;
+      if (error || !Array.isArray(data)) return [];
+      return (data as Array<Record<string, unknown>>).map(mapAttendanceCallRow);
+    } catch {
+      return [];
+    }
+  },
+
   callPatientRpc: async (params: {
     organizationId: string;
     branchId?: string | null;
@@ -461,6 +490,8 @@ export const AttendanceCloudService = {
       alreadyStarted: Boolean(payload.already_started),
       remainingSeconds:
         payload.remaining_seconds !== undefined ? Number(payload.remaining_seconds) : undefined,
+      serverNow: payload.server_now ? String(payload.server_now) : undefined,
+      dueAt: payload.due_at ? String(payload.due_at) : undefined,
       attendance: payload.attendance
         ? mapAttendanceCallRow(payload.attendance as Record<string, unknown>)
         : undefined,

@@ -29,15 +29,15 @@ import {
 import {
   buildPatientVoiceAnnouncementText,
   formatCallPanelPatientName,
-  formatCountdownMmSs,
-  formatElapsedHms,
   formatFullDateSaoPaulo,
-  formatTimeSaoPaulo,
   formatTimeWithSecondsSaoPaulo,
   getAttendanceCallEventKey,
-  getAutoStartRemainingSeconds,
   resolvePhysicianPanelSnapshot,
 } from '../../services/attendanceQueueUtils';
+import {
+  getNextAutoStartWakeDelayMs,
+  processDueAutoStartCalls,
+} from '../../services/attendanceAutoStartService';
 import {
   ensureSpeechVoicesListener,
   isCallAudioRunning,
@@ -106,6 +106,9 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
     isSuperAdmin,
     canViewMenu,
     canConsultMenu,
+    canCreateInMenu,
+    canEditInMenu,
+    canAdminMenu,
     currentUser,
   } = useAuth();
 
@@ -162,6 +165,14 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
   const isAuthorizedForPanel =
     isAuthenticated &&
     (isSuperAdmin || canViewMenu('call_panel') || canConsultMenu('call_panel'));
+
+  const canOperatePanel =
+    isAuthorizedForPanel &&
+    !isTenantMismatch &&
+    (isSuperAdmin ||
+      canCreateInMenu('call_panel') ||
+      canEditInMenu('call_panel') ||
+      canAdminMenu('call_panel'));
 
   const resolvedOrgId =
     isSuperAdmin && queryParams.orgId ? queryParams.orgId : organization.id;
@@ -644,6 +655,30 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
     loadDisplayData,
   ]);
 
+  // Reliable DB-timestamp auto-start execution even when reception tab is backgrounded
+  useEffect(() => {
+    if (isInitialLoading || !canOperatePanel || calls.length === 0) return;
+
+    let cancelled = false;
+    const runSweep = () => {
+      if (cancelled) return;
+      void processDueAutoStartCalls(calls, {
+        onRefreshNeeded: () => loadDisplayData('auto_start_executed'),
+      });
+    };
+
+    runSweep();
+
+    const delayMs = getNextAutoStartWakeDelayMs(calls, nowMs);
+    if (delayMs === null) return;
+
+    const timer = window.setTimeout(runSweep, delayMs);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [isInitialLoading, canOperatePanel, calls, nowMs, loadDisplayData]);
+
   const snapshot = useMemo(
     () =>
       resolvePhysicianPanelSnapshot(appointments, calls, {
@@ -921,15 +956,6 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
 
   const displayedCall = snapshot.activeCalled || snapshot.activeInProgress;
   const isCalledState = Boolean(snapshot.activeCalled);
-  const isInProgressState = Boolean(!snapshot.activeCalled && snapshot.activeInProgress);
-
-  const calledRemainingSec = snapshot.activeCalled
-    ? getAutoStartRemainingSeconds(
-        snapshot.activeCalled.calledAt,
-        snapshot.activeCalled.autoStartDelaySeconds,
-        nowMs
-      )
-    : 0;
 
   const displayedPhysicianName = displayedCall
     ? effectiveProfessionalId !== 'all' &&
@@ -1105,7 +1131,7 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
                 )}
               </h1>
 
-              {/* Médico, Sala/Consultório e Horário/Temporizador */}
+              {/* Médico e Sala/Consultório (sem cronômetros ou contagens regressivas) */}
               <div className="pt-6 xl:pt-8 border-t border-slate-200 flex flex-wrap items-center justify-between gap-6">
                 <div className="flex flex-wrap items-center gap-4 sm:gap-6">
                   <div>
@@ -1128,29 +1154,6 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
                       {displayedCall.roomName || matchedRoom?.name || 'Consultório 01'}
                     </p>
                   </div>
-                </div>
-
-                {/* Horário de início / chamada e temporizador */}
-                <div className="text-left sm:text-right">
-                  {isInProgressState ? (
-                    <>
-                      <p className="text-[11px] sm:text-xs font-bold uppercase tracking-widest text-slate-400">
-                        Iniciado às {formatTimeSaoPaulo(displayedCall.startedAt)}
-                      </p>
-                      <p className="text-[clamp(1.5rem,2.5vw,2.75rem)] font-black font-mono tabular-nums text-emerald-700 mt-0.5">
-                        {formatElapsedHms(displayedCall.startedAt, nowMs)}
-                      </p>
-                    </>
-                  ) : (
-                    <>
-                      <p className="text-[11px] sm:text-xs font-bold uppercase tracking-widest text-slate-400">
-                        Chamado às {formatTimeSaoPaulo(displayedCall.calledAt)}
-                      </p>
-                      <p className="text-[clamp(1.35rem,2.2vw,2.35rem)] font-black font-mono tabular-nums text-emerald-700 mt-0.5">
-                        {formatCountdownMmSs(calledRemainingSec)}
-                      </p>
-                    </>
-                  )}
                 </div>
               </div>
             </div>
@@ -1228,14 +1231,11 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
                 <p className="text-xs xl:text-sm font-bold text-slate-700">
                   {snapshot.lastCompleted.professionalName}
                 </p>
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs xl:text-sm font-semibold text-slate-600">
-                  <span>{snapshot.lastCompleted.roomName}</span>
-                  {snapshot.lastCompleted.endedAt && (
-                    <span className="font-mono tabular-nums font-bold text-rose-700">
-                      {formatTimeSaoPaulo(snapshot.lastCompleted.endedAt)}
-                    </span>
-                  )}
-                </div>
+                {snapshot.lastCompleted.roomName && (
+                  <p className="text-xs xl:text-sm font-semibold text-slate-600">
+                    {snapshot.lastCompleted.roomName}
+                  </p>
+                )}
               </div>
             ) : (
               <p className="text-sm font-medium text-slate-500">
@@ -1269,22 +1269,9 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
                 <p className="text-xs xl:text-sm font-bold text-slate-700">
                   {snapshot.nextPatient.professionalName}
                 </p>
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs xl:text-sm font-semibold text-slate-600">
-                  <span>
-                    {snapshot.nextPatient.roomName ||
-                      matchedRoom?.name ||
-                      'Consultório 01'}
-                  </span>
-                  <span className="font-mono tabular-nums font-bold text-amber-800">
-                    {formatTimeSaoPaulo(snapshot.nextPatient.startTime)}
-                  </span>
-                </div>
-                {snapshot.waitingCount > 1 && (
-                  <p className="text-xs font-semibold text-emerald-800 pt-1">
-                    + {snapshot.waitingCount - 1}{' '}
-                    {snapshot.waitingCount - 1 === 1
-                      ? 'paciente aguardando'
-                      : 'pacientes aguardando'}
+                {(snapshot.nextPatient.roomName || matchedRoom?.name) && (
+                  <p className="text-xs xl:text-sm font-semibold text-slate-600">
+                    {snapshot.nextPatient.roomName || matchedRoom?.name}
                   </p>
                 )}
               </div>
