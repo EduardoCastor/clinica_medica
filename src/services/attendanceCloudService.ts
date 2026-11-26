@@ -121,6 +121,115 @@ export function mapCallPanelSettingsRow(row: Record<string, unknown>): CallPanel
   };
 }
 
+export const CALL_PANEL_BROADCAST_CHANNEL_NAME = 'medsync_call_panel_sync';
+
+export function getCallPanelRealtimeBroadcastTopic(organizationId: string): string {
+  return `call-panel-sync-${organizationId}`;
+}
+
+export async function ensureSupabaseRealtimeAuth(): Promise<boolean> {
+  const supabase = getSupabase();
+  if (!supabase) return false;
+  try {
+    const { data } = await supabase.auth.getSession();
+    const token = data?.session?.access_token;
+    if (token) {
+      await supabase.realtime.setAuth(token);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export interface CallPanelSyncSignalPayload {
+  organizationId: string;
+  branchId?: string | null;
+  callId?: string;
+  eventType: string;
+  sentAt: string;
+}
+
+export async function broadcastCallPanelSyncSignal(params: {
+  organizationId: string;
+  branchId?: string | null;
+  callId?: string;
+  eventType: string;
+}): Promise<void> {
+  if (!isUuid(params.organizationId)) return;
+
+  const payload: CallPanelSyncSignalPayload = {
+    organizationId: params.organizationId,
+    branchId: params.branchId || null,
+    callId: params.callId,
+    eventType: params.eventType,
+    sentAt: new Date().toISOString(),
+  };
+
+  // 1. Same-browser multi-tab instant wake-up signal
+  if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
+    try {
+      const bc = new BroadcastChannel(CALL_PANEL_BROADCAST_CHANNEL_NAME);
+      bc.postMessage(payload);
+      bc.close();
+    } catch {
+      // Ignore BroadcastChannel unavailability
+    }
+  }
+
+  // 2. Cross-browser / cross-device Supabase Realtime Broadcast signal
+  const supabase = getSupabase();
+  if (!supabase) return;
+  try {
+    await ensureSupabaseRealtimeAuth();
+    const topic = getCallPanelRealtimeBroadcastTopic(params.organizationId);
+    const existing = supabase
+      .getChannels()
+      .find((ch) => ch.topic === `realtime:${topic}` && ch.state === 'joined');
+
+    if (existing) {
+      await existing.send({
+        type: 'broadcast',
+        event: 'attendance_updated',
+        payload,
+      });
+      return;
+    }
+
+    const channel = supabase.channel(topic);
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      const timeout = setTimeout(finish, 1200);
+      channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          void channel
+            .send({
+              type: 'broadcast',
+              event: 'attendance_updated',
+              payload,
+            })
+            .finally(() => {
+              clearTimeout(timeout);
+              finish();
+            });
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          clearTimeout(timeout);
+          finish();
+        }
+      });
+    });
+    await supabase.removeChannel(channel);
+  } catch {
+    // postgres_changes & contingency polling handle recovery seamlessly
+  }
+}
+
 export function getDefaultCallPanelSettings(
   organizationId: string,
   branchId?: string | null
@@ -298,7 +407,7 @@ export const AttendanceCloudService = {
     }
 
     const payload = (data || {}) as Record<string, unknown>;
-    return {
+    const result: CallPanelRpcResult = {
       success: Boolean(payload.success),
       code: payload.code ? String(payload.code) : undefined,
       error: payload.error ? String(payload.error) : undefined,
@@ -313,6 +422,17 @@ export const AttendanceCloudService = {
         ? mapAttendanceCallRow(payload.active_attendance as Record<string, unknown>)
         : undefined,
     };
+
+    if (result.success) {
+      void broadcastCallPanelSyncSignal({
+        organizationId: params.organizationId,
+        branchId: result.attendance?.branchId || params.branchId,
+        callId: result.attendance?.id,
+        eventType: result.eventType || 'called',
+      });
+    }
+
+    return result;
   },
 
   startAttendanceRpc: async (
@@ -334,7 +454,7 @@ export const AttendanceCloudService = {
     }
 
     const payload = (data || {}) as Record<string, unknown>;
-    return {
+    const result: CallPanelRpcResult = {
       success: Boolean(payload.success),
       code: payload.code ? String(payload.code) : undefined,
       error: payload.error ? String(payload.error) : undefined,
@@ -345,6 +465,17 @@ export const AttendanceCloudService = {
         ? mapAttendanceCallRow(payload.attendance as Record<string, unknown>)
         : undefined,
     };
+
+    if (result.success && !result.alreadyStarted && result.attendance) {
+      void broadcastCallPanelSyncSignal({
+        organizationId: result.attendance.organizationId,
+        branchId: result.attendance.branchId,
+        callId: result.attendance.id,
+        eventType: origin === 'automatic' ? 'started_auto' : 'started_manual',
+      });
+    }
+
+    return result;
   },
 
   completeAttendanceRpc: async (attendanceCallId: string): Promise<CallPanelRpcResult> => {
@@ -362,7 +493,7 @@ export const AttendanceCloudService = {
     }
 
     const payload = (data || {}) as Record<string, unknown>;
-    return {
+    const result: CallPanelRpcResult = {
       success: Boolean(payload.success),
       code: payload.code ? String(payload.code) : undefined,
       error: payload.error ? String(payload.error) : undefined,
@@ -370,6 +501,17 @@ export const AttendanceCloudService = {
         ? mapAttendanceCallRow(payload.attendance as Record<string, unknown>)
         : undefined,
     };
+
+    if (result.success && result.attendance) {
+      void broadcastCallPanelSyncSignal({
+        organizationId: result.attendance.organizationId,
+        branchId: result.attendance.branchId,
+        callId: result.attendance.id,
+        eventType: 'completed_manual',
+      });
+    }
+
+    return result;
   },
 
   cancelAttendanceRpc: async (
@@ -391,7 +533,7 @@ export const AttendanceCloudService = {
     }
 
     const payload = (data || {}) as Record<string, unknown>;
-    return {
+    const result: CallPanelRpcResult = {
       success: Boolean(payload.success),
       code: payload.code ? String(payload.code) : undefined,
       error: payload.error ? String(payload.error) : undefined,
@@ -399,6 +541,17 @@ export const AttendanceCloudService = {
         ? mapAttendanceCallRow(payload.attendance as Record<string, unknown>)
         : undefined,
     };
+
+    if (result.success && result.attendance) {
+      void broadcastCallPanelSyncSignal({
+        organizationId: result.attendance.organizationId,
+        branchId: result.attendance.branchId,
+        callId: result.attendance.id,
+        eventType: 'cancelled',
+      });
+    }
+
+    return result;
   },
 
   saveCallPanelSettings: async (
@@ -468,9 +621,16 @@ export const AttendanceCloudService = {
         return { success: false, error: error?.message || 'Erro ao salvar configurações do painel.' };
       }
 
+      const saved = mapCallPanelSettingsRow(data as Record<string, unknown>);
+      void broadcastCallPanelSyncSignal({
+        organizationId: saved.organizationId,
+        branchId: saved.branchId,
+        eventType: 'settings_updated',
+      });
+
       return {
         success: true,
-        settings: mapCallPanelSettingsRow(data as Record<string, unknown>),
+        settings: saved,
       };
     } catch (err) {
       return {

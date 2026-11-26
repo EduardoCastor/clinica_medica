@@ -1,5 +1,6 @@
 import {
   Appointment,
+  AttendanceCallEvent,
   AttendanceCallRecord,
   AttendanceCallStatus,
   PatientNameDisplayMode,
@@ -239,7 +240,7 @@ export function buildPatientVoiceAnnouncementText(params: {
   const patient = String(params.patientName || 'Paciente').trim();
   const room = String(params.roomName || 'Consultório 01').trim();
   const professional = String(params.professionalName || 'Médico').trim();
-  return `Atenção, ${patient}. Favor dirigir-se à ${room} para atendimento com ${professional}.`;
+  return `Atenção, ${patient}. Favor dirigir-se ao ${room} para atendimento com ${professional}.`;
 }
 
 const APPOINTMENT_STATUS_PRIORITY: Record<string, number> = {
@@ -255,6 +256,7 @@ export function buildEligibleWaitingQueue(
     organizationId?: string;
     branchId?: string;
     professionalId?: string;
+    roomId?: string;
     targetDateYmd?: string;
   }
 ): Appointment[] {
@@ -285,6 +287,9 @@ export function buildEligibleWaitingQueue(
       ) {
         return false;
       }
+      if (options.roomId && options.roomId !== 'all' && apt.roomId && apt.roomId !== options.roomId) {
+        return false;
+      }
       if (!['waiting_room', 'confirmed', 'scheduled'].includes(apt.status)) {
         return false;
       }
@@ -306,9 +311,20 @@ export function buildEligibleWaitingQueue(
 }
 
 export function getAttendanceCallEventKey(
-  call: Pick<AttendanceCallRecord, 'id' | 'calledAt' | 'callCount'> | null | undefined
+  call: Pick<AttendanceCallRecord, 'id' | 'calledAt' | 'callCount'> | null | undefined,
+  events?: AttendanceCallEvent[]
 ): string | null {
   if (!call || !call.calledAt) return null;
+  if (Array.isArray(events) && events.length > 0) {
+    const matchedCallEvent = events.find(
+      (ev) =>
+        ev.attendanceCallId === call.id &&
+        (ev.eventType === 'called' || ev.eventType === 'recalled')
+    );
+    if (matchedCallEvent?.id) {
+      return `event:${matchedCallEvent.id}`;
+    }
+  }
   return `${call.id}:${call.calledAt}:${call.callCount}`;
 }
 
@@ -350,11 +366,13 @@ export function resolvePhysicianPanelSnapshot(
     organizationId?: string;
     branchId?: string;
     professionalId: string;
+    roomId?: string;
     targetDateYmd?: string;
   }
 ): PhysicianPanelSnapshot {
   const targetYmd = options.targetDateYmd || getSaoPauloTodayYmd();
   const isAllPhysicians = !options.professionalId || options.professionalId === 'all';
+  const hasRoomFilter = Boolean(options.roomId && options.roomId !== 'all');
 
   const scopedCalls = attendanceCalls.filter((c) => {
     if (options.organizationId && c.organizationId !== options.organizationId) return false;
@@ -362,6 +380,9 @@ export function resolvePhysicianPanelSnapshot(
       return false;
     }
     if (!isAllPhysicians && c.professionalId !== options.professionalId) {
+      return false;
+    }
+    if (hasRoomFilter && c.roomId !== options.roomId) {
       return false;
     }
     return true;
@@ -398,6 +419,7 @@ export function resolvePhysicianPanelSnapshot(
     organizationId: options.organizationId,
     branchId: options.branchId,
     professionalId: isAllPhysicians ? 'all' : options.professionalId,
+    roomId: hasRoomFilter ? options.roomId : undefined,
     targetDateYmd: targetYmd,
   });
 

@@ -30,6 +30,8 @@ import { getSupabase } from '../../services/supabaseClient';
 import { DomainResolver } from '../../services/domainResolver';
 import {
   AttendanceCloudService,
+  ensureSupabaseRealtimeAuth,
+  getCallPanelRealtimeBroadcastTopic,
   getDefaultCallPanelSettings,
 } from '../../services/attendanceCloudService';
 import {
@@ -43,6 +45,7 @@ import {
   formatFullDateSaoPaulo,
   formatTimeSaoPaulo,
   formatTimeWithSecondsSaoPaulo,
+  getAttendanceCallEventKey,
   getAutoStartRemainingSeconds,
   hasAutoStartElapsed,
   resolvePhysicianPanelSnapshot,
@@ -118,7 +121,9 @@ export const CallPanelModule: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeBottomTab, setActiveBottomTab] = useState<'queue' | 'history'>('queue');
   const [confirmModal, setConfirmModal] = useState<PendingConfirmModalState | null>(null);
-  const [displayTargetScope, setDisplayTargetScope] = useState<'selected' | 'all'>('selected');
+  const [displayTargetScope, setDisplayTargetScope] = useState<
+    'selected' | 'selected_room' | 'room' | 'all'
+  >('selected');
   const [popupBlockedUrl, setPopupBlockedUrl] = useState('');
 
   const availableRooms = useMemo(() => {
@@ -194,7 +199,7 @@ export const CallPanelModule: React.FC = () => {
     return () => window.clearInterval(id);
   }, []);
 
-  // Supabase Realtime + controlled 15s fallback sync
+  // Supabase Realtime (with JWT auth) + controlled 15s fallback sync
   useEffect(() => {
     const supabase = getSupabase();
     const fallbackTimer = window.setInterval(() => {
@@ -205,61 +210,84 @@ export const CallPanelModule: React.FC = () => {
       return () => window.clearInterval(fallbackTimer);
     }
 
-    const channel = supabase
-      .channel(`call-panel-${organization.id}-${activeBranchId || 'all'}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'attendance_calls',
-          filter: `organization_id=eq.${organization.id}`,
-        },
-        () => {
+    let cancelled = false;
+    let dbChannel: ReturnType<typeof supabase.channel> | null = null;
+    let broadcastChannel: ReturnType<typeof supabase.channel> | null = null;
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if ((event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN') && session?.access_token) {
+        void supabase.realtime.setAuth(session.access_token);
+      }
+    });
+
+    void ensureSupabaseRealtimeAuth().then(() => {
+      if (cancelled) return;
+      dbChannel = supabase
+        .channel(`call-panel-${organization.id}-${activeBranchId || 'all'}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'attendance_calls',
+            filter: `organization_id=eq.${organization.id}`,
+          },
+          () => {
+            void loadAllPanelData();
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'attendance_call_events',
+            filter: `organization_id=eq.${organization.id}`,
+          },
+          () => {
+            void loadAllPanelData();
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'appointments',
+            filter: `organization_id=eq.${organization.id}`,
+          },
+          () => {
+            void loadAllPanelData();
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'call_panel_settings',
+            filter: `organization_id=eq.${organization.id}`,
+          },
+          () => {
+            void loadAllPanelData();
+          }
+        )
+        .subscribe();
+
+      broadcastChannel = supabase
+        .channel(getCallPanelRealtimeBroadcastTopic(organization.id))
+        .on('broadcast', { event: 'attendance_updated' }, () => {
           void loadAllPanelData();
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'attendance_call_events',
-          filter: `organization_id=eq.${organization.id}`,
-        },
-        () => {
-          void loadAllPanelData();
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'appointments',
-          filter: `organization_id=eq.${organization.id}`,
-        },
-        () => {
-          void loadAllPanelData();
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'call_panel_settings',
-          filter: `organization_id=eq.${organization.id}`,
-        },
-        () => {
-          void loadAllPanelData();
-        }
-      )
-      .subscribe();
+        })
+        .subscribe();
+    });
 
     return () => {
+      cancelled = true;
       window.clearInterval(fallbackTimer);
-      void supabase.removeChannel(channel);
+      authListener.subscription.unsubscribe();
+      if (dbChannel) void supabase.removeChannel(dbChannel);
+      if (broadcastChannel) void supabase.removeChannel(broadcastChannel);
     };
   }, [organization.id, activeBranchId, loadAllPanelData]);
 
@@ -308,7 +336,8 @@ export const CallPanelModule: React.FC = () => {
     const activeCalled = snapshot.activeCalled;
     if (!activeCalled || !activeCalled.calledAt) return;
 
-    const eventKey = `${activeCalled.id}:${activeCalled.calledAt}:${activeCalled.callCount}`;
+    const eventKey = getAttendanceCallEventKey(activeCalled);
+    if (!eventKey) return;
     if (lastAnnouncedEventKeyRef.current === null) {
       // Initial hydration on page open: record key without blasting audio unexpectedly
       lastAnnouncedEventKeyRef.current = eventKey;
@@ -385,9 +414,13 @@ export const CallPanelModule: React.FC = () => {
   const handleOpenPublicDisplay = () => {
     setPopupBlockedUrl('');
     const targetProfId =
-      displayTargetScope === 'all' ? 'all' : selectedProfessionalId || 'all';
+      displayTargetScope === 'all' || displayTargetScope === 'room'
+        ? 'all'
+        : selectedProfessionalId || 'all';
     const targetRoomId =
-      displayTargetScope === 'all' ? '' : selectedRoom?.id || '';
+      displayTargetScope === 'selected_room' || displayTargetScope === 'room'
+        ? selectedRoom?.id || 'all'
+        : 'all';
     const simDomain = DomainResolver.isSimulationAllowed()
       ? DomainResolver.getSimulatedDomain()
       : null;
@@ -798,12 +831,17 @@ export const CallPanelModule: React.FC = () => {
             <select
               aria-label="Escopo da tela de exibição"
               value={displayTargetScope}
-              onChange={(e) =>
-                setDisplayTargetScope(e.target.value === 'all' ? 'all' : 'selected')
-              }
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === 'all' || v === 'selected_room' || v === 'room' || v === 'selected') {
+                  setDisplayTargetScope(v);
+                }
+              }}
               className="text-[11px] font-semibold text-emerald-900 bg-transparent px-2 py-1.5 focus:outline-none"
             >
               <option value="selected">TV: Médico atual</option>
+              <option value="selected_room">TV: Médico + Sala atual</option>
+              <option value="room">TV: Apenas Sala atual</option>
               <option value="all">TV: Recepção geral</option>
             </select>
             <button
@@ -928,7 +966,7 @@ export const CallPanelModule: React.FC = () => {
           className={`rounded-3xl border-2 p-6 sm:p-8 shadow-sm transition-all duration-300 ${
             snapshot.activeCalled
               ? `border-emerald-500 bg-emerald-50/85 ${
-                  pulseActive ? 'ring-4 ring-emerald-400/50 animate-pulse' : ''
+                  pulseActive ? 'ring-4 ring-emerald-400/50 animate-pulse motion-reduce:animate-none' : ''
                 }`
               : snapshot.activeInProgress
               ? 'border-emerald-600 bg-emerald-50/75'

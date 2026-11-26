@@ -1,13 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
+  Bug,
+  CheckCircle2,
   Lock,
   Loader2,
   Maximize2,
   Minimize2,
   Volume2,
   VolumeX,
+  Wifi,
   WifiOff,
+  X,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTenant } from '../../contexts/TenantContext';
@@ -16,6 +20,10 @@ import { StorageService } from '../../services/storage';
 import { getSupabase } from '../../services/supabaseClient';
 import {
   AttendanceCloudService,
+  CALL_PANEL_BROADCAST_CHANNEL_NAME,
+  CallPanelSyncSignalPayload,
+  ensureSupabaseRealtimeAuth,
+  getCallPanelRealtimeBroadcastTopic,
   getDefaultCallPanelSettings,
 } from '../../services/attendanceCloudService';
 import {
@@ -31,17 +39,33 @@ import {
   resolvePhysicianPanelSnapshot,
 } from '../../services/attendanceQueueUtils';
 import {
+  ensureSpeechVoicesListener,
+  isCallAudioRunning,
   triggerPatientCallAlert,
+  unlockAndTestCallAudio,
   unlockCallAudioContext,
 } from '../../services/callAudioService';
 import {
+  CallPanelDiagEntry,
+  getCallPanelDiagnostics,
+  isCallPanelDebugEnabled,
+  logCallPanelDiagnostic,
+  subscribeCallPanelDiagnostics,
+} from '../../services/callPanelDiagnostics';
+import {
   Appointment,
+  AttendanceCallEvent,
   AttendanceCallRecord,
   CallPanelSettings,
   PatientNameDisplayMode,
 } from '../../types';
 
-type RealtimeConnectionState = 'connected' | 'reconnecting' | 'offline';
+type RealtimeConnectionState =
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'offline'
+  | 'unavailable';
 
 function parseDisplayQueryParams(): {
   orgId: string;
@@ -63,10 +87,15 @@ function parseDisplayQueryParams(): {
   return {
     orgId: (sp.get('orgId') || '').trim(),
     branchId: (sp.get('branchId') || 'all').trim() || 'all',
-    professionalId: (sp.get('professionalId') || 'all').trim() || 'all',
+    professionalId: (sp.get('professionalId') || '').trim(),
     roomId: (sp.get('roomId') || '').trim(),
     nameMode: validNameMode,
   };
+}
+
+function prefersReducedMotion(): boolean {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 export const PublicAttendanceDisplayPage: React.FC = () => {
@@ -81,29 +110,46 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
   } = useAuth();
 
   const queryParams = useMemo(() => parseDisplayQueryParams(), []);
+  const debugModeEnabled = useMemo(() => isCallPanelDebugEnabled(), []);
 
   const displayRootRef = useRef<HTMLDivElement | null>(null);
   const hasHydratedRef = useRef(false);
   const announcedEventKeysRef = useRef<Set<string>>(new Set());
   const wasDisconnectedRef = useRef(false);
+  const isFetchInFlightRef = useRef(false);
+  const pendingRefetchRef = useRef(false);
+  const refreshDebounceTimerRef = useRef<number | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef<number | null>(null);
 
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [calls, setCalls] = useState<AttendanceCallRecord[]>([]);
+  const [events, setEvents] = useState<AttendanceCallEvent[]>([]);
   const [settings, setSettings] = useState<CallPanelSettings>(() =>
     getDefaultCallPanelSettings(organization.id, queryParams.branchId)
   );
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
-  const [connectionState, setConnectionState] = useState<RealtimeConnectionState>(() =>
-    typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'connected'
-  );
+  const [connectionState, setConnectionState] = useState<RealtimeConnectionState>(() => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return 'offline';
+    return getSupabase() ? 'connecting' : 'unavailable';
+  });
+  const [realtimeGeneration, setRealtimeGeneration] = useState(0);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [fullscreenHint, setFullscreenHint] = useState('');
+
+  const [audioActivated, setAudioActivated] = useState<boolean>(() => isCallAudioRunning());
   const [isLocalMuted, setIsLocalMuted] = useState(false);
-  const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [audioStatusError, setAudioStatusError] = useState('');
+  const [audioHint, setAudioHint] = useState('');
+
   const [callHighlightActive, setCallHighlightActive] = useState(false);
   const [catalogVersion, setCatalogVersion] = useState(0);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [diagEntries, setDiagEntries] = useState<CallPanelDiagEntry[]>(() =>
+    getCallPanelDiagnostics()
+  );
 
   const isTenantMismatch = Boolean(
     isAuthenticated &&
@@ -120,6 +166,7 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
   const resolvedOrgId =
     isSuperAdmin && queryParams.orgId ? queryParams.orgId : organization.id;
   const resolvedBranchId = queryParams.branchId || activeBranchId || 'all';
+  const resolvedRoomId = queryParams.roomId || 'all';
 
   const professionals = useMemo(
     () => StorageService.getProfessionals().filter((p) => p.isActive !== false),
@@ -140,35 +187,88 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
   const effectiveNameMode: PatientNameDisplayMode =
     queryParams.nameMode || settings.patientNameDisplayMode || 'full';
 
-  const loadDisplayData = useCallback(async () => {
-    if (!isAuthorizedForPanel || isTenantMismatch || !resolvedOrgId) return;
-    setLoadError('');
-    try {
-      const [aptRes, cloudRes] = await Promise.all([
-        StorageService.fetchAppointmentsFromCloudDetailed(),
-        AttendanceCloudService.fetchCallPanelSnapshot(resolvedOrgId, resolvedBranchId),
-      ]);
+  // Keep speech voice listener registered early
+  useEffect(() => {
+    ensureSpeechVoicesListener();
+  }, []);
 
-      setAppointments(aptRes.appointments);
-      setCalls(cloudRes.calls);
-      if (cloudRes.settings) {
-        setSettings(cloudRes.settings);
+  // Subscribe to technical diagnostic ring buffer in dev/debug mode
+  useEffect(() => {
+    if (!debugModeEnabled) return;
+    setDiagEntries(getCallPanelDiagnostics());
+    return subscribeCallPanelDiagnostics(() => {
+      setDiagEntries(getCallPanelDiagnostics());
+    });
+  }, [debugModeEnabled]);
+
+  const loadDisplayData = useCallback(
+    async (triggerReason: string = 'manual') => {
+      if (!isAuthorizedForPanel || isTenantMismatch || !resolvedOrgId) return;
+
+      if (isFetchInFlightRef.current) {
+        pendingRefetchRef.current = true;
+        return;
       }
 
-      const errs: string[] = [];
-      if (aptRes.error) errs.push(aptRes.error);
-      if (cloudRes.error) errs.push(cloudRes.error);
-      if (errs.length > 0) {
-        setLoadError(errs.join(' · '));
+      isFetchInFlightRef.current = true;
+      setLoadError('');
+      try {
+        const [aptRes, cloudRes] = await Promise.all([
+          StorageService.fetchAppointmentsFromCloudDetailed(),
+          AttendanceCloudService.fetchCallPanelSnapshot(resolvedOrgId, resolvedBranchId),
+        ]);
+
+        setAppointments(aptRes.appointments);
+        setCalls(cloudRes.calls);
+        setEvents(cloudRes.events);
+        if (cloudRes.settings) {
+          setSettings(cloudRes.settings);
+        }
+
+        const errs: string[] = [];
+        if (aptRes.error) errs.push(aptRes.error);
+        if (cloudRes.error) errs.push(cloudRes.error);
+        if (errs.length > 0) {
+          setLoadError(errs.join(' · '));
+        }
+
+        logCallPanelDiagnostic({
+          category: 'sync',
+          event: 'data_synced',
+          detail: `origem=${triggerReason}; chamadas=${cloudRes.calls.length}; agenda=${aptRes.appointments.length}`,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Erro ao atualizar dados do painel.';
+        setLoadError(msg);
+        logCallPanelDiagnostic({
+          category: 'sync',
+          event: 'data_sync_error',
+          detail: `${triggerReason}: ${msg}`,
+        });
+      } finally {
+        isFetchInFlightRef.current = false;
+        setIsInitialLoading(false);
+        if (pendingRefetchRef.current) {
+          pendingRefetchRef.current = false;
+          void loadDisplayData('coalesced_pending');
+        }
       }
-    } catch (err) {
-      setLoadError(
-        err instanceof Error ? err.message : 'Erro ao atualizar dados do painel.'
-      );
-    } finally {
-      setIsInitialLoading(false);
-    }
-  }, [isAuthorizedForPanel, isTenantMismatch, resolvedOrgId, resolvedBranchId]);
+    },
+    [isAuthorizedForPanel, isTenantMismatch, resolvedOrgId, resolvedBranchId]
+  );
+
+  const scheduleDisplayRefresh = useCallback(
+    (reason: string, delayMs: number = 80) => {
+      if (refreshDebounceTimerRef.current !== null) {
+        window.clearTimeout(refreshDebounceTimerRef.current);
+      }
+      refreshDebounceTimerRef.current = window.setTimeout(() => {
+        refreshDebounceTimerRef.current = null;
+        void loadDisplayData(reason);
+      }, delayMs);
+    },
+    [loadDisplayData]
+  );
 
   // Initial load + catalog hydration
   useEffect(() => {
@@ -185,11 +285,11 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
     setIsInitialLoading(true);
     void StorageService.hydrateClinicCoreCatalogFromCloud(resolvedOrgId).finally(() => {
       setCatalogVersion((v) => v + 1);
-      void loadDisplayData();
+      void loadDisplayData('initial_mount');
     });
   }, [isAuthorizedForPanel, isTenantMismatch, resolvedOrgId, loadDisplayData]);
 
-  // 1-second clock & timer tick
+  // 1-second clock & elapsed consultation timer tick
   useEffect(() => {
     const id = window.setInterval(() => {
       setNowMs(Date.now());
@@ -209,120 +309,338 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
-  // Browser online/offline listeners + resync upon reconnect
+  // Same-browser instant BroadcastChannel wake-up listener
   useEffect(() => {
-    const handleOnline = () => {
-      setConnectionState('reconnecting');
-      void loadDisplayData().then(() => {
-        setConnectionState('connected');
-        wasDisconnectedRef.current = false;
+    if (!isAuthorizedForPanel || isTenantMismatch || !resolvedOrgId) return;
+    if (typeof window === 'undefined' || typeof BroadcastChannel === 'undefined') return;
+
+    const bc = new BroadcastChannel(CALL_PANEL_BROADCAST_CHANNEL_NAME);
+    bc.onmessage = (msg: MessageEvent<CallPanelSyncSignalPayload>) => {
+      const data = msg?.data;
+      if (!data || data.organizationId !== resolvedOrgId) return;
+      logCallPanelDiagnostic({
+        category: 'realtime',
+        event: 'broadcast_channel_received',
+        callId: data.callId,
+        eventType: data.eventType,
       });
+      scheduleDisplayRefresh(`broadcast_channel:${data.eventType}`, 40);
     };
+
+    return () => {
+      bc.close();
+    };
+  }, [isAuthorizedForPanel, isTenantMismatch, resolvedOrgId, scheduleDisplayRefresh]);
+
+  // Tab visibilitychange & browser online/offline listeners
+  useEffect(() => {
+    if (!isAuthorizedForPanel || isTenantMismatch || !resolvedOrgId) return;
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      logCallPanelDiagnostic({
+        category: 'visibility',
+        event: 'tab_foreground',
+        detail: `online=${String(navigator.onLine)}`,
+      });
+
+      if (audioActivated && !isCallAudioRunning()) {
+        void unlockCallAudioContext().then((running) => {
+          if (!running) {
+            setAudioActivated(false);
+            setAudioHint(
+              'O navegador suspendeu o áudio em segundo plano. Clique em ATIVAR SOM para reativar.'
+            );
+          }
+        });
+      }
+
+      if (navigator.onLine) {
+        void loadDisplayData('visibility_foreground');
+        if (connectionState !== 'connected') {
+          setRealtimeGeneration((g) => g + 1);
+        }
+      }
+    };
+
+    const handleOnline = () => {
+      logCallPanelDiagnostic({
+        category: 'realtime',
+        event: 'network_online',
+      });
+      wasDisconnectedRef.current = true;
+      setConnectionState('reconnecting');
+      setRealtimeGeneration((g) => g + 1);
+      void loadDisplayData('network_online');
+    };
+
     const handleOffline = () => {
+      logCallPanelDiagnostic({
+        category: 'realtime',
+        event: 'network_offline',
+      });
       wasDisconnectedRef.current = true;
       setConnectionState('offline');
     };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+
     return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, [loadDisplayData]);
+  }, [
+    isAuthorizedForPanel,
+    isTenantMismatch,
+    resolvedOrgId,
+    audioActivated,
+    connectionState,
+    loadDisplayData,
+  ]);
 
-  // Supabase Realtime + automatic reconnection & resync
+  // Supabase Realtime (authenticated JWT + postgres_changes + broadcast) with automatic reconnect
   useEffect(() => {
     if (!isAuthorizedForPanel || isTenantMismatch || !resolvedOrgId) return;
 
     const supabase = getSupabase();
-    const fallbackTimer = window.setInterval(() => {
-      void loadDisplayData();
-    }, 15000);
-
     if (!supabase) {
-      return () => window.clearInterval(fallbackTimer);
+      setConnectionState('unavailable');
+      logCallPanelDiagnostic({
+        category: 'realtime',
+        event: 'supabase_unavailable',
+      });
+      return;
     }
 
-    const channel = supabase
-      .channel(`tv-display-${resolvedOrgId}-${resolvedBranchId}-${Date.now()}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'attendance_calls',
-          filter: `organization_id=eq.${resolvedOrgId}`,
-        },
-        () => {
-          void loadDisplayData();
+    let cancelled = false;
+    let activeChannels: ReturnType<typeof supabase.channel>[] = [];
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+
+    const scheduleReconnect = (reason: string) => {
+      if (cancelled || !navigator.onLine) return;
+      clearReconnectTimer();
+      reconnectAttemptRef.current += 1;
+      const delay = Math.min(15000, 2000 * Math.pow(2, Math.min(3, reconnectAttemptRef.current - 1)));
+      logCallPanelDiagnostic({
+        category: 'realtime',
+        event: 'reconnect_scheduled',
+        detail: `${reason} (tentativa #${reconnectAttemptRef.current} em ${delay}ms)`,
+      });
+      reconnectTimerRef.current = window.setTimeout(() => {
+        if (!cancelled) {
+          setRealtimeGeneration((g) => g + 1);
         }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'attendance_call_events',
-          filter: `organization_id=eq.${resolvedOrgId}`,
-        },
-        () => {
-          void loadDisplayData();
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'appointments',
-          filter: `organization_id=eq.${resolvedOrgId}`,
-        },
-        () => {
-          void loadDisplayData();
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'call_panel_settings',
-          filter: `organization_id=eq.${resolvedOrgId}`,
-        },
-        () => {
-          void loadDisplayData();
-        }
-      )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          setConnectionState('connected');
-          if (wasDisconnectedRef.current) {
-            wasDisconnectedRef.current = false;
-            void loadDisplayData();
-          }
-        } else if (
-          status === 'CHANNEL_ERROR' ||
-          status === 'TIMED_OUT' ||
-          status === 'CLOSED'
-        ) {
-          wasDisconnectedRef.current = true;
-          setConnectionState(
-            typeof navigator !== 'undefined' && !navigator.onLine
-              ? 'offline'
-              : 'reconnecting'
-          );
-        }
+      }, delay);
+    };
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (
+        (event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN') &&
+        session?.access_token
+      ) {
+        void supabase.realtime.setAuth(session.access_token);
+      }
+    });
+
+    const startRealtime = async () => {
+      setConnectionState(navigator.onLine ? 'connecting' : 'offline');
+      const hasJwt = await ensureSupabaseRealtimeAuth();
+      if (cancelled) return;
+
+      logCallPanelDiagnostic({
+        category: 'realtime',
+        event: 'subscription_starting',
+        detail: `jwtSynced=${String(hasJwt)} tentativa=${reconnectAttemptRef.current}`,
       });
 
+      const dbChannel = supabase
+        .channel(`tv-db-${resolvedOrgId}-${resolvedBranchId}-${realtimeGeneration}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'attendance_calls',
+            filter: `organization_id=eq.${resolvedOrgId}`,
+          },
+          (payload) => {
+            const rec = (payload.new || payload.old || {}) as Record<string, unknown>;
+            logCallPanelDiagnostic({
+              category: 'realtime',
+              event: 'postgres_changes_received',
+              eventType: `attendance_calls:${payload.eventType}`,
+              callId: rec.id ? String(rec.id) : undefined,
+            });
+            scheduleDisplayRefresh(`pg:attendance_calls:${payload.eventType}`, 60);
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'attendance_call_events',
+            filter: `organization_id=eq.${resolvedOrgId}`,
+          },
+          (payload) => {
+            const rec = (payload.new || {}) as Record<string, unknown>;
+            logCallPanelDiagnostic({
+              category: 'realtime',
+              event: 'postgres_changes_received',
+              eventType: `attendance_call_events:${String(rec.event_type || 'INSERT')}`,
+              eventId: rec.id ? String(rec.id) : undefined,
+              callId: rec.attendance_call_id ? String(rec.attendance_call_id) : undefined,
+            });
+            scheduleDisplayRefresh('pg:attendance_call_events:INSERT', 60);
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'appointments',
+            filter: `organization_id=eq.${resolvedOrgId}`,
+          },
+          (payload) => {
+            logCallPanelDiagnostic({
+              category: 'realtime',
+              event: 'postgres_changes_received',
+              eventType: `appointments:${payload.eventType}`,
+            });
+            scheduleDisplayRefresh(`pg:appointments:${payload.eventType}`, 100);
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'call_panel_settings',
+            filter: `organization_id=eq.${resolvedOrgId}`,
+          },
+          (payload) => {
+            logCallPanelDiagnostic({
+              category: 'realtime',
+              event: 'postgres_changes_received',
+              eventType: `call_panel_settings:${payload.eventType}`,
+            });
+            scheduleDisplayRefresh('pg:call_panel_settings', 100);
+          }
+        )
+        .subscribe((status, err) => {
+          if (cancelled) return;
+          if (status === 'SUBSCRIBED') {
+            clearReconnectTimer();
+            reconnectAttemptRef.current = 0;
+            setConnectionState('connected');
+            logCallPanelDiagnostic({
+              category: 'realtime',
+              event: 'channel_connected',
+              detail: 'postgres_changes SUBSCRIBED',
+            });
+            if (wasDisconnectedRef.current) {
+              wasDisconnectedRef.current = false;
+              void loadDisplayData('realtime_reconnected');
+            }
+          } else if (
+            status === 'CHANNEL_ERROR' ||
+            status === 'TIMED_OUT' ||
+            status === 'CLOSED'
+          ) {
+            wasDisconnectedRef.current = true;
+            const nextState: RealtimeConnectionState =
+              typeof navigator !== 'undefined' && !navigator.onLine
+                ? 'offline'
+                : 'reconnecting';
+            setConnectionState(nextState);
+            logCallPanelDiagnostic({
+              category: 'realtime',
+              event: 'channel_disconnected',
+              detail: `status=${status}${err ? ` error=${err.message}` : ''}`,
+            });
+            scheduleReconnect(status);
+          }
+        });
+
+      const broadcastChannel = supabase
+        .channel(getCallPanelRealtimeBroadcastTopic(resolvedOrgId))
+        .on('broadcast', { event: 'attendance_updated' }, (msg) => {
+          const payload = (msg?.payload || {}) as Partial<CallPanelSyncSignalPayload>;
+          logCallPanelDiagnostic({
+            category: 'realtime',
+            event: 'realtime_broadcast_received',
+            callId: payload.callId,
+            eventType: payload.eventType,
+          });
+          scheduleDisplayRefresh(`rt_broadcast:${payload.eventType || 'update'}`, 50);
+        })
+        .subscribe();
+
+      activeChannels = [dbChannel, broadcastChannel];
+    };
+
+    void startRealtime();
+
     return () => {
-      window.clearInterval(fallbackTimer);
-      void supabase.removeChannel(channel);
+      cancelled = true;
+      clearReconnectTimer();
+      if (refreshDebounceTimerRef.current !== null) {
+        window.clearTimeout(refreshDebounceTimerRef.current);
+        refreshDebounceTimerRef.current = null;
+      }
+      authListener.subscription.unsubscribe();
+      for (const ch of activeChannels) {
+        void supabase.removeChannel(ch);
+      }
     };
   }, [
     isAuthorizedForPanel,
     isTenantMismatch,
     resolvedOrgId,
     resolvedBranchId,
+    realtimeGeneration,
+    loadDisplayData,
+    scheduleDisplayRefresh,
+  ]);
+
+  // Contingency 5-second polling ONLY when Realtime is unavailable or disconnected
+  useEffect(() => {
+    if (!isAuthorizedForPanel || isTenantMismatch || !resolvedOrgId) return;
+
+    if (connectionState === 'connected') {
+      // Realtime healthy -> stop 5s contingency polling to avoid redundant traffic
+      return;
+    }
+
+    logCallPanelDiagnostic({
+      category: 'sync',
+      event: 'contingency_polling_armed',
+      detail: `interval=5000ms state=${connectionState}`,
+    });
+
+    const timer = window.setInterval(() => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+      void loadDisplayData('contingency_5s');
+    }, 5000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [
+    isAuthorizedForPanel,
+    isTenantMismatch,
+    resolvedOrgId,
+    connectionState,
     loadDisplayData,
   ]);
 
@@ -332,39 +650,86 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
         organizationId: resolvedOrgId,
         branchId: resolvedBranchId,
         professionalId: effectiveProfessionalId,
+        roomId: resolvedRoomId !== 'all' ? resolvedRoomId : undefined,
       }),
-    [appointments, calls, resolvedOrgId, resolvedBranchId, effectiveProfessionalId]
+    [
+      appointments,
+      calls,
+      resolvedOrgId,
+      resolvedBranchId,
+      effectiveProfessionalId,
+      resolvedRoomId,
+    ]
   );
 
-  // Event-ID deduplicated chime & voice announcement on incoming call
+  // Event-ID deduplicated visual highlight + chime + voice announcement on incoming call
   useEffect(() => {
     if (isInitialLoading) return;
 
     const activeCalled = snapshot.activeCalled;
-    const eventKey = getAttendanceCallEventKey(activeCalled);
+    const callKey = getAttendanceCallEventKey(activeCalled);
+    const dbEventKey = activeCalled ? getAttendanceCallEventKey(activeCalled, events) : null;
+    const primaryKey = dbEventKey || callKey;
 
     if (!hasHydratedRef.current) {
       hasHydratedRef.current = true;
-      if (eventKey) {
-        announcedEventKeysRef.current.add(eventKey);
+      if (callKey) announcedEventKeysRef.current.add(callKey);
+      if (dbEventKey) announcedEventKeysRef.current.add(dbEventKey);
+      if (primaryKey) {
+        logCallPanelDiagnostic({
+          category: 'sync',
+          event: 'initial_call_hydrated_without_replay',
+          callId: activeCalled?.id,
+          eventId: primaryKey,
+        });
       }
       return;
     }
 
-    if (!activeCalled || !eventKey) return;
-    if (announcedEventKeysRef.current.has(eventKey)) return;
-
-    announcedEventKeysRef.current.add(eventKey);
-    // Keep session Set bounded
-    if (announcedEventKeysRef.current.size > 200) {
-      const oldest = announcedEventKeysRef.current.values().next().value;
-      if (oldest) announcedEventKeysRef.current.delete(oldest);
+    if (!activeCalled || !primaryKey) return;
+    if (
+      (callKey && announcedEventKeysRef.current.has(callKey)) ||
+      (dbEventKey && announcedEventKeysRef.current.has(dbEventKey))
+    ) {
+      // Ensure both keys are recorded if the DB event row arrived slightly after calls row
+      if (callKey) announcedEventKeysRef.current.add(callKey);
+      if (dbEventKey) announcedEventKeysRef.current.add(dbEventKey);
+      return;
     }
 
-    setCallHighlightActive(true);
-    const timer = window.setTimeout(() => setCallHighlightActive(false), 4000);
+    if (callKey) announcedEventKeysRef.current.add(callKey);
+    if (dbEventKey) announcedEventKeysRef.current.add(dbEventKey);
+    while (announcedEventKeysRef.current.size > 240) {
+      const oldest = announcedEventKeysRef.current.values().next().value;
+      if (!oldest) break;
+      announcedEventKeysRef.current.delete(oldest);
+    }
 
-    if (!isLocalMuted) {
+    logCallPanelDiagnostic({
+      category: 'audio',
+      event: 'new_call_event_detected',
+      callId: activeCalled.id,
+      eventId: primaryKey,
+      eventType: activeCalled.callCount > 1 ? 'recalled' : 'called',
+    });
+
+    // 1. Visual highlight (respects prefers-reduced-motion)
+    let highlightTimer: number | undefined;
+    if (!prefersReducedMotion()) {
+      setCallHighlightActive(true);
+      highlightTimer = window.setTimeout(() => setCallHighlightActive(false), 3600);
+    }
+
+    // 2. Chime -> short delay -> Voice (only if audio was explicitly activated & not muted)
+    if (!audioActivated) {
+      setAudioHint('Nova chamada exibida. Clique em ATIVAR SOM para habilitar campainha e voz.');
+      logCallPanelDiagnostic({
+        category: 'audio',
+        event: 'audio_skipped_not_activated',
+        callId: activeCalled.id,
+        eventId: primaryKey,
+      });
+    } else if (!isLocalMuted) {
       const speechText = buildPatientVoiceAnnouncementText({
         patientName: formatCallPanelPatientName(
           activeCalled.patientName,
@@ -379,14 +744,41 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
         voiceEnabled: settings.voiceEnabled,
         chimeVolume: settings.chimeVolume,
         speechText,
+      }).then((res) => {
+        logCallPanelDiagnostic({
+          category: 'speech',
+          event: 'call_alert_outcome',
+          callId: activeCalled.id,
+          eventId: primaryKey,
+          detail: `chime=${String(res.chimePlayed)} voiceAttempted=${String(
+            res.voiceAttempted
+          )} voice=${res.voiceName || 'none'}(${res.voiceLang || 'n/a'}) audioState=${
+            res.audioState
+          }${res.error ? ` err=${res.error}` : ''}`,
+        });
+
+        if (settings.soundEnabled && !res.chimePlayed && res.audioState !== 'running') {
+          setAudioActivated(false);
+          setAudioHint(
+            res.error || 'O navegador bloqueou o som automático. Clique novamente em ATIVAR SOM.'
+          );
+        } else {
+          setAudioHint('');
+        }
       });
     }
 
-    return () => window.clearTimeout(timer);
+    return () => {
+      if (highlightTimer !== undefined) {
+        window.clearTimeout(highlightTimer);
+      }
+    };
   }, [
     isInitialLoading,
     snapshot.activeCalled,
+    events,
     effectiveNameMode,
+    audioActivated,
     isLocalMuted,
     settings.soundEnabled,
     settings.voiceEnabled,
@@ -415,14 +807,44 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
     }
   };
 
-  const handleToggleAudioUnlockOrMute = async () => {
-    const unlocked = await unlockCallAudioContext();
-    setAudioUnlocked(unlocked);
-    if (audioUnlocked) {
-      setIsLocalMuted((prev) => !prev);
-    } else {
-      setIsLocalMuted(false);
+  // Explicit user-gesture audio & speech activation (ATIVAR SOM)
+  const handleActivateSound = async () => {
+    setAudioStatusError('');
+    setAudioHint('');
+
+    const res = await unlockAndTestCallAudio(settings.chimeVolume);
+    logCallPanelDiagnostic({
+      category: 'audio',
+      event: 'audio_activation_result',
+      detail: `unlocked=${String(res.unlocked)} chime=${String(
+        res.chimePlayed
+      )} state=${res.audioState} voices=${res.voiceCount} selected=${
+        res.selectedVoiceName || 'none'
+      }(${res.selectedVoiceLang || 'n/a'})`,
+    });
+
+    if (!res.unlocked) {
+      setAudioActivated(false);
+      setAudioStatusError(
+        res.reason || 'Não foi possível inicializar o áudio nesta aba.'
+      );
+      return;
     }
+
+    setAudioActivated(true);
+    setIsLocalMuted(false);
+
+    if (!res.voiceSupported) {
+      setAudioHint('Som ativado. Este navegador não suporta voz; apenas a campainha tocará.');
+    } else if (!res.selectedVoiceName) {
+      setAudioHint(
+        'Som ativado. Nenhuma voz em português detectada ainda; campainha garantida nas chamadas.'
+      );
+    }
+  };
+
+  const handleToggleLocalMute = () => {
+    setIsLocalMuted((prev) => !prev);
   };
 
   // Auth loading state
@@ -471,21 +893,31 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
       ? professionals.find((p) => p.id === effectiveProfessionalId) || null
       : null;
 
-  const matchedRoom = queryParams.roomId
-    ? rooms.find((r) => r.id === queryParams.roomId) || null
-    : settings.defaultRoomId
-    ? rooms.find((r) => r.id === settings.defaultRoomId) || null
-    : null;
+  const matchedRoom =
+    resolvedRoomId && resolvedRoomId !== 'all'
+      ? rooms.find((r) => r.id === resolvedRoomId) || null
+      : settings.defaultRoomId
+      ? rooms.find((r) => r.id === settings.defaultRoomId) || null
+      : null;
 
-  const scopeDescription =
-    effectiveProfessionalId === 'all'
-      ? 'Recepção Geral · Todos os Médicos'
-      : matchedProfessional?.fullName ||
+  const scopeParts: string[] = [];
+  if (branchName) scopeParts.push(branchName);
+  if (effectiveProfessionalId === 'all') {
+    scopeParts.push('Recepção Geral · Todos os Médicos');
+  } else {
+    scopeParts.push(
+      matchedProfessional?.fullName ||
         (settings.physicianDisplayLabel &&
         (!settings.defaultProfessionalId ||
           settings.defaultProfessionalId === effectiveProfessionalId)
           ? settings.physicianDisplayLabel
-          : 'Consultório');
+          : 'Consultório')
+    );
+  }
+  if (resolvedRoomId !== 'all' && matchedRoom) {
+    scopeParts.push(matchedRoom.name);
+  }
+  const scopeDescription = scopeParts.join(' · ');
 
   const displayedCall = snapshot.activeCalled || snapshot.activeInProgress;
   const isCalledState = Boolean(snapshot.activeCalled);
@@ -508,8 +940,6 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
       : displayedCall.professionalName
     : '';
 
-  const soundActive = !isLocalMuted && (settings.soundEnabled || settings.voiceEnabled);
-
   return (
     <div
       ref={displayRootRef}
@@ -518,66 +948,96 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
     >
       {/* ÁREA PRINCIPAL (75%) — Fundo Branco Predominante */}
       <main
-        className={`w-full lg:w-[75%] flex-1 lg:h-full flex flex-col justify-between px-6 py-5 sm:px-10 sm:py-8 xl:px-14 xl:py-10 transition-colors duration-500 ${
-          callHighlightActive ? 'bg-emerald-50/70' : 'bg-white'
+        className={`w-full lg:w-[75%] flex-1 lg:h-full flex flex-col justify-between px-6 py-5 sm:px-10 sm:py-8 xl:px-14 xl:py-10 transition-colors duration-500 motion-reduce:transition-none ${
+          callHighlightActive ? 'bg-emerald-50/90' : 'bg-white'
         }`}
       >
-        {/* Identificação discreta da clínica + controles de TV discretos */}
+        {/* Identificação discreta da clínica + status de conexão + ATIVAR SOM + Tela Cheia */}
         <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100">
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 min-w-0">
             <span className="text-sm sm:text-base font-extrabold tracking-tight text-slate-800 truncate">
               {clinic.tradeName || organization.name}
             </span>
             <span className="text-xs sm:text-sm font-semibold text-slate-400">
-              {branchName ? `${branchName} · ` : ''}
               {scopeDescription}
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
-            {connectionState !== 'connected' && (
-              <span
-                role="status"
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 text-amber-800 border border-amber-200 text-xs font-semibold"
-              >
-                <WifiOff className="w-3.5 h-3.5" />
-                <span>
-                  {connectionState === 'offline'
-                    ? 'Sem conexão · Aguardando rede'
-                    : 'Reconectando em tempo real...'}
-                </span>
-              </span>
-            )}
-
-            <button
-              type="button"
-              onClick={() => void handleToggleAudioUnlockOrMute()}
-              className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold inline-flex items-center gap-1.5 transition ${
-                soundActive
-                  ? 'border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-50'
-                  : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Indicador discreto de conexão em tempo real */}
+            <span
+              role="status"
+              data-testid="display-connection-status"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border ${
+                connectionState === 'connected'
+                  ? 'border-slate-200 text-slate-500 bg-white'
+                  : connectionState === 'offline'
+                  ? 'border-rose-200 bg-rose-50 text-rose-700'
+                  : 'border-amber-200 bg-amber-50 text-amber-800'
               }`}
-              title={
-                !audioUnlocked
-                  ? 'Clique para garantir áudio e voz liberados neste navegador'
-                  : isLocalMuted
-                  ? 'Som silenciado nesta tela'
-                  : 'Som e voz ativos'
-              }
             >
-              {soundActive ? (
-                <Volume2 className="w-3.5 h-3.5 text-emerald-600" />
+              {connectionState === 'connected' ? (
+                <>
+                  <Wifi className="w-3 h-3 text-emerald-600" />
+                  <span>Tempo real ativo</span>
+                </>
+              ) : connectionState === 'offline' ? (
+                <>
+                  <WifiOff className="w-3 h-3" />
+                  <span>Sem internet</span>
+                </>
+              ) : connectionState === 'unavailable' ? (
+                <>
+                  <WifiOff className="w-3 h-3" />
+                  <span>Atualização 5s</span>
+                </>
               ) : (
-                <VolumeX className="w-3.5 h-3.5" />
+                <>
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  <span>Reconectando...</span>
+                </>
               )}
-              <span>
-                {!audioUnlocked && soundActive
-                  ? 'Ativar Voz'
-                  : soundActive
-                  ? 'Som Ativo'
-                  : 'Mudo'}
-              </span>
-            </button>
+            </span>
+
+            {/* Controle explícito ATIVAR SOM / SOM ATIVADO */}
+            {!audioActivated ? (
+              <button
+                type="button"
+                data-testid="activate-sound-button"
+                onClick={() => void handleActivateSound()}
+                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold tracking-wide inline-flex items-center gap-1.5 shadow-2xs transition"
+                title="Ativar campainha e anúncio por voz nesta guia"
+              >
+                <Volume2 className="w-3.5 h-3.5" />
+                <span>ATIVAR SOM</span>
+              </button>
+            ) : (
+              <div className="inline-flex items-center gap-1">
+                <span
+                  data-testid="sound-activated-indicator"
+                  className={`px-2.5 py-1.5 rounded-lg border text-xs font-bold inline-flex items-center gap-1.5 ${
+                    isLocalMuted
+                      ? 'border-amber-200 bg-amber-50 text-amber-800'
+                      : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                  }`}
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>{isLocalMuted ? 'SOM SILENCIADO' : 'SOM ATIVADO'}</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={handleToggleLocalMute}
+                  className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-50 transition"
+                  title={isLocalMuted ? 'Reativar som nesta tela' : 'Silenciar temporariamente'}
+                >
+                  {isLocalMuted ? (
+                    <VolumeX className="w-3.5 h-3.5" />
+                  ) : (
+                    <Volume2 className="w-3.5 h-3.5 text-emerald-600" />
+                  )}
+                </button>
+              </div>
+            )}
 
             <button
               type="button"
@@ -592,6 +1052,17 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
               )}
               <span>{isFullscreen ? 'Sair Tela Cheia' : 'Tela Cheia'}</span>
             </button>
+
+            {debugModeEnabled && (
+              <button
+                type="button"
+                onClick={() => setShowDiagnostics((prev) => !prev)}
+                className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:text-slate-800 hover:bg-slate-50 transition"
+                title="Diagnóstico técnico (DEV/Debug)"
+              >
+                <Bug className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -619,10 +1090,14 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
                 )}
               </div>
 
-              {/* Nome do Paciente em destaque absoluto */}
+              {/* Nome do Paciente em destaque absoluto com realce único por evento */}
               <h1
                 data-testid="display-active-patient-name"
-                className="text-[clamp(2.5rem,5.4vw,5.75rem)] font-black tracking-tight text-slate-950 leading-[1.06] break-words"
+                className={`text-[clamp(2.5rem,5.4vw,5.75rem)] font-black tracking-tight leading-[1.06] break-words transition-colors duration-500 motion-reduce:transition-none ${
+                  callHighlightActive
+                    ? 'text-emerald-800'
+                    : 'text-slate-950'
+                }`}
               >
                 {formatCallPanelPatientName(
                   displayedCall.patientName,
@@ -693,15 +1168,25 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
               </h1>
               <p className="text-base sm:text-xl font-medium text-slate-500">
                 {scopeDescription}
-                {matchedRoom ? ` · ${matchedRoom.name}` : ''}
               </p>
             </div>
           )}
         </div>
 
-        {/* Avisos operacionais ocasionais (erro de carga ou dica F11) */}
-        {(loadError || fullscreenHint) && (
+        {/* Avisos discretos ocasionais (som bloqueado, falha de carga ou dica F11) */}
+        {(loadError || fullscreenHint || audioStatusError || audioHint) && (
           <div className="pt-2 flex flex-wrap items-center gap-3">
+            {audioStatusError && (
+              <div className="inline-flex items-center gap-2 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 px-3 py-1.5 rounded-lg">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>{audioStatusError}</span>
+              </div>
+            )}
+            {audioHint && !audioStatusError && (
+              <p className="text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg">
+                {audioHint}
+              </p>
+            )}
             {fullscreenHint && (
               <p className="text-xs font-medium text-slate-600 bg-slate-100 px-3 py-1.5 rounded-lg">
                 {fullscreenHint}
@@ -824,6 +1309,52 @@ export const PublicAttendanceDisplayPage: React.FC = () => {
           </p>
         </div>
       </aside>
+
+      {/* Drawer Técnico de Diagnóstico (Apenas DEV ou ?debug=1 autorizado) */}
+      {debugModeEnabled && showDiagnostics && (
+        <div className="fixed bottom-4 right-4 z-50 w-full max-w-md bg-slate-950 text-slate-100 rounded-2xl border border-slate-800 shadow-2xl overflow-hidden">
+          <div className="px-4 py-2.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">
+              Diagnóstico Técnico (DEV)
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowDiagnostics(false)}
+              className="text-slate-400 hover:text-white p-1"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="max-h-64 overflow-y-auto p-3 space-y-1.5 font-mono text-[11px]">
+            {diagEntries.length === 0 ? (
+              <p className="text-slate-500">Nenhum evento registrado ainda.</p>
+            ) : (
+              diagEntries.map((entry) => (
+                <div key={entry.id} className="border-b border-slate-900 pb-1">
+                  <div className="flex items-center justify-between text-slate-400">
+                    <span>
+                      [{entry.category}] {entry.event}
+                    </span>
+                    <span>{entry.timestamp.slice(11, 19)}</span>
+                  </div>
+                  {(entry.eventType || entry.callId || entry.eventId || entry.detail) && (
+                    <p className="text-slate-300 break-all">
+                      {[
+                        entry.eventType ? `tipo=${entry.eventType}` : '',
+                        entry.callId ? `call=${entry.callId.slice(0, 8)}` : '',
+                        entry.eventId ? `evt=${entry.eventId.slice(0, 14)}` : '',
+                        entry.detail || '',
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </p>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
