@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Clock,
   DoorClosed,
+  ExternalLink,
   History,
   Loader2,
   Maximize2,
@@ -26,12 +27,14 @@ import { useTenant } from '../../contexts/TenantContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { StorageService } from '../../services/storage';
 import { getSupabase } from '../../services/supabaseClient';
+import { DomainResolver } from '../../services/domainResolver';
 import {
   AttendanceCloudService,
   getDefaultCallPanelSettings,
 } from '../../services/attendanceCloudService';
 import {
   AUTO_CLOSE_CONFIRMATION_MESSAGE,
+  buildAttendanceDisplayUrl,
   buildPatientVoiceAnnouncementText,
   formatCallPanelPatientName,
   formatCountdownMmSs,
@@ -115,6 +118,8 @@ export const CallPanelModule: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeBottomTab, setActiveBottomTab] = useState<'queue' | 'history'>('queue');
   const [confirmModal, setConfirmModal] = useState<PendingConfirmModalState | null>(null);
+  const [displayTargetScope, setDisplayTargetScope] = useState<'selected' | 'all'>('selected');
+  const [popupBlockedUrl, setPopupBlockedUrl] = useState('');
 
   const availableRooms = useMemo(() => {
     if (activeBranchId && activeBranchId !== 'all') {
@@ -374,6 +379,37 @@ export const CallPanelModule: React.FC = () => {
       }
     } catch {
       setIsTvDisplayMode((prev) => !prev);
+    }
+  };
+
+  const handleOpenPublicDisplay = () => {
+    setPopupBlockedUrl('');
+    const targetProfId =
+      displayTargetScope === 'all' ? 'all' : selectedProfessionalId || 'all';
+    const targetRoomId =
+      displayTargetScope === 'all' ? '' : selectedRoom?.id || '';
+    const simDomain = DomainResolver.isSimulationAllowed()
+      ? DomainResolver.getSimulatedDomain()
+      : null;
+
+    const url = buildAttendanceDisplayUrl(
+      {
+        organizationId: organization.id,
+        branchId: activeBranchId,
+        professionalId: targetProfId,
+        roomId: targetRoomId,
+        nameMode: settings.patientNameDisplayMode,
+        simulatedDomain: simDomain,
+      },
+      import.meta.env.BASE_URL || '/'
+    );
+
+    const opened = window.open(url, '_blank');
+    if (opened) {
+      opened.opener = null;
+      setStatusFeedback('Painel de exibição aberto em nova aba do navegador.');
+    } else {
+      setPopupBlockedUrl(url);
     }
   };
 
@@ -758,6 +794,29 @@ export const CallPanelModule: React.FC = () => {
             <span className="hidden sm:inline">{isTvDisplayMode ? 'Modo Operador' : 'Modo TV'}</span>
           </button>
 
+          <div className="inline-flex items-center rounded-xl border border-emerald-200 bg-emerald-50/70 p-0.5">
+            <select
+              aria-label="Escopo da tela de exibição"
+              value={displayTargetScope}
+              onChange={(e) =>
+                setDisplayTargetScope(e.target.value === 'all' ? 'all' : 'selected')
+              }
+              className="text-[11px] font-semibold text-emerald-900 bg-transparent px-2 py-1.5 focus:outline-none"
+            >
+              <option value="selected">TV: Médico atual</option>
+              <option value="all">TV: Recepção geral</option>
+            </select>
+            <button
+              type="button"
+              onClick={handleOpenPublicDisplay}
+              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold tracking-wide inline-flex items-center gap-1.5 shadow-2xs transition"
+              title="Abrir painel limpo de chamada em nova página para TV ou monitor da recepção"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>ABRIR PAINEL DE EXIBIÇÃO</span>
+            </button>
+          </div>
+
           <button
             type="button"
             onClick={() => void toggleFullscreen()}
@@ -829,6 +888,36 @@ export const CallPanelModule: React.FC = () => {
           >
             Fechar
           </button>
+        </div>
+      )}
+
+      {popupBlockedUrl && (
+        <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>
+              O navegador bloqueou a abertura automática da nova guia. Permita pop-ups para este site ou abra diretamente pelo botão ao lado.
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <a
+              href={popupBlockedUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => setPopupBlockedUrl('')}
+              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold inline-flex items-center gap-1.5"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>Abrir Painel Agora</span>
+            </a>
+            <button
+              type="button"
+              onClick={() => setPopupBlockedUrl('')}
+              className="px-2 py-1 text-amber-800 hover:text-amber-950 font-semibold"
+            >
+              Fechar
+            </button>
+          </div>
         </div>
       )}
 

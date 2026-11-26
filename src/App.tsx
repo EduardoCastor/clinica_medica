@@ -10,6 +10,7 @@ import { SupabaseConfigModal } from './components/SupabaseConfigModal';
 import { ClinicDashboard } from './modules/clinic/ClinicDashboard';
 import { AppointmentsModule } from './modules/appointments/AppointmentsModule';
 import { CallPanelModule } from './modules/call-panel/CallPanelModule';
+import { PublicAttendanceDisplayPage } from './modules/call-panel/PublicAttendanceDisplayPage';
 import { PatientsModule } from './modules/patients/PatientsModule';
 import { MedicalRecordsModule } from './modules/medical-records/MedicalRecordsModule';
 import { CommunicationModule } from './modules/communication/CommunicationModule';
@@ -25,6 +26,7 @@ import { SaasAdminLoginScreen } from './modules/saas-admin/SaasAdminLoginScreen'
 import { ClinicLoginScreen } from './modules/clinic/ClinicLoginScreen';
 import { DomainSimulatorBanner } from './components/DomainSimulatorBanner';
 import { DomainResolver, PRODUCTION_DOMAINS } from './services/domainResolver';
+import { isAttendanceDisplayPath } from './services/attendanceQueueUtils';
 import { MENU_DEFINITIONS } from './services/rbacConfig';
 
 import { Patient } from './types';
@@ -79,6 +81,13 @@ const MainAppContent: React.FC = () => {
 
   const currentMode = tenantContext.mode;
   const isCurrentTabAuthorized = canViewMenu(activeClinicTab);
+  const isStandaloneDisplayRoute =
+    typeof window !== 'undefined' &&
+    isAttendanceDisplayPath(window.location.pathname, import.meta.env.BASE_URL || '/');
+
+  if (isStandaloneDisplayRoute) {
+    return <PublicAttendanceDisplayPage />;
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">

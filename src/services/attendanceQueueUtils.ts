@@ -305,6 +305,44 @@ export function buildEligibleWaitingQueue(
     });
 }
 
+export function getAttendanceCallEventKey(
+  call: Pick<AttendanceCallRecord, 'id' | 'calledAt' | 'callCount'> | null | undefined
+): string | null {
+  if (!call || !call.calledAt) return null;
+  return `${call.id}:${call.calledAt}:${call.callCount}`;
+}
+
+export function isAttendanceDisplayPath(pathname: string, baseUrl: string = '/'): boolean {
+  const cleanPath = pathname.replace(/\/+$/, '') || '/';
+  const cleanBase = (baseUrl || '/').replace(/\/+$/, '');
+  const expectedWithBase = cleanBase ? `${cleanBase}/painel-atendimento` : '/painel-atendimento';
+  return cleanPath === '/painel-atendimento' || cleanPath === expectedWithBase;
+}
+
+export function buildAttendanceDisplayUrl(
+  params: {
+    organizationId?: string;
+    branchId?: string;
+    professionalId?: string;
+    roomId?: string;
+    nameMode?: PatientNameDisplayMode;
+    simulatedDomain?: string | null;
+  },
+  baseUrl: string = '/'
+): string {
+  const cleanBase = (baseUrl || '/').replace(/\/+$/, '');
+  const routePath = cleanBase ? `${cleanBase}/painel-atendimento` : '/painel-atendimento';
+  const search = new URLSearchParams();
+  if (params.organizationId) search.set('orgId', params.organizationId);
+  if (params.branchId) search.set('branchId', params.branchId);
+  if (params.professionalId) search.set('professionalId', params.professionalId);
+  if (params.roomId) search.set('roomId', params.roomId);
+  if (params.nameMode) search.set('nameMode', params.nameMode);
+  if (params.simulatedDomain) search.set('simulate_domain', params.simulatedDomain);
+  const qs = search.toString();
+  return qs ? `${routePath}?${qs}` : routePath;
+}
+
 export function resolvePhysicianPanelSnapshot(
   appointments: Appointment[],
   attendanceCalls: AttendanceCallRecord[],
@@ -316,13 +354,14 @@ export function resolvePhysicianPanelSnapshot(
   }
 ): PhysicianPanelSnapshot {
   const targetYmd = options.targetDateYmd || getSaoPauloTodayYmd();
+  const isAllPhysicians = !options.professionalId || options.professionalId === 'all';
 
   const scopedCalls = attendanceCalls.filter((c) => {
     if (options.organizationId && c.organizationId !== options.organizationId) return false;
     if (options.branchId && options.branchId !== 'all' && c.branchId !== options.branchId) {
       return false;
     }
-    if (options.professionalId && c.professionalId !== options.professionalId) {
+    if (!isAllPhysicians && c.professionalId !== options.professionalId) {
       return false;
     }
     return true;
@@ -355,14 +394,12 @@ export function resolvePhysicianPanelSnapshot(
           new Date(a.endedAt || a.updatedAt || a.createdAt).getTime()
       )[0] || null;
 
-  const waitingQueue = options.professionalId
-    ? buildEligibleWaitingQueue(appointments, attendanceCalls, {
-        organizationId: options.organizationId,
-        branchId: options.branchId,
-        professionalId: options.professionalId,
-        targetDateYmd: targetYmd,
-      })
-    : [];
+  const waitingQueue = buildEligibleWaitingQueue(appointments, attendanceCalls, {
+    organizationId: options.organizationId,
+    branchId: options.branchId,
+    professionalId: isAllPhysicians ? 'all' : options.professionalId,
+    targetDateYmd: targetYmd,
+  });
 
   return {
     activeInProgress,
