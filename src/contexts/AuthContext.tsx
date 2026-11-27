@@ -15,6 +15,7 @@ import {
   resolveEffectivePermissions,
 } from '../services/rbacConfig';
 import { BootstrapStatus, TeamCloudService } from '../services/teamCloudService';
+import { ClinicBillingCloudService } from '../services/saasCloudService';
 
 export type SimplePermAction = 'view' | 'consult' | 'create' | 'edit' | 'delete' | 'admin';
 
@@ -130,7 +131,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const [activeUserId, setActiveUserId] = useState<string>(() => StorageService.getActiveUserId());
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(isSupabaseAuthMode);
-  const [authError, setAuthError] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(() => getSupabaseCredentials().configError || null);
   const [bootstrapStatus, setBootstrapStatus] = useState<BootstrapStatus>(INITIAL_BOOTSTRAP_STATUS);
   const [isCheckingBootstrap, setIsCheckingBootstrap] = useState<boolean>(isSupabaseAuthMode);
 
@@ -275,6 +276,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (ctx.organization) {
         StorageService.updateOrganizationCache(ctx.organization);
         await StorageService.hydrateClinicCoreCatalogFromCloud(ctx.organization.id);
+        // Sincroniza status real de trial/licença e registra último acesso no servidor
+        ClinicBillingCloudService.getOrgBillingStatus(ctx.organization.id)
+          .then((billingRes) => {
+            if (billingRes.success && billingRes.organization) {
+              StorageService.updateOrganizationCache(billingRes.organization);
+            }
+          })
+          .catch(() => {
+            // Não bloqueia login caso a Edge Function de cobrança ainda não esteja publicada
+          });
       }
       if (ctx.branches && ctx.branches.length > 0) {
         StorageService.replaceBranchesCache(ctx.branches);

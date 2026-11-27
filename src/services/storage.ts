@@ -66,6 +66,8 @@ import {
   INITIAL_AUTOMATION_EXECUTIONS
 } from './mockData';
 import { getSupabase } from './supabaseClient';
+import { calculatePlanCyclePricing, sortPlansByCommercialOrder } from './saasCommercialUtils';
+import { mapDbOrgRowToOrganization, mapDbPlanRowToPlan } from './saasCloudService';
 
 const STORAGE_KEYS = {
   PLANS: 'medsync_saas_plans',
@@ -371,48 +373,30 @@ export interface CloudAppointmentsSyncResult {
 }
 
 function mapDbPlanToPlan(row: Record<string, unknown>, localFallback?: Plan): Plan {
-  const code = String(row.code || row.id || '');
-  const hasWhatsapp = Boolean(row.has_whatsapp_automation ?? row.hasWhatsAppAutomation);
+  const mapped = mapDbPlanRowToPlan(row);
   return {
-    id: String(row.id || localFallback?.id || code),
-    code,
-    name: String(row.name || localFallback?.name || ''),
-    description: String(row.description ?? localFallback?.description ?? ''),
-    priceMonthly: Number(row.price_monthly ?? row.priceMonthly ?? 0),
-    priceYearly: Number(row.price_yearly ?? row.priceYearly ?? 0),
-    trialDays: Number(row.trial_days ?? row.trialDays ?? 0),
-    maxBranches: Number(row.max_branches ?? row.maxBranches ?? 1),
-    maxUsers: Number(row.max_users ?? row.maxUsers ?? 1),
-    maxPatients: Number(row.max_patients ?? row.maxPatients ?? 100),
-    hasPatientSharing: Boolean(row.has_patient_sharing ?? row.hasPatientSharing),
-    hasWhatsAppAutomation: hasWhatsapp,
-    hasWhatsappAutomation: hasWhatsapp,
-    hasCustomWebsite: Boolean(row.has_custom_website ?? row.hasCustomWebsite),
-    hasFinancialModule: Boolean(row.has_financial_module ?? row.hasFinancialModule),
-    hasAdvancedReports: Boolean(row.has_advanced_reports ?? row.hasAdvancedReports),
-    isPopular:
-      row.is_popular !== undefined
-        ? Boolean(row.is_popular)
-        : row.isPopular !== undefined
-        ? Boolean(row.isPopular)
-        : localFallback?.isPopular ?? code === 'advanced',
-    features: Array.isArray(row.features) ? (row.features as string[]) : localFallback?.features,
-    isActive:
-      row.is_active !== undefined
-        ? Boolean(row.is_active)
-        : row.isActive !== undefined
-        ? Boolean(row.isActive)
-        : true,
+    ...mapped,
+    id: String(row.id || localFallback?.id || mapped.code),
+    name: mapped.name || localFallback?.name || '',
+    description: mapped.description || localFallback?.description || '',
+    features: mapped.features || localFallback?.features,
   };
 }
 
 function buildPlanDbPayload(plan: Plan | SaasPlan) {
+  const monthly = Number(plan.priceMonthly) || 0;
+  const qCalc = calculatePlanCyclePricing(plan, 'quarterly');
+  const yCalc = calculatePlanCyclePricing(plan, 'yearly');
   return {
     code: plan.code,
     name: plan.name,
     description: plan.description || '',
-    price_monthly: Number(plan.priceMonthly) || 0,
-    price_yearly: Number(plan.priceYearly) || 0,
+    price_monthly: monthly,
+    price_quarterly: qCalc.finalPeriodAmount,
+    price_yearly: yCalc.finalPeriodAmount,
+    quarterly_discount_percent: qCalc.discountPercent,
+    yearly_discount_percent: yCalc.discountPercent,
+    display_order: Number(plan.displayOrder ?? (plan.code === 'trial' ? 1 : plan.code === 'basic' ? 2 : 3)),
     trial_days: Number(plan.trialDays) || 0,
     max_branches: Number(plan.maxBranches) || 1,
     max_users: Number(plan.maxUsers) || 1,
@@ -422,6 +406,8 @@ function buildPlanDbPayload(plan: Plan | SaasPlan) {
     has_custom_website: Boolean(plan.hasCustomWebsite),
     has_financial_module: Boolean(plan.hasFinancialModule),
     has_advanced_reports: Boolean(plan.hasAdvancedReports),
+    is_popular: Boolean(plan.isPopular),
+    features: Array.isArray(plan.features) ? plan.features : null,
     is_active: plan.isActive !== false,
     updated_at: new Date().toISOString(),
   };
@@ -451,7 +437,7 @@ function getLocalPlansOnly(): Plan[] {
     localStorage.setItem(STORAGE_KEYS.LEGACY_PLANS, JSON.stringify(plans));
   }
 
-  return plans;
+  return sortPlansByCommercialOrder(plans);
 }
 
 export async function syncPlansFromSupabase(): Promise<Plan[]> {
@@ -466,6 +452,7 @@ export async function syncPlansFromSupabase(): Promise<Plan[]> {
     const { data, error } = await supabase
       .from('plans')
       .select('*')
+      .order('display_order', { ascending: true })
       .order('price_monthly', { ascending: true });
 
     if (error) {
@@ -477,10 +464,12 @@ export async function syncPlansFromSupabase(): Promise<Plan[]> {
     lastPlanSyncError = null;
 
     if (data && data.length > 0) {
-      const mapped = data.map((row: Record<string, unknown>) => {
-        const localMatch = localPlans.find(p => p.code === String(row.code || '') || p.id === String(row.id || ''));
-        return mapDbPlanToPlan(row, localMatch);
-      });
+      const mapped = sortPlansByCommercialOrder(
+        data.map((row: Record<string, unknown>) => {
+          const localMatch = localPlans.find(p => p.code === String(row.code || '') || p.id === String(row.id || ''));
+          return mapDbPlanToPlan(row, localMatch);
+        })
+      );
 
       if (typeof window !== 'undefined') {
         const serialized = JSON.stringify(mapped);
@@ -501,10 +490,16 @@ export async function syncPlansFromSupabase(): Promise<Plan[]> {
 }
 
 export async function updatePlanInSupabase(plan: Plan): Promise<boolean> {
+  const qCalc = calculatePlanCyclePricing(plan, 'quarterly');
+  const yCalc = calculatePlanCyclePricing(plan, 'yearly');
   const normalizedPlan: Plan = {
     ...plan,
     priceMonthly: Number(plan.priceMonthly) || 0,
-    priceYearly: Number(plan.priceYearly) || 0,
+    priceQuarterly: qCalc.finalPeriodAmount,
+    priceYearly: yCalc.finalPeriodAmount,
+    quarterlyDiscountPercent: qCalc.discountPercent,
+    yearlyDiscountPercent: yCalc.discountPercent,
+    displayOrder: Number(plan.displayOrder ?? (plan.code === 'trial' ? 1 : plan.code === 'basic' ? 2 : 3)),
     trialDays: Number(plan.trialDays) || 0,
     maxBranches: Number(plan.maxBranches) || 1,
     maxUsers: Number(plan.maxUsers) || 1,
@@ -3759,18 +3754,9 @@ export const StorageService = {
       );
 
       const tenants = ((orgsRes.data || []) as Array<Record<string, unknown>>).map((row) => {
-        const orgId = String(row.id);
-        const planId = String(row.plan_id || '');
-        const org: Organization = {
-          id: orgId,
-          name: String(row.name || ''),
-          slug: String(row.slug || ''),
-          planId,
-          status: (String(row.status || 'active') as Organization['status']),
-          trialEndsAt: String(row.trial_ends_at || ''),
-          subscriptionRenewsAt: String(row.subscription_renews_at || ''),
-          createdAt: String(row.created_at || new Date().toISOString()),
-        };
+        const org = mapDbOrgRowToOrganization(row);
+        const orgId = org.id;
+        const planId = org.planId;
         return {
           organization: org,
           plan: planById.get(planId),

@@ -21,13 +21,28 @@ export type AppointmentStatus =
 
 export type ColorPalette = 'azul-clinico' | 'verde-saude' | 'elegancia' | 'minimalista' | 'natural';
 
+export type BillingCycle = 'trial' | 'monthly' | 'quarterly' | 'yearly';
+
+export type LicenseStatus =
+  | 'TESTE_ATIVO'
+  | 'TESTE_EXPIRADO'
+  | 'ATIVA'
+  | 'PAGAMENTO_PENDENTE'
+  | 'INADIMPLENTE'
+  | 'SUSPENSA'
+  | 'CANCELADA';
+
 export interface Plan {
   id: string;
   code: 'trial' | 'basic' | 'advanced' | string;
   name: string;
   description: string;
   priceMonthly: number;
+  priceQuarterly?: number;
   priceYearly: number;
+  quarterlyDiscountPercent?: number;
+  yearlyDiscountPercent?: number;
+  displayOrder?: number;
   trialDays: number;
   maxBranches: number;
   maxUsers: number;
@@ -45,14 +60,98 @@ export interface Plan {
 
 export type SaasPlan = Plan;
 
+export interface OnboardingProgress {
+  completedSteps: string[];
+  skipped?: boolean;
+  currentStep?: number;
+  updatedAt?: string;
+}
+
 export interface Organization {
   id: string;
   name: string;
   slug: string;
   planId: string;
   status: 'trial' | 'active' | 'overdue' | 'suspended';
+  licenseStatus?: LicenseStatus;
+  billingCycle?: BillingCycle;
+  responsibleName?: string;
+  contactEmail?: string;
+  contactPhone?: string;
+  onboardingCompleted?: boolean;
+  onboardingProgress?: OnboardingProgress;
+  lastAccessedAt?: string;
+  statusReason?: string;
+  trialStartedAt?: string;
   trialEndsAt: string;
   subscriptionRenewsAt: string;
+  createdAt: string;
+}
+
+export interface SaasSubscription {
+  id: string;
+  organizationId: string;
+  planId?: string;
+  planCode?: string;
+  planName?: string;
+  billingCycle: BillingCycle;
+  licenseStatus: LicenseStatus;
+  startedAt: string;
+  trialEndsAt?: string;
+  currentPeriodStart?: string;
+  currentPeriodEnd?: string;
+  nextDueDate?: string;
+  unitMonthlyPrice: number;
+  discountPercent: number;
+  finalCycleAmount: number;
+  paymentProvider?: string;
+  externalSubscriptionId?: string;
+  cancelledAt?: string;
+  cancellationReason?: string;
+  updatedAt?: string;
+}
+
+export type SaasInvoiceStatus = 'pending' | 'paid' | 'overdue' | 'cancelled' | 'refunded';
+
+export interface SaasInvoice {
+  id: string;
+  organizationId: string;
+  organizationName?: string;
+  subscriptionId?: string;
+  planId?: string;
+  planName?: string;
+  billingCycle: BillingCycle;
+  referenceCode: string;
+  grossAmount: number;
+  discountPercent: number;
+  finalAmount: number;
+  currency: string;
+  status: SaasInvoiceStatus;
+  paymentMethod?: string;
+  paymentProvider?: string;
+  externalOrderId?: string;
+  externalCheckoutUrl?: string;
+  dueDate?: string;
+  paidAt?: string;
+  manualConfirmationReason?: string;
+  confirmedByEmail?: string;
+  createdAt: string;
+}
+
+export interface SaasAuditLog {
+  id: string;
+  actorUserId?: string;
+  actorProfileId?: string;
+  actorEmail?: string;
+  actorRole?: string;
+  targetOrganizationId?: string;
+  targetOrganizationName?: string;
+  action: string;
+  entity: string;
+  entityId?: string;
+  reason?: string;
+  previousState?: Record<string, unknown>;
+  newState?: Record<string, unknown>;
   createdAt: string;
 }
 

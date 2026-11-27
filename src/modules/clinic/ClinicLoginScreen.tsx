@@ -18,6 +18,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useTenant } from '../../contexts/TenantContext';
 import { ClinicBrandLogo, CLINIC_OFFICIAL_DATA } from '../../components/ClinicBrandLogo';
 import { FirstAccessBootstrapPanel } from './FirstAccessBootstrapPanel';
+import { getSupabaseConfigError } from '../../services/supabaseClient';
 
 interface ClinicLoginScreenProps {
   onSuccess?: () => void;
@@ -102,7 +103,8 @@ export const ClinicLoginScreen: React.FC<ClinicLoginScreenProps> = ({ onSuccess 
     if (onSuccess) onSuccess();
   };
 
-  const displayedError = errorMessage || authError;
+  const configError = getSupabaseConfigError();
+  const displayedError = errorMessage || authError || configError;
 
   return (
     <div className="min-h-[85vh] flex items-center justify-center p-4 bg-gradient-to-br from-slate-50 via-sky-50/40 to-teal-50/30">

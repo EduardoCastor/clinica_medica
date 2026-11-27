@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { FirstAccessBootstrapPanel } from '../clinic/FirstAccessBootstrapPanel';
+import { getSupabaseConfigError } from '../../services/supabaseClient';
 
 interface SaasAdminLoginScreenProps {
   onSuccess?: () => void;
@@ -96,7 +97,8 @@ export const SaasAdminLoginScreen: React.FC<SaasAdminLoginScreenProps> = ({ onSu
     if (onSuccess) onSuccess();
   };
 
-  const displayedError = errorMessage || authError;
+  const configError = getSupabaseConfigError();
+  const displayedError = errorMessage || authError || configError;
 
   return (
     <div className="min-h-[85vh] flex items-center justify-center p-4 bg-gradient-to-br from-slate-950 via-purple-950/40 to-slate-900 text-slate-100">

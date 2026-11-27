@@ -1,7 +1,8 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import { Organization, Clinic, Branch, Plan, ResolvedTenantContext } from '../types';
 import { StorageService } from '../services/storage';
 import { DomainResolver } from '../services/domainResolver';
+import { computeTrialLicenseState, TrialLicenseState } from '../services/saasCommercialUtils';
 
 interface TenantContextType {
   organization: Organization;
@@ -11,6 +12,7 @@ interface TenantContextType {
   activeBranchId: string; // 'all' or specific branch ID
   activeBranch: Branch | null;
   tenantContext: ResolvedTenantContext;
+  licenseState: TrialLicenseState;
   setActiveBranchId: (id: string) => void;
   updateClinic: (data: Partial<Clinic>) => void;
   updateOrganization: (data: Partial<Organization>) => void;
@@ -69,6 +71,8 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     ? null 
     : branches.find(b => b.id === activeBranchId) || null;
 
+  const licenseState = useMemo(() => computeTrialLicenseState(organization), [organization]);
+
   return (
     <TenantContext.Provider
       value={{
@@ -79,6 +83,7 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         activeBranchId,
         activeBranch,
         tenantContext,
+        licenseState,
         setActiveBranchId,
         updateClinic,
         updateOrganization,

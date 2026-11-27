@@ -1,55 +1,117 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { 
-  ShieldCheck, 
-  Building2, 
-  Users, 
-  AlertTriangle, 
-  CheckCircle2, 
-  Edit, 
-  Globe, 
-  UserCheck,
-  Sparkles,
-  Loader2,
-  RefreshCw
-} from 'lucide-react';
-import { Plan, Organization, Clinic } from '../../types';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  StorageService,
-  syncPlansFromSupabase,
-  updatePlanInSupabase,
-  getLastPlanSyncError,
-} from '../../services/storage';
-import { useTenant } from '../../contexts/TenantContext';
+  AlertTriangle,
+  Building2,
+  CalendarClock,
+  CheckCircle2,
+  ClipboardList,
+  CreditCard,
+  Edit,
+  Globe,
+  KeyRound,
+  LayoutDashboard,
+  Loader2,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  UserCheck,
+  Users,
+} from 'lucide-react';
+import {
+  LicenseStatus,
+  Plan,
+  SaasAuditLog,
+  SaasInvoice,
+  SaasInvoiceStatus,
+} from '../../types';
+import {
+  SaasAdminCloudService,
+  SaasAdminTenantRecord,
+} from '../../services/saasCloudService';
+import {
+  calculatePlanCyclePricing,
+  computeTrialLicenseState,
+  formatBrl,
+  sortPlansByCommercialOrder,
+} from '../../services/saasCommercialUtils';
+import { getSupabaseCredentials } from '../../services/supabaseClient';
 import { useAuth } from '../../contexts/AuthContext';
 import { DomainsManagement } from './DomainsManagement';
 import { TeamManagement } from '../clinic/TeamManagement';
 import { SuperAdminCandidateInfo, TeamCloudService } from '../../services/teamCloudService';
+import {
+  ManualPaymentModal,
+  OrganizationDetailModal,
+  PlanEditorModal,
+} from './SaasAdminModals';
 
 interface SaasAdminDashboardProps {
   onSimulateDomain?: (domain: string) => void;
 }
 
-interface SaasTenantRow {
-  organization: Organization;
-  plan?: Plan;
-  clinic?: Clinic;
-  branchesCount: number;
-  activeUsersCount: number;
-  patientsCount: number;
+type AdminTab =
+  | 'overview'
+  | 'organizations'
+  | 'licenses'
+  | 'plans'
+  | 'billing'
+  | 'audit'
+  | 'domains'
+  | 'team';
+
+type PeriodFilter = '7d' | '30d' | '90d' | 'all';
+type LicenseFilter = 'ALL' | LicenseStatus | 'EXPIRING_SOON';
+
+const STATUS_STYLE_MAP: Record<LicenseStatus, string> = {
+  ATIVA: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+  TESTE_ATIVO: 'bg-amber-50 text-amber-800 border-amber-200',
+  TESTE_EXPIRADO: 'bg-rose-50 text-rose-800 border-rose-200',
+  PAGAMENTO_PENDENTE: 'bg-sky-50 text-sky-800 border-sky-200',
+  INADIMPLENTE: 'bg-rose-50 text-rose-800 border-rose-200',
+  SUSPENSA: 'bg-slate-100 text-slate-700 border-slate-300',
+  CANCELADA: 'bg-slate-100 text-slate-600 border-slate-300',
+};
+
+function isInsidePeriod(isoDate: string | undefined, period: PeriodFilter): boolean {
+  if (period === 'all') return true;
+  if (!isoDate) return false;
+  const ts = new Date(isoDate).getTime();
+  if (!Number.isFinite(ts)) return false;
+  const days = period === '7d' ? 7 : period === '30d' ? 30 : 90;
+  return ts >= Date.now() - days * 24 * 60 * 60 * 1000;
 }
 
-export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimulateDomain }) => {
-  const { organization, updateOrganization } = useTenant();
+export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
+  onSimulateDomain,
+}) => {
   const { impersonateClinic, refreshSessionProfile } = useAuth();
-  const [activeTab, setActiveTab] = useState<'overview' | 'domains' | 'team'>('domains');
+
+  const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [plans, setPlans] = useState<Plan[]>([]);
-  const [tenantsOverview, setTenantsOverview] = useState<SaasTenantRow[]>([]);
-  const [isLoadingOverview, setIsLoadingOverview] = useState(true);
-  const [overviewError, setOverviewError] = useState<string | null>(null);
-  const [editingPlan, setEditingPlan] = useState<Plan | null>(null);
-  const [isSavingPlan, setIsSavingPlan] = useState(false);
+  const [tenants, setTenants] = useState<SaasAdminTenantRecord[]>([]);
+  const [invoices, setInvoices] = useState<SaasInvoice[]>([]);
+  const [auditLogs, setAuditLogs] = useState<SaasAuditLog[]>([]);
+
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Filters
+  const [periodFilter, setPeriodFilter] = useState<PeriodFilter>('30d');
+  const [overviewStatusFilter, setOverviewStatusFilter] = useState<LicenseFilter>('ALL');
+  const [orgSearch, setOrgSearch] = useState('');
+  const [orgStatusFilter, setOrgStatusFilter] = useState<LicenseFilter>('ALL');
+  const [licenseFilter, setLicenseFilter] = useState<LicenseFilter>('ALL');
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<'ALL' | SaasInvoiceStatus>('ALL');
+  const [auditSearch, setAuditSearch] = useState('');
+
+  // Modals
+  const [editingPlan, setEditingPlan] = useState<Plan | null>(null);
+  const [selectedTenant, setSelectedTenant] = useState<SaasAdminTenantRecord | null>(null);
+  const [manualPaymentInvoice, setManualPaymentInvoice] = useState<SaasInvoice | null>(null);
+  const [isManualPaymentOpen, setIsManualPaymentOpen] = useState(false);
 
   // Super Admin Email Audit & Migration state
   const [superAdminCandidates, setSuperAdminCandidates] = useState<SuperAdminCandidateInfo[]>([]);
@@ -58,44 +120,172 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
   const [targetSuperAdminEmail, setTargetSuperAdminEmail] = useState('admin@drnewtonmureb.com.br');
   const [requireEmailConfirmation, setRequireEmailConfirmation] = useState(false);
 
-  const loadSaasOverview = useCallback(async () => {
-    setIsLoadingOverview(true);
-    setOverviewError(null);
-    const [freshPlans, tenantsRes] = await Promise.all([
-      syncPlansFromSupabase(),
-      StorageService.fetchSaasTenantOverviewFromCloud(),
-    ]);
-    setPlans(freshPlans);
-    setTenantsOverview(tenantsRes.tenants);
-    if (tenantsRes.error) {
-      setOverviewError(tenantsRes.error);
+  const loadSaasData = useCallback(async () => {
+    setIsLoading(true);
+    setLoadError(null);
+    const res = await SaasAdminCloudService.fetchDashboardData();
+    if (!res.success || !res.data) {
+      setLoadError(res.error || 'Erro ao carregar dados administrativos do servidor SaaS.');
+      setIsLoading(false);
+      return;
     }
-    setIsLoadingOverview(false);
+    setPlans(sortPlansByCommercialOrder(res.data.plans));
+    setTenants(res.data.tenants);
+    setInvoices(res.data.invoices);
+    setAuditLogs(res.data.auditLogs);
+    setIsLoading(false);
   }, []);
 
-  // Sync plans & tenants from Supabase on mount and whenever plans updated
   useEffect(() => {
-    void loadSaasOverview();
+    void loadSaasData();
+  }, [loadSaasData]);
 
-    const syncLocal = () => {
-      setPlans(StorageService.getPlans());
-    };
-    window.addEventListener('medsync-plans-updated', syncLocal);
-    window.addEventListener('medsync_storage_update', syncLocal);
-    return () => {
-      window.removeEventListener('medsync-plans-updated', syncLocal);
-      window.removeEventListener('medsync_storage_update', syncLocal);
-    };
-  }, [loadSaasOverview]);
+  const showToast = (msg: string) => {
+    setFeedbackMessage(msg);
+    setErrorMessage(null);
+    void loadSaasData();
+  };
 
-  // Real Metrics derived exclusively from Supabase tenants + plans
-  const activeTenants = tenantsOverview.filter((t) => t.organization.status === 'active');
-  const trialTenants = tenantsOverview.filter((t) => t.organization.status === 'trial');
-  const activeTenantsCount = activeTenants.length;
-  const trialTenantsCount = trialTenants.length;
-  const mrr = activeTenants.reduce((acc, t) => acc + (t.plan?.priceMonthly || 0), 0);
-  const totalBranchesTracked = tenantsOverview.reduce((acc, t) => acc + t.branchesCount, 0);
-  const totalUsersTracked = tenantsOverview.reduce((acc, t) => acc + t.activeUsersCount, 0);
+  // Enrich tenants with canonical license calculation
+  const enrichedTenants = useMemo(() => {
+    return tenants.map((t) => {
+      const state = computeTrialLicenseState(t.organization);
+      return { ...t, licenseState: state };
+    });
+  }, [tenants]);
+
+  const metrics = useMemo(() => {
+    const filteredForCounts = enrichedTenants.filter((t) => {
+      if (overviewStatusFilter === 'ALL') return true;
+      if (overviewStatusFilter === 'EXPIRING_SOON') {
+        return t.licenseState.isTrialActive && t.licenseState.daysRemaining <= 3;
+      }
+      return t.licenseState.licenseStatus === overviewStatusFilter;
+    });
+
+    const totalOrgs = enrichedTenants.length;
+    const activePaidOrgs = enrichedTenants.filter((t) => {
+      const hasPaidPlan = (t.plan?.priceMonthly || 0) > 0;
+      return t.licenseState.licenseStatus === 'ATIVA' && hasPaidPlan;
+    });
+    const activeAllCount = enrichedTenants.filter(
+      (t) => t.licenseState.licenseStatus === 'ATIVA'
+    ).length;
+    const activeTrialCount = enrichedTenants.filter(
+      (t) => t.licenseState.licenseStatus === 'TESTE_ATIVO'
+    ).length;
+    const expiringTrialCount = enrichedTenants.filter(
+      (t) => t.licenseState.isTrialActive && t.licenseState.daysRemaining <= 3
+    ).length;
+    const expiredTrialCount = enrichedTenants.filter(
+      (t) => t.licenseState.licenseStatus === 'TESTE_EXPIRADO'
+    ).length;
+    const pendingPaymentCount = enrichedTenants.filter(
+      (t) => t.licenseState.licenseStatus === 'PAGAMENTO_PENDENTE'
+    ).length;
+    const overdueCount = enrichedTenants.filter(
+      (t) => t.licenseState.licenseStatus === 'INADIMPLENTE'
+    ).length;
+    const suspendedOrCancelledCount = enrichedTenants.filter(
+      (t) =>
+        t.licenseState.licenseStatus === 'SUSPENSA' ||
+        t.licenseState.licenseStatus === 'CANCELADA'
+    ).length;
+
+    // MRR: exclusivamente assinaturas ATIVA com plano pago (normalizado mensal)
+    const mrr = activePaidOrgs.reduce((acc, t) => {
+      const plan = t.plan;
+      if (!plan || plan.priceMonthly <= 0) return acc;
+      const cycle = t.organization.billingCycle || 'monthly';
+      const pricing = calculatePlanCyclePricing(
+        plan,
+        cycle === 'trial' ? 'monthly' : cycle
+      );
+      return acc + pricing.effectiveMonthly;
+    }, 0);
+
+    // Receita Recebida no Período: exclusivamente faturas status='paid' no período filtrado
+    const receivedInPeriod = invoices
+      .filter(
+        (inv) =>
+          inv.status === 'paid' && isInsidePeriod(inv.paidAt || inv.createdAt, periodFilter)
+      )
+      .reduce((acc, inv) => acc + inv.finalAmount, 0);
+
+    const pendingInvoicesTotal = invoices
+      .filter((inv) => inv.status === 'pending' || inv.status === 'overdue')
+      .reduce((acc, inv) => acc + inv.finalAmount, 0);
+
+    return {
+      filteredForCounts,
+      totalOrgs,
+      activeAllCount,
+      activePaidCount: activePaidOrgs.length,
+      activeTrialCount,
+      expiringTrialCount,
+      expiredTrialCount,
+      pendingPaymentCount,
+      overdueCount,
+      suspendedOrCancelledCount,
+      mrr,
+      receivedInPeriod,
+      pendingInvoicesTotal,
+    };
+  }, [enrichedTenants, invoices, overviewStatusFilter, periodFilter]);
+
+  const filteredOrgs = useMemo(() => {
+    const q = orgSearch.trim().toLowerCase();
+    return enrichedTenants.filter((t) => {
+      if (orgStatusFilter === 'EXPIRING_SOON') {
+        if (!(t.licenseState.isTrialActive && t.licenseState.daysRemaining <= 3)) return false;
+      } else if (orgStatusFilter !== 'ALL') {
+        if (t.licenseState.licenseStatus !== orgStatusFilter) return false;
+      }
+      if (!q) return true;
+      const haystack = [
+        t.organization.name,
+        t.organization.slug,
+        t.organization.responsibleName,
+        t.organization.contactEmail,
+        t.clinic?.legalName,
+        t.clinic?.tradeName,
+        t.clinic?.documentNumber,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [enrichedTenants, orgSearch, orgStatusFilter]);
+
+  const filteredLicenses = useMemo(() => {
+    return enrichedTenants.filter((t) => {
+      if (licenseFilter === 'ALL') return true;
+      if (licenseFilter === 'EXPIRING_SOON') {
+        return t.licenseState.isTrialActive && t.licenseState.daysRemaining <= 3;
+      }
+      return t.licenseState.licenseStatus === licenseFilter;
+    });
+  }, [enrichedTenants, licenseFilter]);
+
+  const filteredInvoices = useMemo(() => {
+    return invoices.filter((inv) => {
+      if (invoiceStatusFilter !== 'ALL' && inv.status !== invoiceStatusFilter) return false;
+      return isInsidePeriod(inv.paidAt || inv.createdAt, periodFilter);
+    });
+  }, [invoices, invoiceStatusFilter, periodFilter]);
+
+  const filteredAuditLogs = useMemo(() => {
+    const q = auditSearch.trim().toLowerCase();
+    if (!q) return auditLogs;
+    return auditLogs.filter((log) =>
+      [log.actorEmail, log.action, log.targetOrganizationName, log.reason, log.entity]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [auditLogs, auditSearch]);
 
   const handleAuditSuperAdmin = async () => {
     setErrorMessage(null);
@@ -104,20 +294,16 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
     try {
       const res = await TeamCloudService.auditSuperAdminAccount();
       if (!res.success) {
-        setErrorMessage(res.error || 'Falha ao consultar a conta do Administrador Principal.');
+        setErrorMessage(res.error || 'Falha ao consultar conta Super Admin.');
         return;
       }
       setSuperAdminCandidates(res.candidates || []);
-      if ((res.candidates?.length || 0) > 1) {
-        setErrorMessage(
-          'Mais de um candidato com papel de Super Admin encontrado. Identificação manual necessária antes de atualizar e-mail.'
-        );
-      } else if ((res.candidates?.length || 0) === 1) {
+      if ((res.candidates?.length || 0) === 1) {
         setFeedbackMessage(
-          `Super Admin localizado com segurança: ${res.candidates![0].fullName} (${res.candidates![0].authEmail || res.candidates![0].profileEmail}).`
+          `Super Admin verificado: ${res.candidates![0].fullName} (${
+            res.candidates![0].authEmail || res.candidates![0].profileEmail
+          }).`
         );
-      } else {
-        setErrorMessage('Nenhum usuário Super Administrador localizado na organização.');
       }
     } finally {
       setIsAuditingSuperAdmin(false);
@@ -142,156 +328,905 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
       await handleAuditSuperAdmin();
       await refreshSessionProfile();
       setFeedbackMessage(
-        `E-mail do Super Admin atualizado com sucesso de ${res.previousEmail} para ${res.newEmail} preservando UUID ${res.authUserId}, senha e papel super_admin.`
+        `E-mail do Super Admin atualizado para ${res.newEmail} preservando identidade e papel.`
       );
     } finally {
       setIsUpdatingSuperAdminEmail(false);
     }
   };
 
-  const handleSavePlan = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingPlan || isSavingPlan) return;
+  const { url: supabaseUrl } = getSupabaseCredentials();
+  const webhookEndpoint = supabaseUrl
+    ? `${supabaseUrl}/functions/v1/saas-payment-webhook`
+    : 'https://<seu-projeto>.supabase.co/functions/v1/saas-payment-webhook';
 
-    setErrorMessage(null);
-    setIsSavingPlan(true);
-    try {
-      const success = await updatePlanInSupabase(editingPlan);
-      if (!success) {
-        const errorDetail = getLastPlanSyncError() || 'Erro desconhecido ao salvar o plano.';
-        setErrorMessage(`Erro ao salvar alterações: ${errorDetail}`);
-        return;
-      }
-
-      await loadSaasOverview();
-      setEditingPlan(null);
-      setFeedbackMessage('Plano comercial atualizado e publicado na página inicial com sucesso!');
-      setTimeout(() => setFeedbackMessage(null), 5000);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setErrorMessage(`Erro inesperado ao salvar plano: ${message}`);
-    } finally {
-      setIsSavingPlan(false);
-    }
-  };
-
-  const toggleTenantStatus = (targetOrg: Organization) => {
-    const nextStatus = targetOrg.status === 'active' ? 'suspended' : 'active';
-    if (targetOrg.id === organization.id) {
-      updateOrganization({ status: nextStatus });
-    }
-    setTenantsOverview((prev) =>
-      prev.map((item) =>
-        item.organization.id === targetOrg.id
-          ? { ...item, organization: { ...item.organization, status: nextStatus } }
-          : item
-      )
-    );
-  };
+  const tabs: Array<{ id: AdminTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
+    { id: 'overview', label: 'Dashboard Geral', icon: LayoutDashboard },
+    { id: 'organizations', label: 'Organizações / Clientes', icon: Building2 },
+    { id: 'licenses', label: 'Licenças', icon: KeyRound },
+    { id: 'plans', label: 'Planos e Preços', icon: Sparkles },
+    { id: 'billing', label: 'Financeiro & Pagamentos', icon: CreditCard },
+    { id: 'audit', label: 'Histórico & Auditoria', icon: ClipboardList },
+    { id: 'domains', label: 'Domínios & Sites', icon: Globe },
+    { id: 'team', label: 'Super Admin & Equipe', icon: Users },
+  ];
 
   return (
-    <div className="space-y-8 max-w-6xl mx-auto">
-      
-      {/* Super Admin Notice */}
-      <div className="p-4 bg-purple-50 rounded-2xl border border-purple-200 flex items-start gap-3">
-        <ShieldCheck className="w-5 h-5 text-purple-700 shrink-0 mt-0.5" />
-        <div className="text-xs text-purple-900 space-y-1">
-          <strong className="font-bold">Ambiente Exclusivo: Super Administrador da Plataforma SaaS (MedSync)</strong>
-          <p className="text-purple-800 leading-relaxed">
-            Neste painel são gerenciados os planos comerciais, limites operacionais, assinaturas, domínios e faturamento das clínicas parceiras. 
-            <strong> Conformidade de Privacidade:</strong> O administrador geral da plataforma possui restrição arquitetural e não tem acesso aos prontuários ou diagnósticos médicos dos pacientes de cada clínica.
-          </p>
+    <div className="space-y-6 max-w-7xl mx-auto">
+      {/* Privacy & Architecture Boundary Header */}
+      <div className="p-4 bg-white rounded-2xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-start gap-3 text-xs">
+          <ShieldCheck className="w-5 h-5 text-purple-700 shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <strong className="text-slate-900 block">
+              Administração Geral MedSync SaaS · Gestão Multi-Tenant
+            </strong>
+            <p className="text-slate-600">
+              Controle comercial, assinaturas, licenças, faturas e auditoria. O administrador da plataforma não possui acesso aos prontuários clínicos dos pacientes.
+            </p>
+          </div>
         </div>
+        <button
+          type="button"
+          disabled={isLoading}
+          onClick={() => void loadSaasData()}
+          className="px-3.5 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl inline-flex items-center gap-1.5 self-start sm:self-auto whitespace-nowrap shrink-0"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+          <span>Atualizar Dados</span>
+        </button>
       </div>
 
-      {/* Feedback Toast */}
+      {/* Feedback & Errors */}
       {feedbackMessage && (
-        <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-semibold flex items-center justify-between shadow-xs">
+        <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl text-xs font-semibold flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
             <span>{feedbackMessage}</span>
           </div>
-          <button onClick={() => setFeedbackMessage(null)} className="text-emerald-600 hover:text-emerald-900 font-bold text-sm">
+          <button
+            type="button"
+            onClick={() => setFeedbackMessage(null)}
+            className="text-emerald-700 font-bold"
+          >
             ×
           </button>
         </div>
       )}
 
-      {errorMessage && (
-        <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-semibold flex items-center justify-between shadow-xs">
+      {(errorMessage || loadError) && (
+        <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-900 rounded-xl text-xs font-semibold flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-            <span>{errorMessage}</span>
+            <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0" />
+            <span>{errorMessage || loadError}</span>
           </div>
-          <button onClick={() => setErrorMessage(null)} className="text-rose-600 hover:text-rose-900 font-bold text-sm">
-            ×
+          <button
+            type="button"
+            onClick={() => void loadSaasData()}
+            className="px-3 py-1 bg-white border border-rose-200 rounded-lg text-[11px] font-bold whitespace-nowrap shrink-0"
+          >
+            Tentar novamente
           </button>
         </div>
       )}
 
-      {/* Sub-tab Navigation */}
-      <div className="flex items-center gap-2 border-b border-slate-200 pb-2 overflow-x-auto">
-        <button
-          onClick={() => setActiveTab('domains')}
-          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition whitespace-nowrap ${
-            activeTab === 'domains'
-              ? 'bg-purple-600 text-white shadow-xs'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-          }`}
-        >
-          <Globe className="w-4 h-4" />
-          <span>Domínios & Sites</span>
-        </button>
+      {/* Navigation Tabs */}
+      <nav className="flex items-center gap-1.5 border-b border-slate-200 pb-2 overflow-x-auto">
+        {tabs.map((tab) => {
+          const Icon = tab.icon;
+          const active = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-xl transition-colors whitespace-nowrap shrink-0 ${
+                active
+                  ? 'bg-slate-900 text-white'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
+      </nav>
 
-        <button
-          onClick={() => setActiveTab('overview')}
-          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition whitespace-nowrap ${
-            activeTab === 'overview'
-              ? 'bg-purple-600 text-white shadow-xs'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-          }`}
-        >
-          <Building2 className="w-4 h-4" />
-          <span>Visão Geral & Planos Comerciais</span>
-        </button>
+      {/* TAB 1: DASHBOARD GERAL */}
+      {activeTab === 'overview' && (
+        <div className="space-y-6">
+          {/* Filters */}
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-slate-600">Período da Receita:</span>
+              <div className="inline-flex p-1 bg-slate-100 rounded-lg gap-1">
+                {(
+                  [
+                    { id: '7d', label: '7 dias' },
+                    { id: '30d', label: '30 dias' },
+                    { id: '90d', label: '90 dias' },
+                    { id: 'all', label: 'Todo período' },
+                  ] as Array<{ id: PeriodFilter; label: string }>
+                ).map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setPeriodFilter(p.id)}
+                    className={`px-2.5 py-1 rounded-md font-semibold whitespace-nowrap ${
+                      periodFilter === p.id
+                        ? 'bg-white text-slate-900 shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-        <button
-          onClick={() => setActiveTab('team')}
-          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition whitespace-nowrap ${
-            activeTab === 'team'
-              ? 'bg-purple-600 text-white shadow-xs'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-          }`}
-        >
-          <Users className="w-4 h-4" />
-          <span>Super Admin & Equipe Clínica</span>
-        </button>
-      </div>
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-slate-600">Filtrar Lista:</span>
+              <select
+                value={overviewStatusFilter}
+                onChange={(e) => setOverviewStatusFilter(e.target.value as LicenseFilter)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg bg-white font-semibold text-slate-800"
+              >
+                <option value="ALL">Todos os status</option>
+                <option value="ATIVA">Assinaturas Ativas</option>
+                <option value="TESTE_ATIVO">Em Teste Gratuito</option>
+                <option value="EXPIRING_SOON">Testes Vencendo (&le; 3 dias)</option>
+                <option value="TESTE_EXPIRADO">Testes Expirados</option>
+                <option value="PAGAMENTO_PENDENTE">Pagamento Pendente</option>
+                <option value="INADIMPLENTE">Inadimplentes</option>
+                <option value="SUSPENSA">Suspensas</option>
+                <option value="CANCELADA">Canceladas</option>
+              </select>
+            </div>
+          </div>
 
-      {/* TAB 1: Domains & Sites */}
-      {activeTab === 'domains' && (
-        <DomainsManagement onSimulateDomain={onSimulateDomain} />
+          {/* Primary Financial & Lifecycle KPIs */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="p-5 bg-white rounded-2xl border border-slate-200">
+              <span className="text-xs font-medium text-slate-500">
+                MRR (Assinaturas Pagas Ativas)
+              </span>
+              <div className="mt-2 text-2xl font-extrabold text-slate-900 tabular-nums">
+                {isLoading ? '—' : `R$ ${formatBrl(metrics.mrr)}`}
+              </div>
+              <span className="text-[11px] text-slate-500 block mt-1 tabular-nums">
+                {metrics.activePaidCount} assinaturas pagas ativas
+              </span>
+            </div>
+
+            <div className="p-5 bg-white rounded-2xl border border-slate-200">
+              <span className="text-xs font-medium text-slate-500">
+                Receita Recebida (Faturas Pagas)
+              </span>
+              <div className="mt-2 text-2xl font-extrabold text-emerald-700 tabular-nums">
+                {isLoading ? '—' : `R$ ${formatBrl(metrics.receivedInPeriod)}`}
+              </div>
+              <span className="text-[11px] text-slate-500 block mt-1">
+                Somente faturas com status confirmado
+              </span>
+            </div>
+
+            <div className="p-5 bg-white rounded-2xl border border-slate-200">
+              <span className="text-xs font-medium text-slate-500">
+                Total de Organizações / Ativas
+              </span>
+              <div className="mt-2 text-2xl font-extrabold text-slate-900 tabular-nums">
+                {isLoading ? '—' : `${metrics.totalOrgs} / ${metrics.activeAllCount}`}
+              </div>
+              <span className="text-[11px] text-slate-500 block mt-1 tabular-nums">
+                {metrics.suspendedOrCancelledCount} suspensas ou canceladas
+              </span>
+            </div>
+
+            <div className="p-5 bg-white rounded-2xl border border-slate-200">
+              <span className="text-xs font-medium text-slate-500">
+                Testes Ativos / Próx. Vencimento
+              </span>
+              <div className="mt-2 text-2xl font-extrabold text-amber-700 tabular-nums">
+                {isLoading ? '—' : `${metrics.activeTrialCount} / ${metrics.expiringTrialCount}`}
+              </div>
+              <span className="text-[11px] text-slate-500 block mt-1 tabular-nums">
+                {metrics.expiredTrialCount} testes expirados aguardando plano
+              </span>
+            </div>
+          </div>
+
+          {/* Secondary Status Strip */}
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+            <div className="p-3.5 bg-white rounded-xl border border-slate-200 flex items-center justify-between">
+              <span className="text-slate-600">Ativas</span>
+              <strong className="tabular-nums text-emerald-700">{metrics.activeAllCount}</strong>
+            </div>
+            <div className="p-3.5 bg-white rounded-xl border border-slate-200 flex items-center justify-between">
+              <span className="text-slate-600">Em Teste</span>
+              <strong className="tabular-nums text-amber-700">{metrics.activeTrialCount}</strong>
+            </div>
+            <div className="p-3.5 bg-white rounded-xl border border-slate-200 flex items-center justify-between">
+              <span className="text-slate-600">Pgto Pendente</span>
+              <strong className="tabular-nums text-sky-700">{metrics.pendingPaymentCount}</strong>
+            </div>
+            <div className="p-3.5 bg-white rounded-xl border border-slate-200 flex items-center justify-between">
+              <span className="text-slate-600">Inadimplentes</span>
+              <strong className="tabular-nums text-rose-700">{metrics.overdueCount}</strong>
+            </div>
+            <div className="p-3.5 bg-white rounded-xl border border-slate-200 flex items-center justify-between">
+              <span className="text-slate-600">A Receber</span>
+              <strong className="tabular-nums text-slate-900">
+                R$ {formatBrl(metrics.pendingInvoicesTotal)}
+              </strong>
+            </div>
+          </div>
+
+          {/* Filtered Quick Table */}
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between text-xs">
+              <h3 className="font-bold text-slate-900">
+                Acompanhamento Prioritário de Clínicas ({metrics.filteredForCounts.length})
+              </h3>
+              <button
+                type="button"
+                onClick={() => setActiveTab('organizations')}
+                className="text-purple-700 font-semibold hover:underline"
+              >
+                Ver tabela completa
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
+                    <th className="py-2.5 px-4">Organização / Clínica</th>
+                    <th className="py-2.5 px-4">Plano</th>
+                    <th className="py-2.5 px-4">Licença</th>
+                    <th className="py-2.5 px-4">Vencimento / Dias</th>
+                    <th className="py-2.5 px-4 text-right">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {isLoading ? (
+                    <tr>
+                      <td colSpan={5} className="py-8 text-center text-slate-500">
+                        <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
+                        Carregando organizações...
+                      </td>
+                    </tr>
+                  ) : metrics.filteredForCounts.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-8 text-center text-slate-400">
+                        Nenhuma organização encontrada para o filtro selecionado.
+                      </td>
+                    </tr>
+                  ) : (
+                    metrics.filteredForCounts.slice(0, 12).map((t) => (
+                      <tr key={t.organization.id} className="hover:bg-slate-50">
+                        <td className="py-3 px-4">
+                          <div className="font-bold text-slate-900">
+                            {t.clinic?.tradeName || t.organization.name}
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            {t.organization.responsibleName || '—'} ·{' '}
+                            {t.organization.contactEmail || t.clinic?.email || '—'}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 text-slate-700 font-medium">
+                          {t.plan?.name || 'Sem plano'}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span
+                            className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${
+                              STATUS_STYLE_MAP[t.licenseState.licenseStatus]
+                            }`}
+                          >
+                            {t.licenseState.badgeLabel}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 tabular-nums text-slate-700">
+                          {t.licenseState.formattedEndsAt}
+                          {t.licenseState.isTrialActive && (
+                            <span className="text-[11px] text-slate-500 ml-1.5">
+                              ({t.licenseState.daysRemaining}d)
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedTenant(t)}
+                            className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded-lg"
+                          >
+                            Gerenciar
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       )}
 
-      {/* TAB 3: Super Admin Email Migration & Team RBAC */}
+      {/* TAB 2: ORGANIZAÇÕES / CLIENTES */}
+      {activeTab === 'organizations' && (
+        <div className="space-y-4">
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 text-xs">
+            <div className="relative flex-1 max-w-md">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+              <input
+                type="text"
+                placeholder="Buscar por clínica, responsável, e-mail ou CNPJ..."
+                value={orgSearch}
+                onChange={(e) => setOrgSearch(e.target.value)}
+                className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-xl"
+              />
+            </div>
+
+            <select
+              value={orgStatusFilter}
+              onChange={(e) => setOrgStatusFilter(e.target.value as LicenseFilter)}
+              className="px-3 py-2 border border-slate-300 rounded-xl bg-white font-semibold text-slate-800"
+            >
+              <option value="ALL">Todos os status ({enrichedTenants.length})</option>
+              <option value="ATIVA">Assinatura Ativa</option>
+              <option value="TESTE_ATIVO">Teste Ativo</option>
+              <option value="EXPIRING_SOON">Teste Vencendo (&le; 3 dias)</option>
+              <option value="TESTE_EXPIRADO">Teste Expirado</option>
+              <option value="PAGAMENTO_PENDENTE">Pagamento Pendente</option>
+              <option value="INADIMPLENTE">Inadimplente</option>
+              <option value="SUSPENSA">Suspensa</option>
+              <option value="CANCELADA">Cancelada</option>
+            </select>
+          </div>
+
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
+                    <th className="py-3 px-4">Organização / Clínica</th>
+                    <th className="py-3 px-4">Responsável & Contato</th>
+                    <th className="py-3 px-4">Plano / Ciclo</th>
+                    <th className="py-3 px-4">Licença</th>
+                    <th className="py-3 px-4">Cadastro / Expiração</th>
+                    <th className="py-3 px-4">Último Acesso</th>
+                    <th className="py-3 px-4 text-right">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredOrgs.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-10 text-center text-slate-400">
+                        Nenhuma clínica encontrada.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredOrgs.map((t) => (
+                      <tr key={t.organization.id} className="hover:bg-slate-50">
+                        <td className="py-3 px-4">
+                          <div className="font-bold text-slate-900">
+                            {t.clinic?.legalName || t.organization.name}
+                          </div>
+                          <div className="text-[11px] text-slate-500 font-mono">
+                            {t.organization.slug} · {t.branchesCount} filiais · {t.activeUsersCount}{' '}
+                            usuários
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="font-medium text-slate-800">
+                            {t.organization.responsibleName || '—'}
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            {t.organization.contactEmail || t.clinic?.email || '—'}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="font-semibold text-slate-900">
+                            {t.plan?.name || 'Plano'}
+                          </div>
+                          <div className="text-[11px] text-slate-500 uppercase font-mono">
+                            {t.organization.billingCycle || 'trial'}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span
+                            className={`px-2 py-0.5 rounded border text-[11px] font-semibold whitespace-nowrap ${
+                              STATUS_STYLE_MAP[t.licenseState.licenseStatus]
+                            }`}
+                          >
+                            {t.licenseState.badgeLabel}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 tabular-nums text-slate-700">
+                          <div>
+                            Criada: {new Date(t.organization.createdAt).toLocaleDateString('pt-BR')}
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            Vence: {t.licenseState.formattedEndsAt}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 tabular-nums text-slate-600">
+                          {t.organization.lastAccessedAt
+                            ? new Date(t.organization.lastAccessedAt).toLocaleDateString('pt-BR')
+                            : '—'}
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="inline-flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedTenant(t)}
+                              className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-white font-semibold rounded-lg"
+                            >
+                              Detalhes
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => impersonateClinic(t.clinic?.id || t.organization.id)}
+                              className="p-1.5 text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg"
+                              title="Acessar como suporte"
+                            >
+                              <UserCheck className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: LICENÇAS */}
+      {activeTab === 'licenses' && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-1.5 p-2 bg-white rounded-2xl border border-slate-200 text-xs">
+            {(
+              [
+                { id: 'ALL', label: 'Todas' },
+                { id: 'ATIVA', label: 'Ativas' },
+                { id: 'TESTE_ATIVO', label: 'Em teste' },
+                { id: 'EXPIRING_SOON', label: 'Próx. vencimento (<=3d)' },
+                { id: 'TESTE_EXPIRADO', label: 'Expiradas' },
+                { id: 'PAGAMENTO_PENDENTE', label: 'Pgto. pendente' },
+                { id: 'INADIMPLENTE', label: 'Inadimplentes' },
+                { id: 'SUSPENSA', label: 'Suspensas' },
+                { id: 'CANCELADA', label: 'Canceladas' },
+              ] as Array<{ id: LicenseFilter; label: string }>
+            ).map((pill) => (
+              <button
+                key={pill.id}
+                type="button"
+                onClick={() => setLicenseFilter(pill.id)}
+                className={`px-3 py-1.5 rounded-lg font-semibold transition-colors whitespace-nowrap ${
+                  licenseFilter === pill.id
+                    ? 'bg-slate-900 text-white'
+                    : 'text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                {pill.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
+                    <th className="py-3 px-4">Organização</th>
+                    <th className="py-3 px-4">Plano & Ciclo</th>
+                    <th className="py-3 px-4">Status da Licença</th>
+                    <th className="py-3 px-4">Dias Restantes</th>
+                    <th className="py-3 px-4">Último Pagamento</th>
+                    <th className="py-3 px-4">Próximo Vencimento</th>
+                    <th className="py-3 px-4 text-right">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredLicenses.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-10 text-center text-slate-400">
+                        Nenhuma licença neste filtro.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredLicenses.map((t) => (
+                      <tr key={t.organization.id} className="hover:bg-slate-50">
+                        <td className="py-3 px-4 font-bold text-slate-900">
+                          {t.clinic?.tradeName || t.organization.name}
+                        </td>
+                        <td className="py-3 px-4">
+                          {t.plan?.name || '—'} ·{' '}
+                          <span className="font-mono uppercase text-[11px] text-slate-500">
+                            {t.organization.billingCycle || 'trial'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span
+                            className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${
+                              STATUS_STYLE_MAP[t.licenseState.licenseStatus]
+                            }`}
+                          >
+                            {t.licenseState.badgeLabel}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 tabular-nums font-semibold">
+                          <span className="inline-flex items-center gap-1">
+                            <CalendarClock className="w-3.5 h-3.5 text-slate-400" />
+                            <span>{t.licenseState.daysRemaining}d</span>
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 tabular-nums text-slate-600">
+                          {t.lastPaidAt
+                            ? new Date(t.lastPaidAt).toLocaleDateString('pt-BR')
+                            : 'Sem pagamento'}
+                        </td>
+                        <td className="py-3 px-4 tabular-nums text-slate-700">
+                          {t.licenseState.formattedEndsAt}
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedTenant(t)}
+                            className="px-3 py-1 bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-200 font-semibold rounded-lg"
+                          >
+                            Alterar Licença / Prazo
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: PLANOS E PREÇOS */}
+      {activeTab === 'plans' && (
+        <div className="space-y-4">
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900">
+                Catálogo Comercial de Planos (Fonte Única de Verdade)
+              </h2>
+              <p className="text-slate-600">
+                Alterações de preço mensal, descontos trimestrais/anuais, ordem e disponibilidade atualizam a Landing Page e o Checkout imediatamente.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            {plans.map((plan) => {
+              const qCalc = calculatePlanCyclePricing(plan, 'quarterly');
+              const yCalc = calculatePlanCyclePricing(plan, 'yearly');
+              return (
+                <div
+                  key={plan.id}
+                  className="p-5 bg-white rounded-2xl border border-slate-200 flex flex-col justify-between space-y-4 text-xs"
+                >
+                  <div className="space-y-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <span className="font-mono text-[11px] text-slate-400">
+                          Ordem {plan.displayOrder ?? 1} · {plan.code}
+                        </span>
+                        <h3 className="text-base font-bold text-slate-900">{plan.name}</h3>
+                      </div>
+                      <span
+                        className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${
+                          plan.isActive
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-slate-100 text-slate-600 border-slate-300'
+                        }`}
+                      >
+                        {plan.isActive ? 'Ativo' : 'Oculto'}
+                      </span>
+                    </div>
+
+                    <p className="text-slate-600 leading-relaxed">{plan.description}</p>
+
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1 font-mono tabular-nums">
+                      <div className="flex justify-between">
+                        <span className="text-slate-600">Mensal:</span>
+                        <strong className="text-slate-900">R$ {formatBrl(plan.priceMonthly)}</strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-600">
+                          Trimestral ({qCalc.discountPercent}% off):
+                        </span>
+                        <strong className="text-slate-900">
+                          R$ {formatBrl(qCalc.finalPeriodAmount)}
+                        </strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-600">
+                          Anual ({yCalc.discountPercent}% off):
+                        </span>
+                        <strong className="text-slate-900">
+                          R$ {formatBrl(yCalc.finalPeriodAmount)}
+                        </strong>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1 text-slate-700 pt-1">
+                      <div>
+                        Filiais: <strong>{plan.maxBranches}</strong> · Usuários:{' '}
+                        <strong>{plan.maxUsers}</strong> · Pacientes:{' '}
+                        <strong>{plan.maxPatients.toLocaleString('pt-BR')}</strong>
+                      </div>
+                      <div>
+                        Trial: <strong>{plan.trialDays} dias</strong> · WhatsApp API:{' '}
+                        <strong>{plan.hasWhatsAppAutomation ? 'Sim' : 'Não'}</strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setEditingPlan(plan)}
+                    className="w-full py-2 px-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl inline-flex items-center justify-center gap-1.5"
+                  >
+                    <Edit className="w-3.5 h-3.5" />
+                    <span>Editar Preços, Descontos e Limites</span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 5: FINANCEIRO & PAGAMENTOS */}
+      {activeTab === 'billing' && (
+        <div className="space-y-5">
+          {/* Kiwify / Gateway Integration Readiness Card */}
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 space-y-3 text-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">
+                  Integração Gateway de Pagamentos (Kiwify / Webhook Seguro)
+                </h2>
+                <p className="text-slate-600">
+                  Recebe confirmações reais de pagamento via assinatura/token em Edge Function dedicada, sem nunca ativar licenças pagas sem comprovação.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setManualPaymentInvoice(null);
+                  setIsManualPaymentOpen(true);
+                }}
+                className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 self-start"
+              >
+                <CreditCard className="w-3.5 h-3.5" />
+                <span>Registrar Baixa Manual</span>
+              </button>
+            </div>
+
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
+              <div className="font-semibold text-slate-700">Endpoint de Webhook:</div>
+              <div className="font-mono text-[11px] text-slate-900 break-all">
+                {webhookEndpoint}
+              </div>
+              <div className="text-[11px] text-slate-500">
+                Variáveis de servidor requeridas nas Edge Functions: <code>KIWIFY_WEBHOOK_SECRET</code> e <code>KIWIFY_CHECKOUT_BASE_URL</code>.
+              </div>
+            </div>
+          </div>
+
+          {/* Invoice Filters & Table */}
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <h3 className="font-bold text-slate-900">
+                Faturas & Cobranças SaaS ({filteredInvoices.length})
+              </h3>
+              <select
+                value={invoiceStatusFilter}
+                onChange={(e) =>
+                  setInvoiceStatusFilter(e.target.value as 'ALL' | SaasInvoiceStatus)
+                }
+                className="px-3 py-1.5 border border-slate-300 rounded-lg bg-white font-semibold"
+              >
+                <option value="ALL">Todos os status</option>
+                <option value="paid">Pagas (Confirmadas)</option>
+                <option value="pending">Pendentes</option>
+                <option value="overdue">Em atraso</option>
+                <option value="cancelled">Canceladas</option>
+                <option value="refunded">Estornadas</option>
+              </select>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
+                    <th className="py-3 px-4">Referência</th>
+                    <th className="py-3 px-4">Organização</th>
+                    <th className="py-3 px-4">Plano / Ciclo</th>
+                    <th className="py-3 px-4">Valor</th>
+                    <th className="py-3 px-4">Status</th>
+                    <th className="py-3 px-4">Pagamento / Motivo</th>
+                    <th className="py-3 px-4 text-right">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredInvoices.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-10 text-center text-slate-400">
+                        Nenhuma fatura registrada no período selecionado.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredInvoices.map((inv) => (
+                      <tr key={inv.id} className="hover:bg-slate-50">
+                        <td className="py-3 px-4 font-mono font-semibold text-slate-800">
+                          {inv.referenceCode}
+                        </td>
+                        <td className="py-3 px-4 font-bold text-slate-900">
+                          {inv.organizationName || inv.organizationId}
+                        </td>
+                        <td className="py-3 px-4">
+                          {inv.planName || '—'} ·{' '}
+                          <span className="font-mono uppercase text-[11px] text-slate-500">
+                            {inv.billingCycle}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 tabular-nums font-bold text-slate-900">
+                          R$ {formatBrl(inv.finalAmount)}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span
+                            className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${
+                              inv.status === 'paid'
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                : inv.status === 'overdue'
+                                ? 'bg-rose-50 text-rose-800 border-rose-200'
+                                : inv.status === 'pending'
+                                ? 'bg-sky-50 text-sky-800 border-sky-200'
+                                : 'bg-slate-100 text-slate-700 border-slate-300'
+                            }`}
+                          >
+                            {inv.status === 'paid'
+                              ? 'Paga'
+                              : inv.status === 'overdue'
+                              ? 'Em atraso'
+                              : inv.status === 'pending'
+                              ? 'Pendente'
+                              : inv.status}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-[11px] text-slate-600">
+                          {inv.paidAt
+                            ? `Pago em ${new Date(inv.paidAt).toLocaleDateString('pt-BR')} (${
+                                inv.paymentMethod || inv.paymentProvider || 'Gateway'
+                              })`
+                            : inv.dueDate
+                            ? `Vence ${new Date(inv.dueDate).toLocaleDateString('pt-BR')}`
+                            : '—'}
+                          {inv.manualConfirmationReason && (
+                            <span className="block text-slate-500">
+                              Obs: {inv.manualConfirmationReason}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          {inv.status !== 'paid' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setManualPaymentInvoice(inv);
+                                setIsManualPaymentOpen(true);
+                              }}
+                              className="px-3 py-1 bg-emerald-700 hover:bg-emerald-800 text-white font-semibold rounded-lg"
+                            >
+                              Baixa Manual
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 6: HISTÓRICO & AUDITORIA */}
+      {activeTab === 'audit' && (
+        <div className="space-y-4">
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 flex items-center gap-3 text-xs">
+            <Search className="w-4 h-4 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Filtrar auditoria por ator, ação, clínica ou motivo..."
+              value={auditSearch}
+              onChange={(e) => setAuditSearch(e.target.value)}
+              className="flex-1 outline-none text-slate-900"
+            />
+          </div>
+
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
+                    <th className="py-3 px-4">Data / Hora</th>
+                    <th className="py-3 px-4">Ator</th>
+                    <th className="py-3 px-4">Ação</th>
+                    <th className="py-3 px-4">Organização Alvo</th>
+                    <th className="py-3 px-4">Motivo / Registro</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredAuditLogs.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-10 text-center text-slate-400">
+                        Nenhum evento de auditoria SaaS registrado ainda.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredAuditLogs.map((log) => (
+                      <tr key={log.id} className="hover:bg-slate-50">
+                        <td className="py-3 px-4 font-mono text-[11px] text-slate-600 tabular-nums whitespace-nowrap">
+                          {new Date(log.createdAt).toLocaleString('pt-BR')}
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="font-semibold text-slate-900">
+                            {log.actorEmail || 'sistema'}
+                          </div>
+                          <div className="text-[11px] font-mono text-slate-500">
+                            {log.actorRole || 'service'}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 font-bold text-slate-800">{log.action}</td>
+                        <td className="py-3 px-4 text-slate-700">
+                          {log.targetOrganizationName || log.targetOrganizationId || 'Catálogo Global'}
+                        </td>
+                        <td className="py-3 px-4 text-slate-600">{log.reason || '—'}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 7: DOMÍNIOS & SITES */}
+      {activeTab === 'domains' && <DomainsManagement onSimulateDomain={onSimulateDomain} />}
+
+      {/* TAB 8: SUPER ADMIN & EQUIPE */}
       {activeTab === 'team' && (
         <div className="space-y-6">
-          <div className="bg-white rounded-2xl border border-purple-200 shadow-xs p-5 space-y-4">
+          <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
               <div>
                 <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                  <ShieldCheck className="w-4 h-4 text-purple-600" />
+                  <ShieldCheck className="w-4 h-4 text-purple-700" />
                   <span>Auditoria e Migração de E-mail do Super Administrador</span>
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Atualiza o e-mail de login do Super Administrador preservando identidade, senha, permissões e vínculos com a clínica.
+                  Atualiza o e-mail de login do Super Administrador preservando identidade, senha e papel.
                 </p>
               </div>
               <button
                 type="button"
                 disabled={isAuditingSuperAdmin}
                 onClick={() => void handleAuditSuperAdmin()}
-                className="px-3.5 py-2 text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl transition"
+                className="px-3.5 py-2 text-xs font-bold text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl"
               >
                 {isAuditingSuperAdmin ? 'Auditando...' : 'Auditar Conta Super Admin'}
               </button>
@@ -309,19 +1244,10 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
                         {cand.fullName} · <span className="text-purple-700">{cand.roleCode}</span>
                       </p>
                       <p className="text-[11px] text-slate-600 font-mono">
-                        Auth E-mail: {cand.authEmail || '—'} · Perfil E-mail: {cand.profileEmail}
-                      </p>
-                      <p className="text-[10px] text-slate-400 font-mono">
-                        Auth UUID: {cand.authUserId || 'Não vinculado'} · Profile ID: {cand.profileId}
+                        Auth: {cand.authEmail || '—'} · Perfil: {cand.profileEmail}
                       </p>
                     </div>
-                    <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
-                        cand.isActive
-                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                          : 'bg-rose-50 text-rose-700 border-rose-200'
-                      }`}
-                    >
+                    <span className="text-[11px] font-bold text-slate-700">
                       {cand.isActive ? 'Ativo' : 'Inativo'}
                     </span>
                   </div>
@@ -351,7 +1277,6 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
                   type="checkbox"
                   checked={requireEmailConfirmation}
                   onChange={(e) => setRequireEmailConfirmation(e.target.checked)}
-                  className="rounded text-purple-600"
                 />
                 <span>Exigir confirmação por e-mail</span>
               </label>
@@ -359,9 +1284,9 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
               <button
                 type="submit"
                 disabled={isUpdatingSuperAdminEmail}
-                className="px-4 py-2 text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-60 rounded-xl shadow-xs"
+                className="px-4 py-2 text-xs font-bold text-white bg-purple-700 hover:bg-purple-800 disabled:opacity-60 rounded-xl"
               >
-                {isUpdatingSuperAdminEmail ? 'Atualizando...' : 'Atualizar E-mail do Super Admin'}
+                {isUpdatingSuperAdminEmail ? 'Atualizando...' : 'Atualizar E-mail'}
               </button>
             </form>
           </div>
@@ -370,500 +1295,36 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({ onSimula
         </div>
       )}
 
-      {/* TAB 2: Overview & Commercial Plans */}
-      {activeTab === 'overview' && (
-        <>
-      {overviewError && (
-        <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-            <span>Erro ao carregar métricas SaaS do Supabase: {overviewError}</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => void loadSaasOverview()}
-            className="px-2.5 py-1 text-[11px] font-semibold bg-white border border-rose-200 rounded-lg hover:bg-rose-100 inline-flex items-center gap-1 shrink-0"
-          >
-            <RefreshCw className="w-3 h-3" />
-            <span>Tentar novamente</span>
-          </button>
-        </div>
-      )}
+      {/* Modals */}
+      <PlanEditorModal
+        plan={editingPlan}
+        onClose={() => setEditingPlan(null)}
+        onSaved={showToast}
+      />
 
-      {/* KPI Overview Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs">
-          <span className="text-xs font-medium text-slate-500">Receita Recorrente (MRR)</span>
-          <div className="mt-2 flex items-baseline gap-1">
-            <span className="text-sm font-semibold text-slate-500">R$</span>
-            <span className="text-2xl font-extrabold text-slate-900 tabular-nums">
-              {isLoadingOverview
-                ? '—'
-                : mrr.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-            </span>
-          </div>
-          <span className="text-[11px] text-slate-500 block mt-1">
-            Soma dos planos das contas ativas
-          </span>
-        </div>
+      <OrganizationDetailModal
+        tenant={selectedTenant}
+        plans={plans}
+        invoices={invoices}
+        onClose={() => setSelectedTenant(null)}
+        onUpdated={showToast}
+        onImpersonate={(clinicId) => {
+          setSelectedTenant(null);
+          impersonateClinic(clinicId);
+        }}
+      />
 
-        <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs">
-          <span className="text-xs font-medium text-slate-500">Clínicas Clientes Ativas</span>
-          <div className="mt-2 text-2xl font-extrabold text-slate-900 tabular-nums">
-            {isLoadingOverview ? '—' : activeTenantsCount}
-          </div>
-          <span className="text-[11px] text-slate-500 block mt-1">
-            {totalBranchesTracked} {totalBranchesTracked === 1 ? 'filial ativa' : 'filiais ativas'}
-          </span>
-        </div>
-
-        <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs">
-          <span className="text-xs font-medium text-slate-500">Contas em Período de Teste</span>
-          <div className="mt-2 text-2xl font-extrabold text-amber-600 tabular-nums">
-            {isLoadingOverview ? '—' : trialTenantsCount}
-          </div>
-          <span className="text-[11px] text-slate-500 block mt-1">
-            {tenantsOverview.length} {tenantsOverview.length === 1 ? 'organização monitorada' : 'organizações monitoradas'}
-          </span>
-        </div>
-
-        <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs">
-          <span className="text-xs font-medium text-slate-500">Usuários Provisionados</span>
-          <div className="mt-2 text-2xl font-extrabold text-emerald-600 tabular-nums">
-            {isLoadingOverview ? '—' : totalUsersTracked}
-          </div>
-          <span className="text-[11px] text-slate-500 block mt-1">
-            Perfis ativos no Supabase
-          </span>
-        </div>
-      </div>
-
-      {/* Plans Configurator */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-100 gap-2">
-          <div>
-            <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-purple-600" />
-              <span>Planos Comerciais & Limites Configuráveis</span>
-            </h2>
-            <p className="text-xs text-slate-500">
-              Altere preços mensais/anuais, limites operacionais e recursos. Todas as alterações refletem instantaneamente na Landing Page comercial.
-            </p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {plans.map((plan) => (
-            <div key={plan.id} className="p-5 bg-slate-50 rounded-xl border border-slate-200 space-y-3 text-xs flex flex-col justify-between relative">
-              <div className="space-y-2">
-                <div className="flex items-center justify-between gap-1 flex-wrap">
-                  <h3 className="font-bold text-slate-900 text-sm">{plan.name}</h3>
-                  <div className="flex items-center gap-1">
-                    {plan.isPopular && (
-                      <span className="text-[9px] uppercase font-bold px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded">
-                        Destaque
-                      </span>
-                    )}
-                    <span className="text-[10px] uppercase font-mono px-2 py-0.5 bg-slate-200 text-slate-700 rounded font-semibold">
-                      {plan.code}
-                    </span>
-                  </div>
-                </div>
-
-                <p className="text-slate-500 text-[11px] leading-relaxed">{plan.description}</p>
-                
-                <div className="pt-1 space-y-0.5">
-                  <div className="text-lg font-extrabold text-slate-900 tabular-nums">
-                    R$ {plan.priceMonthly.toFixed(2)} <span className="text-xs font-normal text-slate-500">/ mês</span>
-                  </div>
-                  <div className="text-[11px] text-slate-500 font-mono">
-                    R$ {plan.priceYearly.toFixed(2)} / ano
-                  </div>
-                </div>
-
-                <div className="space-y-1 text-slate-600 pt-2 border-t border-slate-200">
-                  <p>• Máx Filiais: <strong>{plan.maxBranches}</strong></p>
-                  <p>• Máx Usuários: <strong>{plan.maxUsers}</strong></p>
-                  <p>• Máx Pacientes: <strong>{plan.maxPatients}</strong></p>
-                  <p>• Compartilhamento Filiais: <strong>{plan.hasPatientSharing ? 'Sim (Modelo B)' : 'Não (Modelo A)'}</strong></p>
-                  <p>• WhatsApp Oficial: <strong>{plan.hasWhatsAppAutomation ? 'Sim' : 'Manual'}</strong></p>
-                  <p>• Site Institucional: <strong>{plan.hasCustomWebsite ? 'Sim' : 'Não'}</strong></p>
-                  <p>• Módulo Financeiro: <strong>{plan.hasFinancialModule ? 'Sim' : 'Não'}</strong></p>
-                  <p>• Relatórios Avançados: <strong>{plan.hasAdvancedReports ? 'Sim' : 'Não'}</strong></p>
-                </div>
-              </div>
-
-              <button
-                onClick={() => setEditingPlan(plan)}
-                className="w-full mt-2 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg transition flex items-center justify-center gap-1.5 shadow-2xs"
-              >
-                <Edit className="w-3.5 h-3.5 text-purple-600" />
-                <span>Editar Limites e Preços</span>
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Client Clinics Table */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-          <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-            Clínicas Clientes Monitoradas
-          </h3>
-          <button
-            type="button"
-            disabled={isLoadingOverview}
-            onClick={() => void loadSaasOverview()}
-            className="text-xs text-slate-500 hover:text-slate-800 inline-flex items-center gap-1"
-          >
-            <RefreshCw className={`w-3 h-3 ${isLoadingOverview ? 'animate-spin' : ''}`} />
-            <span>Atualizar</span>
-          </button>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold text-[11px]">
-                <th className="py-2.5 px-4">Clínica Cliente</th>
-                <th className="py-2.5 px-4">Plano Atual</th>
-                <th className="py-2.5 px-4">Status da Assinatura</th>
-                <th className="py-2.5 px-4">Validade / Renovação</th>
-                <th className="py-2.5 px-4 text-right">Ação de Gestão</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {isLoadingOverview ? (
-                <tr>
-                  <td colSpan={5} className="py-10 text-center text-slate-500">
-                    <span className="inline-flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin text-purple-600" />
-                      <span>Carregando clínicas monitoradas do Supabase...</span>
-                    </span>
-                  </td>
-                </tr>
-              ) : tenantsOverview.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-10 text-center text-slate-400">
-                    Nenhuma clínica encontrada para a sessão atual.
-                  </td>
-                </tr>
-              ) : (
-                tenantsOverview.map((tenant) => {
-                  const orgItem = tenant.organization;
-                  const renewalRaw =
-                    orgItem.status === 'trial'
-                      ? orgItem.trialEndsAt
-                      : orgItem.subscriptionRenewsAt;
-                  const renewalFormatted = renewalRaw
-                    ? new Date(renewalRaw).toLocaleDateString('pt-BR')
-                    : 'Sem data definida';
-
-                  return (
-                    <tr key={orgItem.id} className="hover:bg-slate-50">
-                      <td className="py-3 px-4 font-bold text-slate-900">
-                        {tenant.clinic?.legalName || orgItem.name}
-                        <span className="block text-[11px] text-slate-400 font-normal">
-                          {tenant.clinic?.documentNumber
-                            ? `CNPJ ${tenant.clinic.documentNumber} · `
-                            : ''}
-                          {tenant.branchesCount} {tenant.branchesCount === 1 ? 'filial' : 'filiais'} ·{' '}
-                          {tenant.patientsCount}{' '}
-                          {tenant.patientsCount === 1 ? 'paciente' : 'pacientes'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className="px-2 py-0.5 rounded font-semibold text-purple-700 bg-purple-50 border border-purple-200">
-                          {tenant.plan?.name || 'Plano Ativo'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4">
-                        <span
-                          className={`px-2 py-0.5 rounded font-semibold ${
-                            orgItem.status === 'active'
-                              ? 'text-emerald-700 bg-emerald-50 border border-emerald-200'
-                              : orgItem.status === 'trial'
-                                ? 'text-amber-700 bg-amber-50 border border-amber-200'
-                                : 'text-rose-700 bg-rose-50 border border-rose-200'
-                          }`}
-                        >
-                          {orgItem.status === 'active'
-                            ? 'Assinatura Ativa'
-                            : orgItem.status === 'trial'
-                              ? 'Período de Teste'
-                              : 'Conta Suspensa'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4 text-slate-600">
-                        {orgItem.status === 'trial'
-                          ? `Trial até ${renewalFormatted}`
-                          : `Renova em ${renewalFormatted}`}
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            onClick={() => impersonateClinic(tenant.clinic?.id || orgItem.id)}
-                            className="px-2.5 py-1 text-xs font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition inline-flex items-center gap-1.5 shadow-2xs"
-                            title="Acessar o ERP operacional da clínica em modo suporte"
-                          >
-                            <UserCheck className="w-3.5 h-3.5 text-purple-600" />
-                            <span>Acessar como Suporte</span>
-                          </button>
-                          <button
-                            onClick={() => toggleTenantStatus(orgItem)}
-                            className={`px-3 py-1 text-xs font-semibold rounded-lg transition ${
-                              orgItem.status === 'active'
-                                ? 'text-rose-600 hover:bg-rose-50 border border-rose-200'
-                                : 'text-emerald-600 hover:bg-emerald-50 border border-emerald-200'
-                            }`}
-                          >
-                            {orgItem.status === 'active' ? 'Suspender' : 'Reativar'}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Edit Plan Modal */}
-      {editingPlan && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 my-6">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div>
-                <h3 className="text-base font-bold text-slate-900">Editar Plano: {editingPlan.name}</h3>
-                <span className="text-[11px] text-slate-400 font-mono">Código interno: {editingPlan.code}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setEditingPlan(null)}
-                className="text-slate-400 hover:text-slate-700 text-lg leading-none"
-              >
-                ×
-              </button>
-            </div>
-
-            <form onSubmit={handleSavePlan} className="space-y-4 text-xs">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Nome do Plano</label>
-                  <input
-                    type="text"
-                    required
-                    value={editingPlan.name}
-                    onChange={(e) => setEditingPlan({ ...editingPlan, name: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900 font-semibold"
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Dias de Teste Grátis (Trial)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={editingPlan.trialDays}
-                    onChange={(e) => setEditingPlan({ ...editingPlan, trialDays: Number(e.target.value) })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Descrição Comercial</label>
-                <textarea
-                  rows={2}
-                  value={editingPlan.description}
-                  onChange={(e) => setEditingPlan({ ...editingPlan, description: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-800 resize-none"
-                />
-              </div>
-
-              {/* Prices Section */}
-              <div className="p-3 bg-purple-50/50 rounded-xl border border-purple-100 space-y-2">
-                <span className="font-bold text-purple-900 block text-[11px] uppercase tracking-wider">
-                  Precificação Comercial (Sincronizada com a Landing Page)
-                </span>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Preço Mensal (R$)</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      required
-                      value={editingPlan.priceMonthly}
-                      onChange={(e) => {
-                        const m = Number(e.target.value);
-                        // suggest yearly price if 0 or default
-                        setEditingPlan({ 
-                          ...editingPlan, 
-                          priceMonthly: m,
-                          priceYearly: editingPlan.priceYearly === 0 ? Number((m * 10).toFixed(2)) : editingPlan.priceYearly
-                        });
-                      }}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg tabular-nums font-bold text-slate-900 bg-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Preço Anual Total (R$)</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      required
-                      value={editingPlan.priceYearly}
-                      onChange={(e) => setEditingPlan({ ...editingPlan, priceYearly: Number(e.target.value) })}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg tabular-nums font-bold text-slate-900 bg-white"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Limits Section */}
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Máx. Filiais</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={editingPlan.maxBranches}
-                    onChange={(e) => setEditingPlan({ ...editingPlan, maxBranches: Number(e.target.value) })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900"
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Máx. Usuários</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={editingPlan.maxUsers}
-                    onChange={(e) => setEditingPlan({ ...editingPlan, maxUsers: Number(e.target.value) })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900"
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Máx. Pacientes</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={editingPlan.maxPatients}
-                    onChange={(e) => setEditingPlan({ ...editingPlan, maxPatients: Number(e.target.value) })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900"
-                  />
-                </div>
-              </div>
-
-              {/* Feature Flags Checkboxes */}
-              <div className="space-y-2 pt-2 border-t border-slate-100">
-                <span className="font-bold text-slate-800 block text-[11px] uppercase tracking-wider">
-                  Módulos & Recursos Ativados
-                </span>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                  <label className="flex items-center gap-2 p-2 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editingPlan.hasWhatsAppAutomation}
-                      onChange={(e) => setEditingPlan({ 
-                        ...editingPlan, 
-                        hasWhatsAppAutomation: e.target.checked,
-                        hasWhatsappAutomation: e.target.checked
-                      })}
-                      className="rounded text-purple-600 focus:ring-purple-500"
-                    />
-                    <span>Automação WhatsApp API Oficial</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 p-2 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editingPlan.hasCustomWebsite}
-                      onChange={(e) => setEditingPlan({ ...editingPlan, hasCustomWebsite: e.target.checked })}
-                      className="rounded text-purple-600 focus:ring-purple-500"
-                    />
-                    <span>Site Institucional White-Label</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 p-2 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editingPlan.hasFinancialModule}
-                      onChange={(e) => setEditingPlan({ ...editingPlan, hasFinancialModule: e.target.checked })}
-                      className="rounded text-purple-600 focus:ring-purple-500"
-                    />
-                    <span>Módulo Financeiro Completo</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 p-2 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editingPlan.hasAdvancedReports}
-                      onChange={(e) => setEditingPlan({ ...editingPlan, hasAdvancedReports: e.target.checked })}
-                      className="rounded text-purple-600 focus:ring-purple-500"
-                    />
-                    <span>Relatórios Avançados & BI</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 p-2 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editingPlan.hasPatientSharing}
-                      onChange={(e) => setEditingPlan({ ...editingPlan, hasPatientSharing: e.target.checked })}
-                      className="rounded text-purple-600 focus:ring-purple-500"
-                    />
-                    <span>Compartilhamento entre Filiais (Modelo B)</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 p-2 rounded-lg border border-amber-200 bg-amber-50/50 hover:bg-amber-50 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(editingPlan.isPopular)}
-                      onChange={(e) => setEditingPlan({ ...editingPlan, isPopular: e.target.checked })}
-                      className="rounded text-amber-600 focus:ring-amber-500"
-                    />
-                    <span className="font-semibold text-amber-900">Destaque "Mais Escolhido" na Landing</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 p-2 rounded-lg border border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 cursor-pointer sm:col-span-2">
-                    <input
-                      type="checkbox"
-                      checked={editingPlan.isActive !== false}
-                      onChange={(e) => setEditingPlan({ ...editingPlan, isActive: e.target.checked })}
-                      className="rounded text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <span className="font-semibold text-emerald-900">Plano Ativo (Publicado para Vendas na Landing Page)</span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="pt-3 flex justify-end gap-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setEditingPlan(null)}
-                  className="px-4 py-2 text-slate-600 hover:text-slate-800 font-semibold"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingPlan}
-                  className="px-5 py-2 text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-60 rounded-xl shadow-md transition flex items-center gap-1.5"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>{isSavingPlan ? 'Salvando alterações...' : 'Salvar e Publicar na Página Inicial'}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-        </>
-      )}
-
+      <ManualPaymentModal
+        isOpen={isManualPaymentOpen}
+        invoice={manualPaymentInvoice}
+        tenants={tenants}
+        plans={plans}
+        onClose={() => {
+          setIsManualPaymentOpen(false);
+          setManualPaymentInvoice(null);
+        }}
+        onConfirmed={showToast}
+      />
     </div>
   );
 };

@@ -5,6 +5,9 @@ import { Navbar } from './components/Navbar';
 import { Sidebar, ClinicTab } from './components/Sidebar';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { SupabaseConfigModal } from './components/SupabaseConfigModal';
+import { TrialStatusBanner } from './components/TrialStatusBanner';
+import { ClinicOnboardingWizard } from './components/ClinicOnboardingWizard';
+import { ClinicSubscriptionModal } from './components/ClinicSubscriptionModal';
 
 // Modules
 import { ClinicDashboard } from './modules/clinic/ClinicDashboard';
@@ -34,7 +37,7 @@ import { Patient } from './types';
 import { ShieldCheck, LogOut, Database, X, Lock, Loader2 } from 'lucide-react';
 
 const MainAppContent: React.FC = () => {
-  const { tenantContext, organization, activeBranchId } = useTenant();
+  const { tenantContext, organization, activeBranchId, licenseState } = useTenant();
   const {
     isAuthenticated,
     isAuthLoading,
@@ -45,6 +48,7 @@ const MainAppContent: React.FC = () => {
     canEditInMenu,
     canAdminMenu,
     currentUser,
+    currentRole,
   } = useAuth();
 
   const [activeClinicTab, setActiveClinicTab] = useState<ClinicTab>('dashboard');
@@ -52,6 +56,9 @@ const MainAppContent: React.FC = () => {
   const [targetPatientForRecord, setTargetPatientForRecord] = useState<Patient | null>(null);
   const [targetFinancialDeepLink, setTargetFinancialDeepLink] = useState<FinancialDeepLink | null>(null);
   const [isWebsitePreviewModalOpen, setIsWebsitePreviewModalOpen] = useState(false);
+  const [isOnboardingWizardOpen, setIsOnboardingWizardOpen] = useState(false);
+  const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState(false);
+  const [onboardingAutoOpenedOrgId, setOnboardingAutoOpenedOrgId] = useState<string | null>(null);
 
   const firstAllowedTab = useMemo<ClinicTab>(() => {
     const first = MENU_DEFINITIONS.find((m) => canViewMenu(m.key));
@@ -63,6 +70,29 @@ const MainAppContent: React.FC = () => {
       setActiveClinicTab(firstAllowedTab);
     }
   }, [isAuthenticated, activeClinicTab, canViewMenu, firstAllowedTab, currentUser.id]);
+
+  useEffect(() => {
+    if (
+      tenantContext.mode === 'CLINIC_APP' &&
+      isAuthenticated &&
+      currentRole !== 'patient' &&
+      organization.id &&
+      organization.onboardingCompleted === false &&
+      !organization.onboardingProgress?.skipped &&
+      onboardingAutoOpenedOrgId !== organization.id
+    ) {
+      setIsOnboardingWizardOpen(true);
+      setOnboardingAutoOpenedOrgId(organization.id);
+    }
+  }, [
+    tenantContext.mode,
+    isAuthenticated,
+    currentRole,
+    organization.id,
+    organization.onboardingCompleted,
+    organization.onboardingProgress?.skipped,
+    onboardingAutoOpenedOrgId,
+  ]);
 
   const handleTabChange = (tab: ClinicTab) => {
     if (!canViewMenu(tab)) return;
@@ -219,6 +249,13 @@ const MainAppContent: React.FC = () => {
                 onOpenWebsitePreview={() => setIsWebsitePreviewModalOpen(true)}
               />
 
+              <TrialStatusBanner
+                organization={organization}
+                licenseState={licenseState}
+                onOpenUpgradeModal={() => setIsSubscriptionModalOpen(true)}
+                onOpenOnboardingWizard={() => setIsOnboardingWizardOpen(true)}
+              />
+
               <div className="flex-1 flex flex-col md:flex-row">
                 <Sidebar
                   activeTab={activeClinicTab}
@@ -338,6 +375,20 @@ const MainAppContent: React.FC = () => {
       <SupabaseConfigModal
         isOpen={isSupabaseModalOpen}
         onClose={() => setIsSupabaseModalOpen(false)}
+      />
+
+      <ClinicOnboardingWizard
+        isOpen={isOnboardingWizardOpen}
+        organization={organization}
+        onClose={() => setIsOnboardingWizardOpen(false)}
+        onNavigateTab={handleTabChange}
+      />
+
+      <ClinicSubscriptionModal
+        isOpen={isSubscriptionModalOpen}
+        organization={organization}
+        licenseState={licenseState}
+        onClose={() => setIsSubscriptionModalOpen(false)}
       />
 
       {/* Offline Status Toast */}

@@ -20,6 +20,7 @@ import {
   MENU_DEFINITIONS,
   resolveEffectivePermissions,
 } from './rbacConfig';
+import { mapDbOrgRowToOrganization } from './saasCloudService';
 
 export const isUuid = (val?: string | null): val is string =>
   Boolean(
@@ -123,18 +124,7 @@ function mapBranchRow(row: Record<string, unknown>): Branch {
 
 function mapOrganizationRow(row: Record<string, unknown>): Organization {
   const localOrg = StorageService.getOrganization();
-  return {
-    id: String(row.id),
-    name: String(row.name || localOrg.name),
-    slug: String(row.slug || localOrg.slug),
-    planId: String(row.plan_id || localOrg.planId),
-    status: (row.status as Organization['status']) || 'active',
-    trialEndsAt: row.trial_ends_at ? String(row.trial_ends_at) : localOrg.trialEndsAt,
-    subscriptionRenewsAt: row.subscription_renews_at
-      ? String(row.subscription_renews_at)
-      : localOrg.subscriptionRenewsAt,
-    createdAt: row.created_at ? String(row.created_at) : localOrg.createdAt,
-  };
+  return mapDbOrgRowToOrganization(row, localOrg);
 }
 
 function buildRoleTemplatesFromRows(
