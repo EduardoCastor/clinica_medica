@@ -17,6 +17,7 @@ import {
   AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL,
   useAuth,
 } from '../../contexts/AuthContext';
+import { DomainResolver, PRODUCTION_DOMAINS } from '../../services/domainResolver';
 import { getSupabaseConfigError } from '../../services/supabaseClient';
 
 interface SaasAdminLoginScreenProps {
@@ -50,12 +51,20 @@ export const SaasAdminLoginScreen: React.FC<SaasAdminLoginScreenProps> = ({ onSu
   const [isPlatformActivationView, setIsPlatformActivationView] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Platform Super Admin pending activation state (only when beaverstraining@gmail.com.br is pending_activation)
+  // Platform Super Admin pending activation state (only when beaverstraining@gmail.com is pending_activation)
   const [activationName, setActivationName] = useState('Beaver Soluções em Tecnologia');
+  const [activationEmail, setActivationEmail] = useState(AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL);
   const [activationPassword, setActivationPassword] = useState('');
   const [activationConfirmPassword, setActivationConfirmPassword] = useState('');
   const [activationEmailSent, setActivationEmailSent] = useState(false);
   const [isResending, setIsResending] = useState(false);
+
+  const saasAdminRedirectTo =
+    typeof window !== 'undefined'
+      ? DomainResolver.isSimulationAllowed()
+        ? window.location.origin
+        : `https://${PRODUCTION_DOMAINS.SAAS_ADMIN}`
+      : `https://${PRODUCTION_DOMAINS.SAAS_ADMIN}`;
 
   const canShowPlatformActivation = Boolean(
     isSupabaseAuthMode &&
@@ -80,7 +89,7 @@ export const SaasAdminLoginScreen: React.FC<SaasAdminLoginScreenProps> = ({ onSu
 
     try {
       if (isResetMode) {
-        const res = await sendPasswordReset(emailInput);
+        const res = await sendPasswordReset(emailInput, saasAdminRedirectTo);
         if (!res.success) {
           setErrorMessage(res.error || 'Falha ao enviar link de redefinição de senha.');
         } else {
@@ -116,7 +125,7 @@ export const SaasAdminLoginScreen: React.FC<SaasAdminLoginScreenProps> = ({ onSu
     try {
       const res = await registerPendingPlatformSuperAdmin({
         fullName: activationName,
-        email: AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL,
+        email: activationEmail,
         password: activationPassword,
         confirmPassword: activationConfirmPassword,
       });
@@ -144,12 +153,13 @@ export const SaasAdminLoginScreen: React.FC<SaasAdminLoginScreenProps> = ({ onSu
     setResetSuccessMessage(null);
     setIsResending(true);
     try {
-      const res = await resendFirstAccessConfirmation(AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL);
+      const cleanActivationEmail = activationEmail.trim().toLowerCase() || AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL;
+      const res = await resendFirstAccessConfirmation(cleanActivationEmail, saasAdminRedirectTo);
       if (!res.success) {
         setErrorMessage(res.error || 'Falha ao reenviar link de confirmação.');
       } else {
         setResetSuccessMessage(
-          `Link de confirmação reenviado para ${AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL}.`
+          `Link de confirmação reenviado para ${cleanActivationEmail}.`
         );
       }
     } finally {
@@ -337,13 +347,15 @@ export const SaasAdminLoginScreen: React.FC<SaasAdminLoginScreenProps> = ({ onSu
 
                   <div>
                     <label className="block text-xs font-bold text-slate-300 mb-1.5">
-                      E-mail Autorizado da Plataforma
+                      E-mail do Super Administrador SaaS
                     </label>
                     <input
                       type="email"
-                      readOnly
-                      value={AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL}
-                      className="w-full px-3 py-2.5 bg-slate-800/60 border border-slate-700 rounded-xl text-purple-300 font-mono"
+                      required
+                      value={activationEmail}
+                      onChange={(e) => setActivationEmail(e.target.value)}
+                      placeholder={AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL}
+                      className="w-full px-3 py-2.5 bg-slate-800/80 border border-slate-700 rounded-xl text-purple-200 font-mono"
                     />
                   </div>
 

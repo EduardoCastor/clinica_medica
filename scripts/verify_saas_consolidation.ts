@@ -782,7 +782,7 @@ async function runTests() {
       'utf8'
     );
     assert.equal(
-      platformAdminEdgeCode.includes("PLATFORM_SUPER_ADMIN_EMAIL = 'beaverstraining@gmail.com.br'") &&
+      platformAdminEdgeCode.includes("PLATFORM_SUPER_ADMIN_EMAIL = 'beaverstraining@gmail.com'") &&
         platformAdminEdgeCode.includes("from('saas_platform_admins')") &&
         platformAdminEdgeCode.includes("action === 'claim_verified_platform_super_admin'") &&
         platformAdminEdgeCode.includes("action === 'invite_new_super_admin'") &&
@@ -816,9 +816,10 @@ async function runTests() {
       'utf8'
     );
     const mockDataCode = fs.readFileSync(path.join(root, 'src/services/mockData.ts'), 'utf8');
+    const saasCloudCode = fs.readFileSync(path.join(root, 'src/services/saasCloudService.ts'), 'utf8');
 
     assert.equal(
-      authContextCode.includes("AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL = 'beaverstraining@gmail.com.br'") &&
+      authContextCode.includes("AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL = 'beaverstraining@gmail.com'") &&
         authContextCode.includes('isPlatformSuperAdmin') &&
         authContextCode.includes('attemptPlatformSuperAdminClaim'),
       true,
@@ -836,9 +837,10 @@ async function runTests() {
       'SaasAdminLoginScreen must not mount clinic FirstAccessBootstrapPanel'
     );
     assert.equal(
-      saasLoginCode.includes('AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL'),
+      saasLoginCode.includes('AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL') &&
+        saasLoginCode.includes('saasAdminRedirectTo'),
       true,
-      'SaasAdminLoginScreen must bind platform activation exclusively to beaverstraining@gmail.com.br'
+      'SaasAdminLoginScreen must use beaverstraining@gmail.com and configure SaaS Admin reset redirect'
     );
     assert.equal(
       saasDashboardCode.includes('updateSuperAdminEmailInCloud') ||
@@ -853,11 +855,58 @@ async function runTests() {
       'SaasAdminDashboard must manage identity separation via transfer status and official invite'
     );
     assert.equal(
-      mockDataCode.includes("email: 'beaverstraining@gmail.com.br'") &&
+      mockDataCode.includes("email: 'beaverstraining@gmail.com'") &&
         mockDataCode.includes("email: 'admin@drnewtonmureb.com.br'"),
       true,
-      'INITIAL_USERS must separate beaverstraining@gmail.com.br (super_admin) from admin@drnewtonmureb.com.br (clinic_admin)'
+      'INITIAL_USERS must separate beaverstraining@gmail.com (super_admin) from admin@drnewtonmureb.com.br (clinic_admin)'
     );
+
+    // 13. Super Admin Email Correction Verification (Testes A, B, C, D)
+    const emailFixMigrationPath = path.join(
+      root,
+      'supabase/migrations/20261128010000_fix_super_admin_email_beaverstraining.sql'
+    );
+    assert.equal(
+      fs.existsSync(emailFixMigrationPath),
+      true,
+      'Corrective migration 20261128010000 must exist without modifying historical migrations'
+    );
+    const emailFixSql = fs.readFileSync(emailFixMigrationPath, 'utf8');
+
+    assert.equal(
+      emailFixSql.includes("v_correct_email CONSTANT TEXT := 'beaverstraining@gmail.com'") &&
+        emailFixSql.includes("v_target_email CONSTANT TEXT := 'beaverstraining@gmail.com'") &&
+        emailFixSql.includes('medsync_is_saas_platform_admin()') &&
+        emailFixSql.includes('medsync_finalize_platform_super_admin_transfer'),
+      true,
+      'Corrective migration must update bootstrap/transfer functions to beaverstraining@gmail.com and enforce strict DB auth checks'
+    );
+    assert.equal(
+      /UPDATE\s+auth\.users|DELETE\s+FROM\s+auth\.users/i.test(emailFixSql),
+      false,
+      'Corrective migration must NEVER update or delete auth.users directly via SQL'
+    );
+    assert.equal(
+      /password\s*[:=]\s*['"][^'"]+['"]/i.test(emailFixSql),
+      false,
+      'Corrective migration SQL must never contain hardcoded passwords'
+    );
+
+    const activeTypoTargets = [
+      { name: 'AuthContext.tsx', content: authContextCode },
+      { name: 'SaasAdminLoginScreen.tsx', content: saasLoginCode },
+      { name: 'SaasAdminDashboard.tsx', content: saasDashboardCode },
+      { name: 'saasCloudService.ts', content: saasCloudCode },
+      { name: 'mockData.ts', content: mockDataCode },
+      { name: 'saas-platform-admin/index.ts', content: platformAdminEdgeCode },
+    ];
+    for (const target of activeTypoTargets) {
+      assert.equal(
+        target.content.includes('beaverstraining@gmail.com.br'),
+        false,
+        `${target.name} must not reference the incorrect email beaverstraining@gmail.com.br`
+      );
+    }
   }
 
   console.log('ALL_SAAS_CONSOLIDATION_TESTS_PASSED');

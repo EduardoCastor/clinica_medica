@@ -246,13 +246,19 @@ export function runDataMigrationIfNeeded(): void {
           let changed = false;
           const migratedUsers = parsedUsers.map((u) => {
             const lowerEmail = (u.email || '').toLowerCase();
-            if (u.id === 'usr_superadmin' && (lowerEmail === 'admin@medsync.io' || lowerEmail === 'admin@drnewtonmureb.com.br' || u.organizationId)) {
+            if (
+              u.id === 'usr_superadmin' &&
+              (lowerEmail === 'admin@medsync.io' ||
+                lowerEmail === 'admin@drnewtonmureb.com.br' ||
+                lowerEmail === 'beaverstraining@gmail.com.br' ||
+                u.organizationId)
+            ) {
               changed = true;
               return {
                 ...u,
                 organizationId: '',
                 fullName: 'Beaver Soluções em Tecnologia (Super Admin)',
-                email: 'beaverstraining@gmail.com.br',
+                email: 'beaverstraining@gmail.com',
                 role: 'super_admin' as const,
               };
             }

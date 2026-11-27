@@ -354,7 +354,7 @@ export const INITIAL_USERS: UserProfile[] = [
     id: 'usr_superadmin',
     organizationId: '',
     fullName: 'Beaver Soluções em Tecnologia (Super Admin)',
-    email: 'beaverstraining@gmail.com.br',
+    email: 'beaverstraining@gmail.com',
     phone: '(22) 99908-9122',
     role: 'super_admin',
     isActive: true,

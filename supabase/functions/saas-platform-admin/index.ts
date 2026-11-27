@@ -3,7 +3,7 @@
 
 import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.49.8';
 
-const PLATFORM_SUPER_ADMIN_EMAIL = 'beaverstraining@gmail.com.br';
+const PLATFORM_SUPER_ADMIN_EMAIL = 'beaverstraining@gmail.com';
 const LEGACY_CLINIC_ADMIN_EMAIL = 'admin@drnewtonmureb.com.br';
 
 const corsHeaders: Record<string, string> = {
@@ -133,7 +133,7 @@ Deno.serve(async (req: Request) => {
 
   // =========================================================================
   // 0. ATIVAÇÃO VERIFICADA DO NOVO SUPER ADMIN DA PLATAFORMA (CENÁRIO B)
-  //    Exige conta autenticada + e-mail confirmado == beaverstraining@gmail.com.br
+  //    Exige conta autenticada + e-mail confirmado == beaverstraining@gmail.com
   // =========================================================================
   if (action === 'claim_verified_platform_super_admin') {
     const callerEmail = (authUser.email || '').trim().toLowerCase();

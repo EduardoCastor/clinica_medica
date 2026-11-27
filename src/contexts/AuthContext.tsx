@@ -20,7 +20,7 @@ import { ClinicBillingCloudService, SaasAdminCloudService } from '../services/sa
 export type SimplePermAction = 'view' | 'consult' | 'create' | 'edit' | 'delete' | 'admin';
 
 export const AUTHORIZED_FIRST_ACCESS_EMAIL = 'admin@drnewtonmureb.com.br';
-export const AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL = 'beaverstraining@gmail.com.br';
+export const AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL = 'beaverstraining@gmail.com';
 const PENDING_BOOTSTRAP_NAME_KEY = 'medsync_pending_bootstrap_name';
 
 interface SignInResult {
@@ -60,9 +60,15 @@ interface AuthContextType {
     password: string;
     confirmPassword: string;
   }) => Promise<FirstAccessRegistrationResult>;
-  resendFirstAccessConfirmation: (email: string) => Promise<{ success: boolean; error?: string }>;
+  resendFirstAccessConfirmation: (
+    email: string,
+    redirectTo?: string
+  ) => Promise<{ success: boolean; error?: string }>;
   signInWithEmail: (email: string, password: string, expectedScope?: 'saas_admin' | 'clinic') => Promise<SignInResult>;
-  sendPasswordReset: (email: string) => Promise<{ success: boolean; error?: string }>;
+  sendPasswordReset: (
+    email: string,
+    redirectTo?: string
+  ) => Promise<{ success: boolean; error?: string }>;
   refreshSessionProfile: () => Promise<void>;
   switchUser: (userId: string) => void;
   login: (userId: string) => void;
@@ -712,7 +718,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const resendFirstAccessConfirmation = async (
-    email: string
+    email: string,
+    customRedirectTo?: string
   ): Promise<{ success: boolean; error?: string }> => {
     const cleanEmail = email.trim().toLowerCase();
     if (
@@ -728,7 +735,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!supabase) {
       return { success: false, error: 'Serviço de autenticação indisponível neste ambiente.' };
     }
-    const emailRedirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
+    const emailRedirectTo =
+      customRedirectTo || (typeof window !== 'undefined' ? window.location.origin : undefined);
     const { error } = await supabase.auth.resend({
       type: 'signup',
       email: cleanEmail,
@@ -905,7 +913,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const sendPasswordReset = async (
-    email: string
+    email: string,
+    customRedirectTo?: string
   ): Promise<{ success: boolean; error?: string }> => {
     const cleanEmail = email.trim().toLowerCase();
     if (!cleanEmail) {
@@ -919,7 +928,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
 
-    const redirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
+    const redirectTo =
+      customRedirectTo || (typeof window !== 'undefined' ? window.location.origin : undefined);
     const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, { redirectTo });
     if (error) {
       return { success: false, error: error.message };

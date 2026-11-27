@@ -393,7 +393,7 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
       }
       setFeedbackMessage(
         res.message ||
-          'Convite oficial enviado para beaverstraining@gmail.com.br via Supabase Auth.'
+          'Convite oficial enviado para beaverstraining@gmail.com via Supabase Auth.'
       );
     } finally {
       setIsInvitingSuperAdmin(false);
@@ -1366,7 +1366,7 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
                   <span>Separação de Identidades · Plataforma SaaS vs. Clínica Cliente</span>
                 </h2>
                 <p className="text-xs text-slate-600 mt-1">
-                  Garante que a Administração Geral do MedSync SaaS pertença exclusivamente à Beaver Soluções em Tecnologia (beaverstraining@gmail.com.br) e preserva integralmente o acesso administrativo da Clínica Dr. Newton Mureb (admin@drnewtonmureb.com.br).
+                  Garante que a Administração Geral do MedSync SaaS pertença exclusivamente à Beaver Soluções em Tecnologia (beaverstraining@gmail.com) e preserva integralmente o acesso administrativo da Clínica Dr. Newton Mureb (admin@drnewtonmureb.com.br).
                 </p>
               </div>
               <button
@@ -1389,7 +1389,7 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
                   </span>
                 </div>
                 <div className="font-mono text-slate-900 font-semibold">
-                  {transferStatus?.targetEmail || 'beaverstraining@gmail.com.br'}
+                  {transferStatus?.targetEmail || 'beaverstraining@gmail.com'}
                 </div>
                 <div className="text-[11px] text-slate-600 space-y-1">
                   <div>
@@ -1489,7 +1489,7 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
                 className="px-4 py-2 text-xs font-bold text-white bg-purple-700 hover:bg-purple-800 disabled:opacity-60 rounded-xl inline-flex items-center gap-2"
               >
                 {isInvitingSuperAdmin && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                <span>Enviar Convite Oficial (Supabase Auth) para beaverstraining@gmail.com.br</span>
+                <span>Enviar Convite Oficial (Supabase Auth) para beaverstraining@gmail.com</span>
               </button>
 
               <button
@@ -1502,8 +1502,8 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
                 onClick={() => void handleFinalizeTransfer()}
                 title={
                   transferStatus?.targetAuthStatus?.emailConfirmedAt
-                    ? 'Ativar beaverstraining@gmail.com.br e restringir admin@drnewtonmureb.com.br exclusivamente à clínica'
-                    : 'Disponível somente após beaverstraining@gmail.com.br confirmar o e-mail no Supabase Auth'
+                    ? 'Ativar beaverstraining@gmail.com e restringir admin@drnewtonmureb.com.br exclusivamente à clínica'
+                    : 'Disponível somente após beaverstraining@gmail.com confirmar o e-mail no Supabase Auth'
                 }
                 className="px-4 py-2 text-xs font-bold text-slate-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 disabled:opacity-50 rounded-xl inline-flex items-center gap-2"
               >

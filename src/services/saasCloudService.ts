@@ -1036,7 +1036,7 @@ export const SaasAdminCloudService = {
       message?: string;
     }>('saas-platform-admin', {
       action: 'invite_new_super_admin',
-      targetEmail: 'beaverstraining@gmail.com.br',
+      targetEmail: 'beaverstraining@gmail.com',
       redirectTo:
         redirectTo || (typeof window !== 'undefined' ? window.location.origin : undefined),
     });
