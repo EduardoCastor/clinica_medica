@@ -188,23 +188,32 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ error: 'Plano selecionado não encontrado ou indisponível.' }, 404);
     }
 
-    // Cálculo estrito no servidor (nunca confia em preço enviado pelo navegador)
+    // Cálculo estrito no servidor via função SQL canônica (nunca confia em preço enviado pelo navegador)
     const unitMonthly = roundMoney(Number(planRow.price_monthly || 0));
     const qDiscount = Math.max(0, Math.min(95, Number(planRow.quarterly_discount_percent ?? 10)));
     const yDiscount = Math.max(0, Math.min(95, Number(planRow.yearly_discount_percent ?? 20)));
 
-    let grossAmount = unitMonthly;
-    let discountPercent = 0;
-    let finalAmount = unitMonthly;
+    const { data: sqlPricingRows, error: pricingErr } = await adminClient.rpc(
+      'medsync_compute_plan_pricing',
+      {
+        p_price_monthly: unitMonthly,
+        p_quarterly_discount: qDiscount,
+        p_yearly_discount: yDiscount,
+        p_cycle: billingCycle,
+      }
+    );
 
-    if (billingCycle === 'quarterly') {
-      grossAmount = roundMoney(unitMonthly * 3);
-      discountPercent = qDiscount;
-      finalAmount = roundMoney(grossAmount * (1 - qDiscount / 100));
-    } else if (billingCycle === 'yearly') {
-      grossAmount = roundMoney(unitMonthly * 12);
-      discountPercent = yDiscount;
-      finalAmount = roundMoney(grossAmount * (1 - yDiscount / 100));
+    if (pricingErr || !Array.isArray(sqlPricingRows) || sqlPricingRows.length === 0) {
+      return jsonResponse({ error: 'Falha ao calcular valor oficial do plano no servidor.' }, 500);
+    }
+
+    const sqlPricing = sqlPricingRows[0] as Record<string, unknown>;
+    const grossAmount = roundMoney(Number(sqlPricing.gross_amount ?? unitMonthly));
+    const discountPercent = roundMoney(Number(sqlPricing.discount_percent ?? 0));
+    const finalAmount = roundMoney(Number(sqlPricing.final_amount ?? unitMonthly));
+
+    if (finalAmount <= 0) {
+      return jsonResponse({ error: 'Valor calculado para o plano pago é inválido.' }, 400);
     }
 
     const referenceCode = `MED-${orgId.slice(0, 8).toUpperCase()}-${Date.now()}`;

@@ -171,15 +171,27 @@ Deno.serve(async (req: Request) => {
     // Rollback atômico da conta Auth recém-criada em caso de erro no provisionamento
     await adminClient.auth.admin.deleteUser(authUserId);
     const errMsg = provisionErr.message || 'Falha ao provisionar ambiente de avaliação gratuita.';
+    if (errMsg.includes('TRIAL_PLAN_UNAVAILABLE')) {
+      return jsonResponse(
+        {
+          error:
+            'O plano de avaliação gratuita (trial) não está configurado ou ativo no catálogo comercial. Contate o suporte.',
+          code: 'TRIAL_PLAN_UNAVAILABLE',
+        },
+        503
+      );
+    }
     return jsonResponse(
       {
         error: errMsg.includes('TRIAL_ALREADY_CLAIMED')
           ? 'Este e-mail já utilizou o teste gratuito de 10 dias.'
           : errMsg.includes('TRIAL_DOCUMENT_ALREADY_CLAIMED')
           ? 'Este CNPJ/CPF já utilizou o teste gratuito de 10 dias.'
+          : errMsg.includes('EMAIL_ALREADY_REGISTERED')
+          ? 'Já existe um cadastro vinculado a este endereço de e-mail.'
           : errMsg,
       },
-      errMsg.includes('TRIAL_') ? 409 : 500
+      errMsg.includes('TRIAL_') || errMsg.includes('EMAIL_') ? 409 : 500
     );
   }
 

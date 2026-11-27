@@ -484,20 +484,24 @@ Deno.serve(async (req: Request) => {
       }
 
       const unitMonthly = roundMoney(Number(planRow.price_monthly || 0));
-      const qDisc = Number(planRow.quarterly_discount_percent ?? 10);
-      const yDisc = Number(planRow.yearly_discount_percent ?? 20);
-      let gross = unitMonthly;
-      let disc = 0;
-      let finalVal = unitMonthly;
-      if (resolvedCycle === 'quarterly') {
-        gross = roundMoney(unitMonthly * 3);
-        disc = qDisc;
-        finalVal = roundMoney(gross * (1 - disc / 100));
-      } else if (resolvedCycle === 'yearly') {
-        gross = roundMoney(unitMonthly * 12);
-        disc = yDisc;
-        finalVal = roundMoney(gross * (1 - disc / 100));
+      const qDisc = Math.max(0, Math.min(95, Number(planRow.quarterly_discount_percent ?? 10)));
+      const yDisc = Math.max(0, Math.min(95, Number(planRow.yearly_discount_percent ?? 20)));
+      const { data: sqlPricingRows, error: pricingErr } = await adminClient.rpc(
+        'medsync_compute_plan_pricing',
+        {
+          p_price_monthly: unitMonthly,
+          p_quarterly_discount: qDisc,
+          p_yearly_discount: yDisc,
+          p_cycle: resolvedCycle,
+        }
+      );
+      if (pricingErr || !Array.isArray(sqlPricingRows) || sqlPricingRows.length === 0) {
+        return jsonResponse({ error: 'Falha ao calcular valor do plano no servidor.' }, 500);
       }
+      const sqlPricing = sqlPricingRows[0] as Record<string, unknown>;
+      const gross = roundMoney(Number(sqlPricing.gross_amount ?? unitMonthly));
+      const disc = roundMoney(Number(sqlPricing.discount_percent ?? 0));
+      const finalVal = roundMoney(Number(sqlPricing.final_amount ?? unitMonthly));
 
       const { data: createdInv, error: insErr } = await adminClient
         .from('saas_invoices')

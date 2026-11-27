@@ -997,7 +997,7 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
                   Integração Gateway de Pagamentos (Kiwify / Webhook Seguro)
                 </h2>
                 <p className="text-slate-600">
-                  Recebe confirmações reais de pagamento via assinatura/token em Edge Function dedicada, sem nunca ativar licenças pagas sem comprovação.
+                  Recebe confirmações reais de pagamento via assinatura criptográfica HMAC-SHA256 em Edge Function dedicada, com bloqueio fail-closed até confirmação oficial do formato do gateway e sem ativar licenças sem validação transacional.
                 </p>
               </div>
               <button
@@ -1019,7 +1019,7 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
                 {webhookEndpoint}
               </div>
               <div className="text-[11px] text-slate-500">
-                Variáveis de servidor requeridas nas Edge Functions: <code>KIWIFY_WEBHOOK_SECRET</code> e <code>KIWIFY_CHECKOUT_BASE_URL</code>.
+                Variáveis de servidor requeridas nas Edge Functions: <code>KIWIFY_WEBHOOK_SECRET</code>, <code>PAYMENT_WEBHOOK_SIGNATURE_CONFIRMED=true</code> (após homologar assinatura HMAC oficial) e <code>KIWIFY_CHECKOUT_BASE_URL</code>.
               </div>
             </div>
           </div>
