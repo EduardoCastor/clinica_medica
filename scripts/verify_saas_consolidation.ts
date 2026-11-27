@@ -909,6 +909,28 @@ async function runTests() {
     }
   }
 
+  // 14. Trial Digest Fix Verification
+  {
+    const digestFixMigrationPath = path.join(
+      root,
+      'supabase/migrations/20261128020000_fix_trial_digest_function.sql'
+    );
+    assert.equal(
+      fs.existsSync(digestFixMigrationPath),
+      true,
+      'Corrective migration 20261128020000 for digest must exist'
+    );
+    const digestSql = fs.readFileSync(digestFixMigrationPath, 'utf8');
+
+    assert.equal(
+      digestSql.includes('digest(convert_to(v_clean_email, \'UTF8\'), \'sha256\')') &&
+        digestSql.includes('SET search_path = public, extensions') &&
+        digestSql.includes('CREATE EXTENSION IF NOT EXISTS pgcrypto'),
+      true,
+      'Corrective migration 20261128020000 must use convert_to with UTF8 for digest and include extensions schema in search_path'
+    );
+  }
+
   console.log('ALL_SAAS_CONSOLIDATION_TESTS_PASSED');
 }
 
