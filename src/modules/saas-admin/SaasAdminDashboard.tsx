@@ -32,6 +32,7 @@ import {
 import {
   SaasAdminCloudService,
   SaasAdminTenantRecord,
+  SuperAdminTransferStatusResult,
 } from '../../services/saasCloudService';
 import {
   calculatePlanCyclePricing,
@@ -42,8 +43,6 @@ import {
 import { getSupabaseCredentials } from '../../services/supabaseClient';
 import { useAuth } from '../../contexts/AuthContext';
 import { DomainsManagement } from './DomainsManagement';
-import { TeamManagement } from '../clinic/TeamManagement';
-import { SuperAdminCandidateInfo, TeamCloudService } from '../../services/teamCloudService';
 import {
   ManualPaymentModal,
   OrganizationDetailModal,
@@ -120,12 +119,11 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
   const [manualPaymentInvoice, setManualPaymentInvoice] = useState<SaasInvoice | null>(null);
   const [isManualPaymentOpen, setIsManualPaymentOpen] = useState(false);
 
-  // Super Admin Email Audit & Migration state
-  const [superAdminCandidates, setSuperAdminCandidates] = useState<SuperAdminCandidateInfo[]>([]);
-  const [isAuditingSuperAdmin, setIsAuditingSuperAdmin] = useState(false);
-  const [isUpdatingSuperAdminEmail, setIsUpdatingSuperAdminEmail] = useState(false);
-  const [targetSuperAdminEmail, setTargetSuperAdminEmail] = useState('admin@drnewtonmureb.com.br');
-  const [requireEmailConfirmation, setRequireEmailConfirmation] = useState(false);
+  // Platform Super Admin Identity Separation & Transfer state
+  const [transferStatus, setTransferStatus] = useState<SuperAdminTransferStatusResult | null>(null);
+  const [isLoadingTransferStatus, setIsLoadingTransferStatus] = useState(false);
+  const [isInvitingSuperAdmin, setIsInvitingSuperAdmin] = useState(false);
+  const [isFinalizingTransfer, setIsFinalizingTransfer] = useState(false);
 
   const loadSaasData = useCallback(async (): Promise<boolean> => {
     setIsLoading(true);
@@ -358,51 +356,69 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
     );
   }, [auditLogs, auditSearch]);
 
-  const handleAuditSuperAdmin = async () => {
-    setErrorMessage(null);
-    setFeedbackMessage(null);
-    setIsAuditingSuperAdmin(true);
+  const loadTransferStatus = useCallback(async () => {
+    setIsLoadingTransferStatus(true);
     try {
-      const res = await TeamCloudService.auditSuperAdminAccount();
+      const res = await SaasAdminCloudService.getSuperAdminTransferStatus();
       if (!res.success) {
-        setErrorMessage(res.error || 'Falha ao consultar conta Super Admin.');
+        setErrorMessage(res.error || 'Falha ao consultar status do Super Administrador SaaS.');
         return;
       }
-      setSuperAdminCandidates(res.candidates || []);
-      if ((res.candidates?.length || 0) === 1) {
-        setFeedbackMessage(
-          `Super Admin verificado: ${res.candidates![0].fullName} (${
-            res.candidates![0].authEmail || res.candidates![0].profileEmail
-          }).`
-        );
-      }
+      setTransferStatus(res);
     } finally {
-      setIsAuditingSuperAdmin(false);
+      setIsLoadingTransferStatus(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'team') {
+      void loadTransferStatus();
+    }
+  }, [activeTab, loadTransferStatus]);
+
+  const handleInviteNewSuperAdmin = async () => {
+    setErrorMessage(null);
+    setFeedbackMessage(null);
+    setIsInvitingSuperAdmin(true);
+    try {
+      const res = await SaasAdminCloudService.inviteNewSuperAdmin();
+      if (!res.success) {
+        setErrorMessage(res.error || 'Não foi possível enviar o convite oficial.');
+        return;
+      }
+      await loadTransferStatus();
+      await loadSaasData();
+      if (res.status === 'transferred') {
+        await refreshSessionProfile();
+      }
+      setFeedbackMessage(
+        res.message ||
+          'Convite oficial enviado para beaverstraining@gmail.com.br via Supabase Auth.'
+      );
+    } finally {
+      setIsInvitingSuperAdmin(false);
     }
   };
 
-  const handleUpdateSuperAdminEmail = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleFinalizeTransfer = async () => {
     setErrorMessage(null);
     setFeedbackMessage(null);
-    setIsUpdatingSuperAdminEmail(true);
+    setIsFinalizingTransfer(true);
     try {
-      const res = await TeamCloudService.updateSuperAdminEmailInCloud(
-        targetSuperAdminEmail,
-        requireEmailConfirmation
-      );
+      const res = await SaasAdminCloudService.finalizeSuperAdminTransfer();
       if (!res.success) {
-        if (res.candidates) setSuperAdminCandidates(res.candidates);
-        setErrorMessage(res.error || 'Não foi possível atualizar o e-mail do Super Admin.');
+        setErrorMessage(res.error || 'Não foi possível concluir a transferência.');
         return;
       }
-      await handleAuditSuperAdmin();
+      await loadTransferStatus();
+      await loadSaasData();
       await refreshSessionProfile();
       setFeedbackMessage(
-        `E-mail do Super Admin atualizado para ${res.newEmail} preservando identidade e papel.`
+        res.message ||
+          'Transferência concluída com separação definitiva entre Plataforma SaaS e Clínica Dr. Newton Mureb.'
       );
     } finally {
-      setIsUpdatingSuperAdminEmail(false);
+      setIsFinalizingTransfer(false);
     }
   };
 
@@ -419,7 +435,7 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
     { id: 'billing', label: 'Financeiro & Pagamentos', icon: CreditCard },
     { id: 'audit', label: 'Histórico & Auditoria', icon: ClipboardList },
     { id: 'domains', label: 'Domínios & Sites', icon: Globe },
-    { id: 'team', label: 'Super Admin & Equipe', icon: Users },
+    { id: 'team', label: 'Super Admin SaaS', icon: Users },
   ];
 
   return (
@@ -1339,90 +1355,163 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
       {/* TAB 7: DOMÍNIOS & SITES */}
       {activeTab === 'domains' && <DomainsManagement onSimulateDomain={onSimulateDomain} />}
 
-      {/* TAB 8: SUPER ADMIN & EQUIPE */}
+      {/* TAB 8: SEPARAÇÃO DE IDENTIDADES & SUPER ADMIN SAAS */}
       {activeTab === 'team' && (
         <div className="space-y-6">
-          <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
               <div>
                 <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-purple-700" />
-                  <span>Auditoria e Migração de E-mail do Super Administrador</span>
+                  <span>Separação de Identidades · Plataforma SaaS vs. Clínica Cliente</span>
                 </h2>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Atualiza o e-mail de login do Super Administrador preservando identidade, senha e papel.
+                <p className="text-xs text-slate-600 mt-1">
+                  Garante que a Administração Geral do MedSync SaaS pertença exclusivamente à Beaver Soluções em Tecnologia (beaverstraining@gmail.com.br) e preserva integralmente o acesso administrativo da Clínica Dr. Newton Mureb (admin@drnewtonmureb.com.br).
                 </p>
               </div>
               <button
                 type="button"
-                disabled={isAuditingSuperAdmin}
-                onClick={() => void handleAuditSuperAdmin()}
-                className="px-3.5 py-2 text-xs font-bold text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl"
+                disabled={isLoadingTransferStatus}
+                onClick={() => void loadTransferStatus()}
+                className="px-3.5 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 self-start"
               >
-                {isAuditingSuperAdmin ? 'Auditando...' : 'Auditar Conta Super Admin'}
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingTransferStatus ? 'animate-spin' : ''}`} />
+                <span>Verificar Status no Supabase</span>
               </button>
             </div>
 
-            {superAdminCandidates.length > 0 && (
-              <div className="space-y-2">
-                {superAdminCandidates.map((cand) => (
-                  <div
-                    key={cand.profileId}
-                    className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2"
-                  >
-                    <div>
-                      <p className="font-bold text-slate-900">
-                        {cand.fullName} · <span className="text-purple-700">{cand.roleCode}</span>
-                      </p>
-                      <p className="text-[11px] text-slate-600 font-mono">
-                        Auth: {cand.authEmail || '—'} · Perfil: {cand.profileEmail}
-                      </p>
-                    </div>
-                    <span className="text-[11px] font-bold text-slate-700">
-                      {cand.isActive ? 'Ativo' : 'Inativo'}
-                    </span>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+              <div className="p-4 rounded-2xl border border-purple-200 bg-purple-50/50 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-purple-900">1. Super Administrador SaaS (Plataforma)</span>
+                  <span className="px-2 py-0.5 rounded bg-purple-100 text-purple-800 font-mono text-[11px] font-bold">
+                    super_admin
+                  </span>
+                </div>
+                <div className="font-mono text-slate-900 font-semibold">
+                  {transferStatus?.targetEmail || 'beaverstraining@gmail.com.br'}
+                </div>
+                <div className="text-[11px] text-slate-600 space-y-1">
+                  <div>
+                    Conta no Supabase Auth:{' '}
+                    <strong>
+                      {transferStatus?.targetAuthStatus?.exists
+                        ? transferStatus.targetAuthStatus.emailConfirmedAt
+                          ? 'Criada e e-mail confirmado'
+                          : 'Criada (aguardando confirmação de e-mail)'
+                        : 'Aguardando criação / convite oficial'}
+                    </strong>
                   </div>
-                ))}
+                  <div>
+                    Vínculo operacional de clínica: <strong>Nenhum (escopo exclusivo de plataforma)</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 rounded-2xl border border-sky-200 bg-sky-50/50 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-sky-900">2. Administrador da Clínica Dr. Newton Mureb</span>
+                  <span className="px-2 py-0.5 rounded bg-sky-100 text-sky-800 font-mono text-[11px] font-bold">
+                    {transferStatus?.clinicAdminProfile?.roleCode || 'clinic_admin'}
+                  </span>
+                </div>
+                <div className="font-mono text-slate-900 font-semibold">
+                  {transferStatus?.clinicAdminEmail || 'admin@drnewtonmureb.com.br'}
+                </div>
+                <div className="text-[11px] text-slate-600 space-y-1">
+                  <div>
+                    Organização:{' '}
+                    <strong>
+                      {transferStatus?.clinicAdminProfile?.organizationName || 'Clínica Dr Newton Mureb'}
+                    </strong>
+                  </div>
+                  <div>
+                    Status clínico:{' '}
+                    <strong>
+                      {transferStatus?.clinicAdminProfile?.isActive !== false
+                        ? 'Ativo e preservado (prontuários, agenda, filiais, equipe, financeiro)'
+                        : 'Inativo'}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {transferStatus?.platformAdmins && transferStatus.platformAdmins.length > 0 && (
+              <div className="space-y-2">
+                <h3 className="text-xs font-bold text-slate-800">
+                  Registros Oficiais em saas_platform_admins
+                </h3>
+                <div className="space-y-2">
+                  {transferStatus.platformAdmins.map((admin) => (
+                    <div
+                      key={admin.id}
+                      className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                    >
+                      <div>
+                        <p className="font-bold text-slate-900">
+                          {admin.fullName} · <span className="font-mono text-purple-800">{admin.email}</span>
+                        </p>
+                        <p className="text-[11px] text-slate-500">
+                          {admin.activatedAt
+                            ? `Ativado em ${new Date(admin.activatedAt).toLocaleString('pt-BR')}`
+                            : admin.revokedAt
+                            ? `Revogado da plataforma em ${new Date(admin.revokedAt).toLocaleString('pt-BR')}`
+                            : 'Aguardando confirmação oficial no Supabase Auth'}
+                        </p>
+                      </div>
+                      <span
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border self-start sm:self-auto ${
+                          admin.status === 'active' && admin.isActive
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                            : admin.status === 'pending_activation'
+                            ? 'bg-amber-50 text-amber-800 border-amber-200'
+                            : 'bg-slate-100 text-slate-600 border-slate-300'
+                        }`}
+                      >
+                        {admin.status === 'active' && admin.isActive
+                          ? 'Super Admin Ativo'
+                          : admin.status === 'pending_activation'
+                          ? 'Aguardando Ativação'
+                          : 'Revogado da Plataforma'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
-            <form
-              onSubmit={handleUpdateSuperAdminEmail}
-              className="flex flex-col sm:flex-row items-stretch sm:items-end gap-3 pt-2"
-            >
-              <div className="flex-1">
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Novo E-mail do Super Administrador
-                </label>
-                <input
-                  type="email"
-                  required
-                  value={targetSuperAdminEmail}
-                  onChange={(e) => setTargetSuperAdminEmail(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl font-mono"
-                />
-              </div>
-
-              <label className="flex items-center gap-2 text-xs text-slate-600 pb-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={requireEmailConfirmation}
-                  onChange={(e) => setRequireEmailConfirmation(e.target.checked)}
-                />
-                <span>Exigir confirmação por e-mail</span>
-              </label>
+            <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={isInvitingSuperAdmin || isLoadingTransferStatus}
+                onClick={() => void handleInviteNewSuperAdmin()}
+                className="px-4 py-2 text-xs font-bold text-white bg-purple-700 hover:bg-purple-800 disabled:opacity-60 rounded-xl inline-flex items-center gap-2"
+              >
+                {isInvitingSuperAdmin && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>Enviar Convite Oficial (Supabase Auth) para beaverstraining@gmail.com.br</span>
+              </button>
 
               <button
-                type="submit"
-                disabled={isUpdatingSuperAdminEmail}
-                className="px-4 py-2 text-xs font-bold text-white bg-purple-700 hover:bg-purple-800 disabled:opacity-60 rounded-xl"
+                type="button"
+                disabled={
+                  isFinalizingTransfer ||
+                  isLoadingTransferStatus ||
+                  !transferStatus?.targetAuthStatus?.emailConfirmedAt
+                }
+                onClick={() => void handleFinalizeTransfer()}
+                title={
+                  transferStatus?.targetAuthStatus?.emailConfirmedAt
+                    ? 'Ativar beaverstraining@gmail.com.br e restringir admin@drnewtonmureb.com.br exclusivamente à clínica'
+                    : 'Disponível somente após beaverstraining@gmail.com.br confirmar o e-mail no Supabase Auth'
+                }
+                className="px-4 py-2 text-xs font-bold text-slate-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 disabled:opacity-50 rounded-xl inline-flex items-center gap-2"
               >
-                {isUpdatingSuperAdminEmail ? 'Atualizando...' : 'Atualizar E-mail'}
+                {isFinalizingTransfer && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>Concluir Separação & Transferência</span>
               </button>
-            </form>
+            </div>
           </div>
-
-          <TeamManagement />
         </div>
       )}
 

@@ -724,6 +724,142 @@ async function runTests() {
     );
   }
 
+  // 12. Super Admin Identity Separation & Clinic Preservation (Testes A, B, C, D)
+  {
+    const separationMigrationPath = path.join(
+      root,
+      'supabase/migrations/20261128000000_saas_super_admin_identity_separation.sql'
+    );
+    assert.equal(fs.existsSync(separationMigrationPath), true, 'Migration 20261128000000 must exist');
+    const sepSql = fs.readFileSync(separationMigrationPath, 'utf8');
+
+    // Teste A: Separação de SQL / Banco de dados e sem senhas fixas
+    assert.equal(
+      sepSql.includes('CREATE TABLE IF NOT EXISTS public.saas_platform_admins'),
+      true,
+      'Migration 20261128000000 must create public.saas_platform_admins'
+    );
+    assert.equal(
+      sepSql.includes('ALTER COLUMN organization_id DROP NOT NULL'),
+      true,
+      'Platform super_admin must support organization_id IS NULL'
+    );
+    assert.equal(
+      sepSql.includes('chk_user_profiles_org_required_for_clinic_roles'),
+      true,
+      'Clinic roles must still require non-null organization_id via CHECK constraint'
+    );
+    assert.equal(
+      sepSql.includes('medsync_is_saas_platform_admin()') &&
+        sepSql.includes('FROM public.saas_platform_admins spa') &&
+        sepSql.includes("up.role_code = 'super_admin'"),
+      true,
+      'medsync_is_saas_platform_admin must require active user_profiles super_admin AND saas_platform_admins'
+    );
+    assert.equal(
+      sepSql.includes('medsync_finalize_platform_super_admin_transfer') &&
+        sepSql.includes('REVOKE ALL ON FUNCTION public.medsync_finalize_platform_super_admin_transfer(UUID, TEXT, TEXT, TIMESTAMPTZ, UUID) FROM PUBLIC, anon, authenticated;'),
+      true,
+      'medsync_finalize_platform_super_admin_transfer must be locked exclusively to service_role'
+    );
+    assert.equal(
+      sepSql.includes('UPDATE public.user_profiles') &&
+        sepSql.includes("role_code = 'clinic_admin'") &&
+        sepSql.includes("v_legacy_email CONSTANT TEXT := 'admin@drnewtonmureb.com.br'") &&
+        sepSql.includes("INSERT INTO public.user_profiles"),
+      true,
+      'Migration must ensure admin@drnewtonmureb.com.br becomes clinic_admin while preserving clinic organization_id'
+    );
+    assert.equal(
+      /password\s*[:=]\s*['"][^'"]+['"]/i.test(sepSql),
+      false,
+      'Migration SQL must never contain hardcoded passwords'
+    );
+
+    // Teste B: Edge Functions isolation & zero overwrite
+    const adminTeamEdgeCode = fs.readFileSync(
+      path.join(root, 'supabase/functions/admin-team-management/index.ts'),
+      'utf8'
+    );
+    assert.equal(
+      platformAdminEdgeCode.includes("PLATFORM_SUPER_ADMIN_EMAIL = 'beaverstraining@gmail.com.br'") &&
+        platformAdminEdgeCode.includes("from('saas_platform_admins')") &&
+        platformAdminEdgeCode.includes("action === 'claim_verified_platform_super_admin'") &&
+        platformAdminEdgeCode.includes("action === 'invite_new_super_admin'") &&
+        platformAdminEdgeCode.includes("action === 'finalize_super_admin_transfer'"),
+      true,
+      'saas-platform-admin must enforce saas_platform_admins gate and expose safe transfer/claim actions'
+    );
+    assert.equal(
+      platformAdminEdgeCode.includes('inviteUserByEmail') &&
+        platformAdminEdgeCode.includes('email_confirmed_at'),
+      true,
+      'saas-platform-admin must activate new Super Admin via verified Supabase Auth invite + email confirmation'
+    );
+    assert.equal(
+      adminTeamEdgeCode.includes("action === 'update_super_admin_email'") &&
+        adminTeamEdgeCode.includes('Operação desativada por segurança') &&
+        adminTeamEdgeCode.includes("roleCode === 'super_admin'"),
+      true,
+      'admin-team-management must permanently block update_super_admin_email and block clinic creation of super_admin'
+    );
+
+    // Teste C & Teste D: Frontend access boundaries & Clínica Dr. Newton Mureb preservation
+    const authContextCode = fs.readFileSync(path.join(root, 'src/contexts/AuthContext.tsx'), 'utf8');
+    const appCode = fs.readFileSync(path.join(root, 'src/App.tsx'), 'utf8');
+    const saasLoginCode = fs.readFileSync(
+      path.join(root, 'src/modules/saas-admin/SaasAdminLoginScreen.tsx'),
+      'utf8'
+    );
+    const saasDashboardCode = fs.readFileSync(
+      path.join(root, 'src/modules/saas-admin/SaasAdminDashboard.tsx'),
+      'utf8'
+    );
+    const mockDataCode = fs.readFileSync(path.join(root, 'src/services/mockData.ts'), 'utf8');
+
+    assert.equal(
+      authContextCode.includes("AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL = 'beaverstraining@gmail.com.br'") &&
+        authContextCode.includes('isPlatformSuperAdmin') &&
+        authContextCode.includes('attemptPlatformSuperAdminClaim'),
+      true,
+      'AuthContext must strictly validate isPlatformSuperAdmin separately from clinic roles'
+    );
+    assert.equal(
+      appCode.includes('!isPlatformSuperAdmin') &&
+        appCode.includes("currentRole === 'super_admin' && !currentUser.organizationId"),
+      true,
+      'App.tsx must isolate SAAS_ADMIN and CLINIC_APP session gates'
+    );
+    assert.equal(
+      saasLoginCode.includes('FirstAccessBootstrapPanel'),
+      false,
+      'SaasAdminLoginScreen must not mount clinic FirstAccessBootstrapPanel'
+    );
+    assert.equal(
+      saasLoginCode.includes('AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL'),
+      true,
+      'SaasAdminLoginScreen must bind platform activation exclusively to beaverstraining@gmail.com.br'
+    );
+    assert.equal(
+      saasDashboardCode.includes('updateSuperAdminEmailInCloud') ||
+        saasDashboardCode.includes('<TeamManagement'),
+      false,
+      'SaasAdminDashboard must not expose clinic TeamManagement or email-overwrite flow'
+    );
+    assert.equal(
+      saasDashboardCode.includes('getSuperAdminTransferStatus') &&
+        saasDashboardCode.includes('inviteNewSuperAdmin'),
+      true,
+      'SaasAdminDashboard must manage identity separation via transfer status and official invite'
+    );
+    assert.equal(
+      mockDataCode.includes("email: 'beaverstraining@gmail.com.br'") &&
+        mockDataCode.includes("email: 'admin@drnewtonmureb.com.br'"),
+      true,
+      'INITIAL_USERS must separate beaverstraining@gmail.com.br (super_admin) from admin@drnewtonmureb.com.br (clinic_admin)'
+    );
+  }
+
   console.log('ALL_SAAS_CONSOLIDATION_TESTS_PASSED');
 }
 

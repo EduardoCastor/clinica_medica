@@ -45,6 +45,7 @@ function formatPgError(err: unknown, fallback: string): string {
 export interface SessionContextPayload {
   authenticated: boolean;
   profileFound: boolean;
+  isPlatformSuperAdmin?: boolean;
   profile?: UserProfile;
   organization?: Organization;
   branches?: Branch[];
@@ -70,7 +71,7 @@ export interface TeamBootstrapResult {
 export interface SuperAdminCandidateInfo {
   profileId: string;
   authUserId: string | null;
-  organizationId: string;
+  organizationId: string | null;
   fullName: string;
   profileEmail: string;
   authEmail: string | null;
@@ -85,6 +86,8 @@ export interface BootstrapStatus {
   alreadyInitialized: boolean;
   organizationFound: boolean;
   organizationName: string;
+  platformInitialized?: boolean;
+  platformNeedsActivation?: boolean;
   checkedFromCloud: boolean;
   error?: string;
 }
@@ -193,7 +196,7 @@ function mapUserProfileRow(
   return {
     id: String(row.id),
     userId: row.user_id ? String(row.user_id) : undefined,
-    organizationId: String(row.organization_id),
+    organizationId: row.organization_id ? String(row.organization_id) : '',
     defaultBranchId: row.default_branch_id ? String(row.default_branch_id) : undefined,
     authorizedBranchIds:
       authorizedBranchIds.length > 0
@@ -363,6 +366,8 @@ export const TeamCloudService = {
         alreadyInitialized: false,
         organizationFound: false,
         organizationName: 'Clínica Dr Newton Mureb',
+        platformInitialized: false,
+        platformNeedsActivation: false,
         checkedFromCloud: false,
       };
     }
@@ -376,6 +381,8 @@ export const TeamCloudService = {
           alreadyInitialized: Boolean(d.already_initialized),
           organizationFound: Boolean(d.organization_found),
           organizationName: String(d.organization_name || 'Clínica Dr Newton Mureb'),
+          platformInitialized: Boolean(d.platform_initialized),
+          platformNeedsActivation: Boolean(d.platform_needs_activation),
           checkedFromCloud: true,
         };
       }
@@ -389,6 +396,8 @@ export const TeamCloudService = {
       alreadyInitialized?: boolean;
       organizationFound?: boolean;
       organizationName?: string;
+      platformInitialized?: boolean;
+      platformNeedsActivation?: boolean;
     }>({ action: 'get_bootstrap_status' });
 
     if (fnRes.error || !fnRes.data?.success) {
@@ -397,6 +406,8 @@ export const TeamCloudService = {
         alreadyInitialized: false,
         organizationFound: false,
         organizationName: 'Clínica Dr Newton Mureb',
+        platformInitialized: false,
+        platformNeedsActivation: false,
         checkedFromCloud: false,
         error: fnRes.error,
       };
@@ -407,6 +418,8 @@ export const TeamCloudService = {
       alreadyInitialized: Boolean(fnRes.data.alreadyInitialized),
       organizationFound: Boolean(fnRes.data.organizationFound),
       organizationName: String(fnRes.data.organizationName || 'Clínica Dr Newton Mureb'),
+      platformInitialized: Boolean(fnRes.data.platformInitialized),
+      platformNeedsActivation: Boolean(fnRes.data.platformNeedsActivation),
       checkedFromCloud: true,
     };
   },
@@ -505,9 +518,16 @@ export const TeamCloudService = {
           ? (payload.branches as Array<Record<string, unknown>>).map(mapBranchRow)
           : undefined;
 
+        const isPlatformSuperAdmin = Boolean(
+          payload.is_platform_super_admin !== undefined
+            ? payload.is_platform_super_admin
+            : profile.role === 'super_admin' && profile.isActive
+        );
+
         return {
           authenticated: true,
           profileFound: true,
+          isPlatformSuperAdmin,
           profile,
           organization: orgObj,
           branches: branchesList,
@@ -543,16 +563,29 @@ export const TeamCloudService = {
       };
     }
 
-    const orgId = String(profRow.organization_id);
-    const [orgRes, branchRes, authBranchRes, rolePermRes, userPermRes] = await Promise.all([
-      supabase.from('organizations').select('*').eq('id', orgId).maybeSingle(),
-      supabase.from('branches').select('*').eq('organization_id', orgId).order('is_headquarters', { ascending: false }),
+    const orgId = profRow.organization_id ? String(profRow.organization_id) : null;
+    const [orgRes, branchRes, authBranchRes, rolePermRes, userPermRes, platformAdminRes] = await Promise.all([
+      orgId
+        ? supabase.from('organizations').select('*').eq('id', orgId).maybeSingle()
+        : Promise.resolve({ data: null }),
+      orgId
+        ? supabase.from('branches').select('*').eq('organization_id', orgId).order('is_headquarters', { ascending: false })
+        : Promise.resolve({ data: [] }),
       supabase.from('user_branch_access').select('branch_id').eq('user_profile_id', profRow.id),
-      supabase
-        .from('role_permissions')
-        .select('*')
-        .or(`organization_id.is.null,organization_id.eq.${orgId}`),
+      orgId
+        ? supabase
+            .from('role_permissions')
+            .select('*')
+            .or(`organization_id.is.null,organization_id.eq.${orgId}`)
+        : supabase.from('role_permissions').select('*').is('organization_id', null),
       supabase.from('user_menu_permissions').select('*').eq('user_profile_id', profRow.id),
+      supabase
+        .from('saas_platform_admins')
+        .select('id, is_active, status')
+        .eq('user_id', session.user.id)
+        .eq('is_active', true)
+        .eq('status', 'active')
+        .maybeSingle(),
     ]);
 
     const authBranchIds = (authBranchRes.data || []).map((r) => String((r as Record<string, unknown>).branch_id));
@@ -570,9 +603,16 @@ export const TeamCloudService = {
       profile.permissions
     );
 
+    const isPlatformSuperAdmin = Boolean(
+      profile.isActive &&
+        profile.role === 'super_admin' &&
+        platformAdminRes.data
+    );
+
     return {
       authenticated: true,
       profileFound: true,
+      isPlatformSuperAdmin,
       profile,
       organization: orgRes.data ? mapOrganizationRow(orgRes.data as Record<string, unknown>) : undefined,
       branches: (branchRes.data || []).map((b) => mapBranchRow(b as Record<string, unknown>)),
@@ -1160,59 +1200,6 @@ export const TeamCloudService = {
       success: true,
       candidateCount: res.data?.candidateCount ?? 0,
       candidates: res.data?.candidates ?? [],
-    };
-  },
-
-  async updateSuperAdminEmailInCloud(
-    newEmail: string,
-    requireEmailConfirmation = false
-  ): Promise<{
-    success: boolean;
-    previousEmail?: string;
-    newEmail?: string;
-    authUserId?: string;
-    profileId?: string;
-    pendingConfirmation?: boolean;
-    ambiguous?: boolean;
-    candidates?: SuperAdminCandidateInfo[];
-    error?: string;
-  }> {
-    const supabase = getSupabase();
-    if (!supabase) {
-      return { success: false, error: 'Conexão com o servidor indisponível neste ambiente.' };
-    }
-
-    const res = await invokeAdminEdgeFunction<{
-      success: boolean;
-      previousEmail?: string;
-      newEmail?: string;
-      authUserId?: string;
-      profileId?: string;
-      pendingConfirmation?: boolean;
-      ambiguous?: boolean;
-      candidates?: SuperAdminCandidateInfo[];
-    }>(supabase, {
-      action: 'update_super_admin_email',
-      newEmail: newEmail.trim().toLowerCase(),
-      requireEmailConfirmation,
-    });
-
-    if (res.error) {
-      return {
-        success: false,
-        ambiguous: res.data?.ambiguous,
-        candidates: res.data?.candidates,
-        error: res.error,
-      };
-    }
-
-    return {
-      success: true,
-      previousEmail: res.data?.previousEmail,
-      newEmail: res.data?.newEmail,
-      authUserId: res.data?.authUserId,
-      profileId: res.data?.profileId,
-      pendingConfirmation: res.data?.pendingConfirmation,
     };
   },
 };

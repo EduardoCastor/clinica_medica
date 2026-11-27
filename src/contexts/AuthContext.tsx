@@ -15,11 +15,12 @@ import {
   resolveEffectivePermissions,
 } from '../services/rbacConfig';
 import { BootstrapStatus, TeamCloudService } from '../services/teamCloudService';
-import { ClinicBillingCloudService } from '../services/saasCloudService';
+import { ClinicBillingCloudService, SaasAdminCloudService } from '../services/saasCloudService';
 
 export type SimplePermAction = 'view' | 'consult' | 'create' | 'edit' | 'delete' | 'admin';
 
 export const AUTHORIZED_FIRST_ACCESS_EMAIL = 'admin@drnewtonmureb.com.br';
+export const AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL = 'beaverstraining@gmail.com.br';
 const PENDING_BOOTSTRAP_NAME_KEY = 'medsync_pending_bootstrap_name';
 
 interface SignInResult {
@@ -53,6 +54,12 @@ interface AuthContextType {
     password: string;
     confirmPassword: string;
   }) => Promise<FirstAccessRegistrationResult>;
+  registerPendingPlatformSuperAdmin: (params: {
+    fullName: string;
+    email: string;
+    password: string;
+    confirmPassword: string;
+  }) => Promise<FirstAccessRegistrationResult>;
   resendFirstAccessConfirmation: (email: string) => Promise<{ success: boolean; error?: string }>;
   signInWithEmail: (email: string, password: string, expectedScope?: 'saas_admin' | 'clinic') => Promise<SignInResult>;
   sendPasswordReset: (email: string) => Promise<{ success: boolean; error?: string }>;
@@ -80,6 +87,7 @@ interface AuthContextType {
   canManageSchedules: boolean;
   canManageClinicSettings: boolean;
   isSuperAdmin: boolean;
+  isPlatformSuperAdmin: boolean;
 }
 
 const DEV_AUTH_FLAG_KEY = 'medsync_dev_session_active';
@@ -124,6 +132,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     StorageService.getRolePermissions()
   );
   const [cloudUser, setCloudUser] = useState<UserProfile | null>(null);
+  const [cloudIsPlatformSuperAdmin, setCloudIsPlatformSuperAdmin] = useState<boolean>(false);
   const [cloudEffectivePerms, setCloudEffectivePerms] = useState<Record<
     MenuKey,
     UserMenuPermissionRecord
@@ -222,6 +231,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { bootstrapped: true };
   }, [refreshBootstrapStatus]);
 
+  const attemptPlatformSuperAdminClaim = useCallback(async (): Promise<{
+    claimed: boolean;
+    error?: string;
+  }> => {
+    const supabase = getSupabase();
+    if (!supabase) return { claimed: false };
+
+    const { data: userRes } = await supabase.auth.getUser();
+    const authUser = userRes?.user;
+    if (!authUser) return { claimed: false };
+
+    const authEmail = (authUser.email || '').trim().toLowerCase();
+    if (authEmail !== AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL) {
+      return { claimed: false };
+    }
+
+    if (!authUser.email_confirmed_at) {
+      return {
+        claimed: false,
+        error: `Confirme o e-mail ${AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL} antes de concluir a ativação do Super Admin.`,
+      };
+    }
+
+    const fullName =
+      (typeof window !== 'undefined' && sessionStorage.getItem(PENDING_BOOTSTRAP_NAME_KEY)) ||
+      (typeof authUser.user_metadata?.full_name === 'string'
+        ? authUser.user_metadata.full_name
+        : '') ||
+      'Beaver Soluções em Tecnologia';
+
+    const claimRes = await SaasAdminCloudService.claimVerifiedPlatformSuperAdmin(fullName);
+    if (!claimRes.success) {
+      return { claimed: false, error: claimRes.error };
+    }
+
+    if (typeof window !== 'undefined') {
+      sessionStorage.removeItem(PENDING_BOOTSTRAP_NAME_KEY);
+    }
+    await refreshBootstrapStatus();
+    return { claimed: true };
+  }, [refreshBootstrapStatus]);
+
   const applySessionContextToTenant = useCallback(async () => {
     const supabase = getSupabase();
     if (!supabase) {
@@ -233,9 +284,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       let ctx = await TeamCloudService.fetchCurrentUserSessionContext();
       if (!ctx.authenticated) {
         setCloudUser(null);
+        setCloudIsPlatformSuperAdmin(false);
         setCloudEffectivePerms(null);
         setIsAuthenticated(false);
         return;
+      }
+
+      if (!ctx.profileFound || !ctx.profile) {
+        const claimAttempt = await attemptPlatformSuperAdminClaim();
+        if (claimAttempt.claimed) {
+          ctx = await TeamCloudService.fetchCurrentUserSessionContext();
+        } else if (claimAttempt.error) {
+          await supabase.auth.signOut();
+          setCloudUser(null);
+          setCloudIsPlatformSuperAdmin(false);
+          setCloudEffectivePerms(null);
+          setIsAuthenticated(false);
+          setAuthError(claimAttempt.error);
+          return;
+        }
       }
 
       if (!ctx.profileFound || !ctx.profile) {
@@ -245,6 +312,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } else if (bootAttempt.error) {
           await supabase.auth.signOut();
           setCloudUser(null);
+          setCloudIsPlatformSuperAdmin(false);
           setCloudEffectivePerms(null);
           setIsAuthenticated(false);
           setAuthError(bootAttempt.error);
@@ -255,11 +323,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!ctx.profileFound || !ctx.profile) {
         await supabase.auth.signOut();
         setCloudUser(null);
+        setCloudIsPlatformSuperAdmin(false);
         setCloudEffectivePerms(null);
         setIsAuthenticated(false);
         setAuthError(
           ctx.error ||
-            'Conta autenticada sem perfil ativo vinculado. Contate o administrador da clínica.'
+            'Conta autenticada sem perfil ativo vinculado. Contate o administrador.'
         );
         return;
       }
@@ -311,6 +380,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       setCloudUser(ctx.profile);
+      setCloudIsPlatformSuperAdmin(Boolean(ctx.isPlatformSuperAdmin));
       setCloudEffectivePerms(ctx.effectivePermissions || null);
       StorageService.saveUser(ctx.profile);
       StorageService.setActiveUserId(ctx.profile.id);
@@ -329,7 +399,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } finally {
       setIsAuthLoading(false);
     }
-  }, [attemptAuthorizedFirstAccessBootstrap]);
+  }, [attemptAuthorizedFirstAccessBootstrap, attemptPlatformSuperAdminClaim]);
 
   useEffect(() => {
     const handleStorageUpdate = () => {
@@ -363,6 +433,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (event === 'SIGNED_OUT') {
         StorageService.clearOperationalCaches();
         setCloudUser(null);
+        setCloudIsPlatformSuperAdmin(false);
         setCloudEffectivePerms(null);
         setIsAuthenticated(false);
         setIsAuthLoading(false);
@@ -524,14 +595,133 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   };
 
+  const registerPendingPlatformSuperAdmin = async ({
+    fullName,
+    email,
+    password,
+    confirmPassword,
+  }: {
+    fullName: string;
+    email: string;
+    password: string;
+    confirmPassword: string;
+  }): Promise<FirstAccessRegistrationResult> => {
+    setAuthError(null);
+    const cleanName = fullName.trim() || 'Beaver Soluções em Tecnologia';
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (cleanEmail !== AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL) {
+      return {
+        success: false,
+        error: `Somente o e-mail autorizado ${AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL} pode ativar a Administração Geral SaaS.`,
+      };
+    }
+
+    if (password.length < 8) {
+      return {
+        success: false,
+        error: 'A senha deve conter no mínimo 8 caracteres.',
+      };
+    }
+
+    if (password !== confirmPassword) {
+      return {
+        success: false,
+        error: 'A senha e a confirmação de senha não coincidem.',
+      };
+    }
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      return {
+        success: false,
+        error: 'Conexão com o serviço de autenticação não configurada neste ambiente.',
+      };
+    }
+
+    const freshStatus = await refreshBootstrapStatus();
+    if (!freshStatus.checkedFromCloud || freshStatus.platformInitialized || !freshStatus.platformNeedsActivation) {
+      return {
+        success: false,
+        error:
+          'A conta da Administração Geral SaaS já foi inicializada ou não está pendente de ativação. Utilize o login padrão.',
+      };
+    }
+
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem(PENDING_BOOTSTRAP_NAME_KEY, cleanName);
+    }
+
+    const emailRedirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
+    const { data, error } = await supabase.auth.signUp({
+      email: cleanEmail,
+      password,
+      options: {
+        emailRedirectTo,
+        data: {
+          full_name: cleanName,
+        },
+      },
+    });
+
+    if (error) {
+      const lower = error.message.toLowerCase();
+      if (lower.includes('already registered') || lower.includes('already exists')) {
+        return {
+          success: false,
+          error:
+            'Este e-mail já possui uma conta iniciada no Auth. Confirme seu e-mail ou entre com sua senha na aba Entrar.',
+        };
+      }
+      return { success: false, error: error.message };
+    }
+
+    if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+      return {
+        success: false,
+        error:
+          'Já existe um cadastro para este e-mail. Confirme seu e-mail ou utilize a aba de login.',
+      };
+    }
+
+    if (data.session && data.user?.email_confirmed_at) {
+      const claim = await SaasAdminCloudService.claimVerifiedPlatformSuperAdmin(cleanName);
+      if (!claim.success) {
+        await supabase.auth.signOut();
+        return {
+          success: false,
+          error: claim.error || 'Não foi possível concluir a ativação do Super Administrador SaaS.',
+        };
+      }
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem(PENDING_BOOTSTRAP_NAME_KEY);
+      }
+      await refreshBootstrapStatus();
+      await applySessionContextToTenant();
+      return { success: true, autoActivated: true };
+    }
+
+    if (data.session && !data.user?.email_confirmed_at) {
+      await supabase.auth.signOut();
+    }
+
+    return {
+      success: true,
+      requiresEmailConfirmation: true,
+    };
+  };
+
   const resendFirstAccessConfirmation = async (
     email: string
   ): Promise<{ success: boolean; error?: string }> => {
     const cleanEmail = email.trim().toLowerCase();
-    if (cleanEmail !== AUTHORIZED_FIRST_ACCESS_EMAIL) {
+    if (
+      cleanEmail !== AUTHORIZED_FIRST_ACCESS_EMAIL &&
+      cleanEmail !== AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL
+    ) {
       return {
         success: false,
-        error: `Reenvio permitido apenas para ${AUTHORIZED_FIRST_ACCESS_EMAIL}.`,
+        error: `Reenvio permitido apenas para os e-mails oficiais autorizados.`,
       };
     }
     const supabase = getSupabase();
@@ -588,6 +778,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         let ctx = await TeamCloudService.fetchCurrentUserSessionContext();
         if (!ctx.profileFound || !ctx.profile) {
+          const claimAttempt = await attemptPlatformSuperAdminClaim();
+          if (claimAttempt.claimed) {
+            ctx = await TeamCloudService.fetchCurrentUserSessionContext();
+          } else if (claimAttempt.error) {
+            await supabase.auth.signOut();
+            setAuthError(claimAttempt.error);
+            setIsAuthLoading(false);
+            return { success: false, error: claimAttempt.error };
+          }
+        }
+
+        if (!ctx.profileFound || !ctx.profile) {
           const bootAttempt = await attemptAuthorizedFirstAccessBootstrap();
           if (bootAttempt.bootstrapped) {
             ctx = await TeamCloudService.fetchCurrentUserSessionContext();
@@ -602,7 +804,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (!ctx.profileFound || !ctx.profile) {
           await supabase.auth.signOut();
           const msg =
-            ctx.error || 'Conta autenticada sem perfil ativo vinculado à clínica.';
+            ctx.error || 'Conta autenticada sem perfil ativo vinculado.';
           setAuthError(msg);
           setIsAuthLoading(false);
           return { success: false, error: msg };
@@ -610,15 +812,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         if (!ctx.profile.isActive) {
           await supabase.auth.signOut();
-          const msg = 'Usuário desativado. Solicite a reativação ao administrador da clínica.';
+          const msg = 'Usuário desativado. Solicite a reativação ao administrador.';
           setAuthError(msg);
           setIsAuthLoading(false);
           return { success: false, error: msg };
         }
 
-        if (expectedScope === 'saas_admin' && ctx.profile.role !== 'super_admin') {
+        if (
+          expectedScope === 'saas_admin' &&
+          (ctx.profile.role !== 'super_admin' || !ctx.isPlatformSuperAdmin)
+        ) {
           await supabase.auth.signOut();
-          const msg = 'Acesso restrito: este painel é exclusivo para Super Administradores.';
+          const msg =
+            'Acesso negado: sua conta pertence à administração/operação da clínica e não possui acesso ao Painel Geral do MedSync SaaS.';
+          setAuthError(msg);
+          setIsAuthLoading(false);
+          return { success: false, error: msg };
+        }
+
+        if (
+          expectedScope === 'clinic' &&
+          ctx.profile.role === 'super_admin' &&
+          !ctx.profile.organizationId
+        ) {
+          await supabase.auth.signOut();
+          const msg =
+            'Conta exclusiva da Administração Geral SaaS. Acesse pelo domínio administrativo painelclinica.beaverstraining.com.br.';
           setAuthError(msg);
           setIsAuthLoading(false);
           return { success: false, error: msg };
@@ -660,7 +879,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     if (expectedScope === 'saas_admin' && matchedLocal.role !== 'super_admin') {
-      const msg = 'Acesso restrito ao Super Administrador.';
+      const msg = 'Acesso negado: restrito ao Super Administrador do MedSync SaaS.';
+      setAuthError(msg);
+      return { success: false, error: msg };
+    }
+
+    if (
+      expectedScope === 'clinic' &&
+      matchedLocal.role === 'super_admin' &&
+      !matchedLocal.organizationId
+    ) {
+      const msg =
+        'Conta exclusiva da Administração Geral SaaS. Utilize o domínio administrativo painelclinica.beaverstraining.com.br.';
       setAuthError(msg);
       return { success: false, error: msg };
     }
@@ -725,6 +955,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     DomainResolver.setImpersonatedClinicId(null);
     setImpersonatedClinicId(null);
     setCloudUser(null);
+    setCloudIsPlatformSuperAdmin(false);
     setCloudEffectivePerms(null);
     setIsAuthenticated(false);
     setAuthError(null);
@@ -778,7 +1009,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const canDeleteInMenu = useCallback((menuKey: MenuKey) => hasMenuAccess(menuKey, 'delete'), [hasMenuAccess]);
   const canAdminMenu = useCallback((menuKey: MenuKey) => hasMenuAccess(menuKey, 'admin'), [hasMenuAccess]);
 
-  const isSuperAdmin = isAuthenticated && currentUser.isActive && currentRole === 'super_admin';
+  const isPlatformSuperAdmin = isSupabaseAuthMode
+    ? isAuthenticated && currentUser.isActive && currentRole === 'super_admin' && cloudIsPlatformSuperAdmin
+    : isAuthenticated &&
+      currentUser.isActive &&
+      currentRole === 'super_admin' &&
+      currentUser.email.toLowerCase() === AUTHORIZED_PLATFORM_SUPER_ADMIN_EMAIL;
+
+  const isSuperAdmin = isPlatformSuperAdmin;
   const canViewMedicalRecords = canViewMenu('medical_records') || canConsultMenu('medical_records');
   const canEditMedicalRecords = canCreateInMenu('medical_records') || canEditInMenu('medical_records');
   const canManageFinances = canViewMenu('financial');
@@ -800,6 +1038,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isCheckingBootstrap,
         refreshBootstrapStatus,
         registerFirstAccessSuperAdmin,
+        registerPendingPlatformSuperAdmin,
         resendFirstAccessConfirmation,
         signInWithEmail,
         sendPasswordReset,
@@ -827,6 +1066,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         canManageSchedules,
         canManageClinicSettings,
         isSuperAdmin,
+        isPlatformSuperAdmin,
       }}
     >
       {children}

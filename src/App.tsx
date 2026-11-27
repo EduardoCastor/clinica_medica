@@ -42,6 +42,7 @@ const MainAppContent: React.FC = () => {
     isAuthenticated,
     isAuthLoading,
     isSuperAdmin,
+    isPlatformSuperAdmin,
     logout,
     canViewMenu,
     canCreateInMenu,
@@ -179,7 +180,7 @@ const MainAppContent: React.FC = () => {
               <Loader2 className="w-5 h-5 animate-spin text-purple-400" />
               <span>Verificando sessão autenticada...</span>
             </div>
-          ) : (!isAuthenticated || !isSuperAdmin) ? (
+          ) : (!isAuthenticated || !isSuperAdmin || !isPlatformSuperAdmin) ? (
             <SaasAdminLoginScreen />
           ) : (
             <div className="flex-1 flex flex-col">
@@ -239,7 +240,7 @@ const MainAppContent: React.FC = () => {
               <Loader2 className="w-5 h-5 animate-spin text-sky-600" />
               <span>Validando sessão e permissões de acesso...</span>
             </div>
-          ) : !isAuthenticated ? (
+          ) : (!isAuthenticated || (currentRole === 'super_admin' && !currentUser.organizationId)) ? (
             <ClinicLoginScreen />
           ) : (
             <div className="flex-1 flex flex-col">

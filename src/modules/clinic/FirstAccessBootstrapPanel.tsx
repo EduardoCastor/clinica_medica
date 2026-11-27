@@ -120,7 +120,7 @@ export const FirstAccessBootstrapPanel: React.FC<FirstAccessBootstrapPanelProps>
           <p className="leading-relaxed opacity-90">
             Após clicar no link de confirmação enviado para o seu e-mail (ou retornar e entrar com sua
             senha), seu perfil será ativado automaticamente como Administrador Principal da{' '}
-            <strong>Clínica Dr Newton Mureb</strong>.
+            <strong>Clínica Dr Newton Mureb</strong> (escopo operacional da clínica).
           </p>
         </div>
 
@@ -198,7 +198,7 @@ export const FirstAccessBootstrapPanel: React.FC<FirstAccessBootstrapPanelProps>
           <span>Primeiro acesso — Clínica Dr Newton Mureb</span>
         </div>
         <p className={`text-[11px] leading-relaxed ${isDark ? 'text-purple-200/90' : 'text-slate-600'}`}>
-          Cadastre a conta inicial do responsável pela clínica utilizando exclusivamente o e-mail
+          Cadastre a conta inicial do administrador da clínica utilizando exclusivamente o e-mail
           autorizado <strong className="font-mono">{AUTHORIZED_FIRST_ACCESS_EMAIL}</strong>. Após a
           confirmação do e-mail, este cadastro inicial será encerrado automaticamente.
         </p>

@@ -352,9 +352,9 @@ export const INITIAL_SERVICES: Service[] = [
 export const INITIAL_USERS: UserProfile[] = [
   {
     id: 'usr_superadmin',
-    organizationId: 'org_mureb_01',
-    fullName: 'Equipe MedSync (Super Admin)',
-    email: 'admin@drnewtonmureb.com.br',
+    organizationId: '',
+    fullName: 'Beaver Soluções em Tecnologia (Super Admin)',
+    email: 'beaverstraining@gmail.com.br',
     phone: '(22) 99908-9122',
     role: 'super_admin',
     isActive: true,
@@ -363,8 +363,8 @@ export const INITIAL_USERS: UserProfile[] = [
     id: 'usr_admin_clinic',
     organizationId: 'org_mureb_01',
     defaultBranchId: 'branch_cf_centro',
-    fullName: 'Gestão Administrativa Cabo Frio',
-    email: 'gestao@drnewtonmureb.com.br',
+    fullName: 'Dr. Newton Mureb (Admin Clínica)',
+    email: 'admin@drnewtonmureb.com.br',
     phone: CLINIC_OFFICIAL_DATA.phone,
     role: 'clinic_admin',
     isActive: true,

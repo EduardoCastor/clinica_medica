@@ -240,15 +240,37 @@ export function runDataMigrationIfNeeded(): void {
       }
 
       const rawUsers = localStorage.getItem(STORAGE_KEYS.USERS);
-      if (rawUsers && rawUsers.includes('admin@medsync.io')) {
+      if (rawUsers) {
         try {
           const parsedUsers = JSON.parse(rawUsers) as UserProfile[];
-          const migratedUsers = parsedUsers.map((u) =>
-            u.role === 'super_admin' && u.email.toLowerCase() === 'admin@medsync.io'
-              ? { ...u, email: 'admin@drnewtonmureb.com.br' }
-              : u
-          );
-          localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(migratedUsers));
+          let changed = false;
+          const migratedUsers = parsedUsers.map((u) => {
+            const lowerEmail = (u.email || '').toLowerCase();
+            if (u.id === 'usr_superadmin' && (lowerEmail === 'admin@medsync.io' || lowerEmail === 'admin@drnewtonmureb.com.br' || u.organizationId)) {
+              changed = true;
+              return {
+                ...u,
+                organizationId: '',
+                fullName: 'Beaver Soluções em Tecnologia (Super Admin)',
+                email: 'beaverstraining@gmail.com.br',
+                role: 'super_admin' as const,
+              };
+            }
+            if (u.id === 'usr_admin_clinic' && lowerEmail === 'gestao@drnewtonmureb.com.br') {
+              changed = true;
+              return {
+                ...u,
+                organizationId: u.organizationId || 'org_mureb_01',
+                fullName: 'Dr. Newton Mureb (Admin Clínica)',
+                email: 'admin@drnewtonmureb.com.br',
+                role: 'clinic_admin' as const,
+              };
+            }
+            return u;
+          });
+          if (changed) {
+            localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(migratedUsers));
+          }
         } catch {
           localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(INITIAL_USERS));
         }

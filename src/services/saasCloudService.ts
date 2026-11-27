@@ -80,6 +80,44 @@ export interface SaasAdminDashboardPayload {
   serverTime?: string;
 }
 
+export interface PlatformAdminRecord {
+  id: string;
+  userId?: string | null;
+  userProfileId?: string | null;
+  email: string;
+  fullName: string;
+  isActive: boolean;
+  status: 'pending_activation' | 'active' | 'revoked';
+  promotedFromEmail?: string | null;
+  activatedAt?: string | null;
+  revokedAt?: string | null;
+  createdAt?: string;
+}
+
+export interface SuperAdminTransferStatusResult {
+  success: boolean;
+  targetEmail?: string;
+  clinicAdminEmail?: string;
+  platformAdmins?: PlatformAdminRecord[];
+  targetAuthStatus?: {
+    exists: boolean;
+    authUserId: string | null;
+    emailConfirmedAt: string | null;
+    lastSignInAt: string | null;
+  };
+  clinicAdminProfile?: {
+    id: string;
+    userId: string | null;
+    organizationId: string | null;
+    organizationName: string | null;
+    fullName: string;
+    email: string;
+    roleCode: string;
+    isActive: boolean;
+  } | null;
+  error?: string;
+}
+
 export function mapDbPlanRowToPlan(row: Record<string, unknown>): Plan {
   const code = String(row.code || row.id || '');
   const priceMonthly = roundMoney(Number(row.price_monthly ?? row.priceMonthly ?? 0));
@@ -927,5 +965,142 @@ export const SaasAdminCloudService = {
       success: true,
       invoice: res.data?.invoice ? mapDbInvoiceRow(res.data.invoice) : undefined,
     };
+  },
+
+  async getSuperAdminTransferStatus(): Promise<SuperAdminTransferStatusResult> {
+    const res = await callAuthenticatedEdgeFunction<{
+      success: boolean;
+      targetEmail?: string;
+      clinicAdminEmail?: string;
+      platformAdmins?: Array<Record<string, unknown>>;
+      targetAuthStatus?: {
+        exists: boolean;
+        authUserId: string | null;
+        emailConfirmedAt: string | null;
+        lastSignInAt: string | null;
+      };
+      clinicAdminProfile?: {
+        id: string;
+        userId: string | null;
+        organizationId: string | null;
+        organizationName: string | null;
+        fullName: string;
+        email: string;
+        roleCode: string;
+        isActive: boolean;
+      } | null;
+    }>('saas-platform-admin', {
+      action: 'get_super_admin_transfer_status',
+    });
+
+    if (res.error || !res.data) {
+      return {
+        success: false,
+        error: res.error || 'Falha ao consultar status da transferência de Super Admin.',
+      };
+    }
+
+    const platformAdmins: PlatformAdminRecord[] = (res.data.platformAdmins || []).map((row) => ({
+      id: String(row.id),
+      userId: row.user_id ? String(row.user_id) : null,
+      userProfileId: row.user_profile_id ? String(row.user_profile_id) : null,
+      email: String(row.email || ''),
+      fullName: String(row.full_name || ''),
+      isActive: Boolean(row.is_active),
+      status: (String(row.status || 'pending_activation') as PlatformAdminRecord['status']),
+      promotedFromEmail: row.promoted_from_email ? String(row.promoted_from_email) : null,
+      activatedAt: row.activated_at ? String(row.activated_at) : null,
+      revokedAt: row.revoked_at ? String(row.revoked_at) : null,
+      createdAt: row.created_at ? String(row.created_at) : undefined,
+    }));
+
+    return {
+      success: true,
+      targetEmail: res.data.targetEmail,
+      clinicAdminEmail: res.data.clinicAdminEmail,
+      platformAdmins,
+      targetAuthStatus: res.data.targetAuthStatus,
+      clinicAdminProfile: res.data.clinicAdminProfile,
+    };
+  },
+
+  async inviteNewSuperAdmin(redirectTo?: string): Promise<{
+    success: boolean;
+    status?: string;
+    message?: string;
+    error?: string;
+  }> {
+    const res = await callAuthenticatedEdgeFunction<{
+      success: boolean;
+      status?: string;
+      message?: string;
+    }>('saas-platform-admin', {
+      action: 'invite_new_super_admin',
+      targetEmail: 'beaverstraining@gmail.com.br',
+      redirectTo:
+        redirectTo || (typeof window !== 'undefined' ? window.location.origin : undefined),
+    });
+
+    if (res.error || !res.data) {
+      return {
+        success: false,
+        error: res.error || 'Falha ao enviar convite oficial do novo Super Administrador.',
+      };
+    }
+
+    return {
+      success: true,
+      status: res.data.status,
+      message: res.data.message,
+    };
+  },
+
+  async finalizeSuperAdminTransfer(): Promise<{
+    success: boolean;
+    status?: string;
+    message?: string;
+    error?: string;
+  }> {
+    const res = await callAuthenticatedEdgeFunction<{
+      success: boolean;
+      status?: string;
+      message?: string;
+    }>('saas-platform-admin', {
+      action: 'finalize_super_admin_transfer',
+    });
+
+    if (res.error || !res.data) {
+      return {
+        success: false,
+        error: res.error || 'Não foi possível concluir a transferência de Super Administrador.',
+      };
+    }
+
+    return {
+      success: true,
+      status: res.data.status,
+      message: res.data.message,
+    };
+  },
+
+  async claimVerifiedPlatformSuperAdmin(fullName?: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    const res = await callAuthenticatedEdgeFunction<{
+      success: boolean;
+    }>('saas-platform-admin', {
+      action: 'claim_verified_platform_super_admin',
+      fullName,
+    });
+
+    if (res.error || !res.data?.success) {
+      return {
+        success: false,
+        error: res.error || 'Não foi possível ativar o perfil de Super Admin da plataforma.',
+      };
+    }
+
+    return { success: true };
   },
 };

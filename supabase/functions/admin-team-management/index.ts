@@ -123,6 +123,8 @@ Deno.serve(async (req: Request) => {
       alreadyInitialized: Boolean(status.already_initialized),
       organizationFound: Boolean(status.organization_found),
       organizationName: String(status.organization_name || 'Clínica Dr Newton Mureb'),
+      platformInitialized: Boolean(status.platform_initialized),
+      platformNeedsActivation: Boolean(status.platform_needs_activation),
     });
   }
 
@@ -206,13 +208,14 @@ Deno.serve(async (req: Request) => {
 
     const result = (bootstrapRes || {}) as Record<string, unknown>;
     const resolvedOrgId = String(result.organization_id || '');
+    const resolvedRoleCode = String(result.role_code || 'clinic_admin');
 
     // Atualiza metadados da conta autenticada sem alterar senha nem exigir confirmação extra
     await adminClient.auth.admin.updateUserById(callerAuthUser.id, {
       user_metadata: {
         ...(callerAuthUser.user_metadata || {}),
         full_name: effectiveFullName,
-        role_code: 'super_admin',
+        role_code: resolvedRoleCode,
         organization_id: resolvedOrgId,
       },
     });
@@ -222,7 +225,7 @@ Deno.serve(async (req: Request) => {
       idempotent: Boolean(result.idempotent),
       profileId: result.profile_id,
       organizationId: resolvedOrgId,
-      roleCode: 'super_admin',
+      roleCode: resolvedRoleCode,
     });
   }
 
@@ -238,7 +241,7 @@ Deno.serve(async (req: Request) => {
   }
 
   const callerRole = String(callerProfile.role_code);
-  const callerOrgId = String(callerProfile.organization_id);
+  const callerOrgId = callerProfile.organization_id ? String(callerProfile.organization_id) : null;
 
   // Verificar permissão para gerenciar equipe
   const canManageUsers = async (): Promise<boolean> => {
@@ -270,11 +273,14 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      const { data: superProfiles, error: spErr } = await adminClient
+      let spQuery = adminClient
         .from('user_profiles')
         .select('id, user_id, organization_id, full_name, email, role_code, is_active, created_at')
-        .eq('organization_id', callerOrgId)
         .eq('role_code', 'super_admin');
+      if (callerOrgId) {
+        spQuery = spQuery.eq('organization_id', callerOrgId);
+      }
+      const { data: superProfiles, error: spErr } = await spQuery;
 
       if (spErr) {
         return jsonResponse({ error: spErr.message }, 500);
@@ -313,116 +319,27 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      // update_super_admin_email
-      if (candidates.length === 0) {
-        return jsonResponse(
-          { error: 'Nenhum Super Administrador encontrado para esta organização.' },
-          404
-        );
-      }
-
-      if (candidates.length > 1) {
-        return jsonResponse(
-          {
-            error:
-              'Mais de um candidato a Super Admin foi encontrado. Operação interrompida para identificação segura.',
-            ambiguous: true,
-            candidates,
-          },
-          409
-        );
-      }
-
-      const target = candidates[0];
-      if (!target.authUserId) {
-        return jsonResponse(
-          {
-            error: 'O registro do Super Admin não possui conta autenticada vinculada.',
-            candidates,
-          },
-          409
-        );
-      }
-
-      const desiredEmail = String(payload.newEmail || AUTHORIZED_BOOTSTRAP_EMAIL)
-        .trim()
-        .toLowerCase();
-      const requireEmailConfirmation = Boolean(payload.requireEmailConfirmation);
-
-      const conflictingAuth = (authUsersList.users as AuthUserRow[]).find(
-        (u) => u.email?.toLowerCase() === desiredEmail && u.id !== target.authUserId
-      );
-      if (conflictingAuth) {
-        return jsonResponse(
-          {
-            error: `O e-mail ${desiredEmail} já pertence a outro usuário cadastrado.`,
-          },
-          409
-        );
-      }
-
-      const { data: updatedAuth, error: updateAuthErr } =
-        await adminClient.auth.admin.updateUserById(target.authUserId, {
-          email: desiredEmail,
-          email_confirm: !requireEmailConfirmation,
-        });
-
-      if (updateAuthErr || !updatedAuth?.user) {
-        return jsonResponse(
-          { error: updateAuthErr?.message || 'Falha ao atualizar e-mail de acesso.' },
-          500
-        );
-      }
-
-      const { error: updateProfErr } = await adminClient
-        .from('user_profiles')
-        .update({
-          email: desiredEmail,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', target.profileId)
-        .eq('organization_id', callerOrgId)
-        .eq('role_code', 'super_admin');
-
-      if (updateProfErr) {
-        return jsonResponse(
-          {
-            error: `E-mail atualizado na conta de acesso, mas houve falha ao atualizar o perfil: ${updateProfErr.message}`,
-          },
-          500
-        );
-      }
-
-      await adminClient.from('audit_logs').insert({
-        organization_id: target.organizationId,
-        user_id: callerAuthUser.id,
-        user_role: callerRole,
-        action: 'update_super_admin_email',
-        entity: 'user_profiles',
-        entity_id: target.profileId,
-        details: {
-          auth_user_id: target.authUserId,
-          previous_email: target.authEmail || target.profileEmail,
-          new_email: desiredEmail,
-          require_confirmation: requireEmailConfirmation,
-          updated_at: new Date().toISOString(),
+      // update_super_admin_email foi desativada definitivamente para evitar sobrescrita
+      // do administrador da Clínica Dr. Newton Mureb ao separar a plataforma SaaS.
+      return jsonResponse(
+        {
+          error:
+            'Operação desativada por segurança: não altere o e-mail do administrador da clínica. Utilize a transferência oficial da Administração Geral SaaS.',
         },
-      });
-
-      return jsonResponse({
-        success: true,
-        authUserId: target.authUserId,
-        profileId: target.profileId,
-        previousEmail: target.authEmail || target.profileEmail,
-        newEmail: desiredEmail,
-        pendingConfirmation: requireEmailConfirmation,
-      });
+        403
+      );
     }
 
     // =========================================================================
     // AÇÃO 2: CRIAR USUÁRIO REAL + PERFIL + FILIAIS + RBAC (REUTILIZANDO AUTH SE NECESSÁRIO)
     // =========================================================================
     if (action === 'create_user') {
+      if (!callerOrgId) {
+        return jsonResponse(
+          { error: 'Gestão operacional de usuários pertence ao administrador de cada clínica.' },
+          403
+        );
+      }
       if (!(await canManageUsers())) {
         return jsonResponse({ error: 'Permissão negada para cadastrar usuários.' }, 403);
       }
@@ -456,33 +373,17 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      if (callerRole !== 'super_admin') {
-        if (roleCode === 'super_admin') {
-          return jsonResponse(
-            { error: 'Elevação de privilégio bloqueada: papel super_admin é exclusivo.' },
-            403
-          );
-        }
-        if (callerRole === 'branch_admin' && (roleCode === 'clinic_admin' || roleCode === 'branch_admin')) {
-          return jsonResponse(
-            { error: 'Administrador de filial não pode cadastrar outros administradores.' },
-            403
-          );
-        }
-      } else if (roleCode === 'super_admin') {
-        // Garantir unicidade de Super Admin na organização
-        const { data: existingSuper } = await adminClient
-          .from('user_profiles')
-          .select('id')
-          .eq('organization_id', requestedOrgId)
-          .eq('role_code', 'super_admin')
-          .maybeSingle();
-        if (existingSuper) {
-          return jsonResponse(
-            { error: 'Já existe um Super Administrador vinculado a esta organização.' },
-            409
-          );
-        }
+      if (roleCode === 'super_admin') {
+        return jsonResponse(
+          { error: 'Elevação de privilégio bloqueada: papel super_admin é exclusivo da plataforma SaaS.' },
+          403
+        );
+      }
+      if (callerRole === 'branch_admin' && (roleCode === 'clinic_admin' || roleCode === 'branch_admin')) {
+        return jsonResponse(
+          { error: 'Administrador de filial não pode cadastrar outros administradores.' },
+          403
+        );
       }
 
       if (authMode === 'password' && initialPassword.length < 8) {

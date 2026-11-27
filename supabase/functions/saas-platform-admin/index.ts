@@ -1,13 +1,47 @@
 // Supabase Edge Function: saas-platform-admin
 // Painel Geral do Super Administrador SaaS (sem acesso a prontuários ou dados clínicos de pacientes).
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.8';
+import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.49.8';
+
+const PLATFORM_SUPER_ADMIN_EMAIL = 'beaverstraining@gmail.com.br';
+const LEGACY_CLINIC_ADMIN_EMAIL = 'admin@drnewtonmureb.com.br';
 
 const corsHeaders: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
+
+interface AuthLookupUser {
+  id: string;
+  email?: string;
+  email_confirmed_at?: string;
+  last_sign_in_at?: string;
+  user_metadata?: Record<string, unknown>;
+}
+
+async function findAuthUserByEmail(
+  adminClient: SupabaseClient,
+  targetEmail: string
+): Promise<{ user: AuthLookupUser | null; error?: string }> {
+  const clean = targetEmail.trim().toLowerCase();
+  for (let page = 1; page <= 10; page += 1) {
+    const { data, error } = await adminClient.auth.admin.listUsers({
+      page,
+      perPage: 1000,
+    });
+    if (error) {
+      return { user: null, error: error.message };
+    }
+    const users = (data?.users || []) as AuthLookupUser[];
+    const match = users.find((u) => (u.email || '').trim().toLowerCase() === clean);
+    if (match) {
+      return { user: match };
+    }
+    if (users.length < 1000) break;
+  }
+  return { user: null };
+}
 
 const VALID_LICENSE_STATUSES = [
   'TESTE_ATIVO',
@@ -88,25 +122,6 @@ Deno.serve(async (req: Request) => {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  // Validação autoritativa no banco de dados (jamais confia em user_metadata/localStorage)
-  const { data: callerProfile, error: profileErr } = await adminClient
-    .from('user_profiles')
-    .select('id, user_id, organization_id, full_name, email, role_code, is_active')
-    .eq('user_id', authUser.id)
-    .maybeSingle();
-
-  if (
-    profileErr ||
-    !callerProfile ||
-    !callerProfile.is_active ||
-    callerProfile.role_code !== 'super_admin'
-  ) {
-    return jsonResponse(
-      { error: 'Acesso negado: privilégio exclusivo de Super Administrador SaaS.' },
-      403
-    );
-  }
-
   let body: Record<string, unknown>;
   try {
     body = (await req.json()) as Record<string, unknown>;
@@ -115,6 +130,112 @@ Deno.serve(async (req: Request) => {
   }
 
   const action = String(body.action || '');
+
+  // =========================================================================
+  // 0. ATIVAÇÃO VERIFICADA DO NOVO SUPER ADMIN DA PLATAFORMA (CENÁRIO B)
+  //    Exige conta autenticada + e-mail confirmado == beaverstraining@gmail.com.br
+  // =========================================================================
+  if (action === 'claim_verified_platform_super_admin') {
+    const callerEmail = (authUser.email || '').trim().toLowerCase();
+    if (callerEmail !== PLATFORM_SUPER_ADMIN_EMAIL) {
+      return jsonResponse(
+        {
+          error: `Acesso negado: apenas a conta autorizada ${PLATFORM_SUPER_ADMIN_EMAIL} pode ativar o Super Admin da plataforma.`,
+        },
+        403
+      );
+    }
+
+    const { data: liveAuthRes, error: liveAuthErr } = await adminClient.auth.admin.getUserById(authUser.id);
+    const liveAuthUser = liveAuthRes?.user as AuthLookupUser | undefined;
+    if (
+      liveAuthErr ||
+      !liveAuthUser ||
+      (liveAuthUser.email || '').trim().toLowerCase() !== PLATFORM_SUPER_ADMIN_EMAIL
+    ) {
+      return jsonResponse({ error: 'Conta autenticada não confirmada para esta operação.' }, 403);
+    }
+
+    if (!liveAuthUser.email_confirmed_at) {
+      return jsonResponse(
+        {
+          error: `Confirme o e-mail ${PLATFORM_SUPER_ADMIN_EMAIL} pelo link enviado antes de ativar o painel geral.`,
+        },
+        403
+      );
+    }
+
+    const { data: pendingAdmin } = await adminClient
+      .from('saas_platform_admins')
+      .select('id, email, status, is_active')
+      .ilike('email', PLATFORM_SUPER_ADMIN_EMAIL)
+      .maybeSingle();
+
+    if (!pendingAdmin || pendingAdmin.status === 'revoked') {
+      return jsonResponse(
+        { error: 'Autorização de transferência não encontrada ou revogada no servidor.' },
+        403
+      );
+    }
+
+    const fullName =
+      typeof body.fullName === 'string' && body.fullName.trim().length >= 3
+        ? body.fullName.trim()
+        : 'Beaver Soluções em Tecnologia';
+
+    const { data: transferRes, error: transferErr } = await adminClient.rpc(
+      'medsync_finalize_platform_super_admin_transfer',
+      {
+        p_auth_user_id: liveAuthUser.id,
+        p_auth_email: PLATFORM_SUPER_ADMIN_EMAIL,
+        p_full_name: fullName,
+        p_email_confirmed_at: liveAuthUser.email_confirmed_at,
+        p_actor_user_id: liveAuthUser.id,
+      }
+    );
+
+    if (transferErr) {
+      return jsonResponse({ error: transferErr.message }, 400);
+    }
+
+    return jsonResponse({
+      success: true,
+      transfer: transferRes,
+    });
+  }
+
+  // Validação autoritativa no banco de dados (user_profiles + saas_platform_admins)
+  const [profileRes, platformAdminRes] = await Promise.all([
+    adminClient
+      .from('user_profiles')
+      .select('id, user_id, organization_id, full_name, email, role_code, is_active')
+      .eq('user_id', authUser.id)
+      .maybeSingle(),
+    adminClient
+      .from('saas_platform_admins')
+      .select('id, user_id, email, is_active, status')
+      .eq('user_id', authUser.id)
+      .eq('is_active', true)
+      .eq('status', 'active')
+      .maybeSingle(),
+  ]);
+
+  const callerProfile = profileRes.data;
+  const callerPlatformAdmin = platformAdminRes.data;
+
+  if (
+    profileRes.error ||
+    platformAdminRes.error ||
+    !callerProfile ||
+    !callerProfile.is_active ||
+    callerProfile.role_code !== 'super_admin' ||
+    !callerPlatformAdmin
+  ) {
+    return jsonResponse(
+      { error: 'Acesso negado: privilégio exclusivo de Super Administrador SaaS ativo na plataforma.' },
+      403
+    );
+  }
 
   // Sincroniza testes expirados antes de consultar ou alterar dados SaaS
   await adminClient.rpc('medsync_sync_expired_trials');
@@ -937,6 +1058,223 @@ Deno.serve(async (req: Request) => {
       success: true,
       invoice: settledInvoice,
       organization: updatedOrg,
+    });
+  }
+
+  // =========================================================================
+  // 5. GESTÃO DE SEPARAÇÃO DE IDENTIDADES E TRANSFERÊNCIA DE SUPER ADMIN
+  // =========================================================================
+  if (action === 'get_super_admin_transfer_status') {
+    const [adminsRes, clinicProfileRes, targetLookup] = await Promise.all([
+      adminClient
+        .from('saas_platform_admins')
+        .select('id, user_id, user_profile_id, email, full_name, is_active, status, promoted_from_email, activated_at, revoked_at, created_at')
+        .order('created_at', { ascending: true }),
+      adminClient
+        .from('user_profiles')
+        .select('id, user_id, organization_id, full_name, email, role_code, is_active, created_at')
+        .ilike('email', LEGACY_CLINIC_ADMIN_EMAIL)
+        .limit(5),
+      findAuthUserByEmail(adminClient, PLATFORM_SUPER_ADMIN_EMAIL),
+    ]);
+
+    if (adminsRes.error) {
+      return jsonResponse({ error: adminsRes.error.message }, 500);
+    }
+
+    const clinicProfiles = clinicProfileRes.data || [];
+    const primaryClinicProfile =
+      clinicProfiles.find((p) => Boolean(p.organization_id)) || clinicProfiles[0] || null;
+
+    let clinicOrgName: string | null = null;
+    if (primaryClinicProfile?.organization_id) {
+      const { data: orgRow } = await adminClient
+        .from('organizations')
+        .select('name')
+        .eq('id', primaryClinicProfile.organization_id)
+        .maybeSingle();
+      clinicOrgName = orgRow?.name ? String(orgRow.name) : null;
+    }
+
+    const targetAuth = targetLookup.user;
+    return jsonResponse({
+      success: true,
+      targetEmail: PLATFORM_SUPER_ADMIN_EMAIL,
+      clinicAdminEmail: LEGACY_CLINIC_ADMIN_EMAIL,
+      platformAdmins: adminsRes.data || [],
+      targetAuthStatus: {
+        exists: Boolean(targetAuth),
+        authUserId: targetAuth?.id || null,
+        emailConfirmedAt: targetAuth?.email_confirmed_at || null,
+        lastSignInAt: targetAuth?.last_sign_in_at || null,
+      },
+      clinicAdminProfile: primaryClinicProfile
+        ? {
+            id: primaryClinicProfile.id,
+            userId: primaryClinicProfile.user_id,
+            organizationId: primaryClinicProfile.organization_id,
+            organizationName: clinicOrgName,
+            fullName: primaryClinicProfile.full_name,
+            email: primaryClinicProfile.email,
+            roleCode: primaryClinicProfile.role_code,
+            isActive: primaryClinicProfile.is_active,
+          }
+        : null,
+    });
+  }
+
+  if (action === 'invite_new_super_admin') {
+    const requestedEmail = String(body.targetEmail || PLATFORM_SUPER_ADMIN_EMAIL)
+      .trim()
+      .toLowerCase();
+    if (requestedEmail !== PLATFORM_SUPER_ADMIN_EMAIL) {
+      return jsonResponse(
+        {
+          error: `Transferência autorizada exclusivamente para ${PLATFORM_SUPER_ADMIN_EMAIL}.`,
+        },
+        403
+      );
+    }
+
+    const redirectTo = typeof body.redirectTo === 'string' ? body.redirectTo : undefined;
+    const { user: existingAuth, error: lookupErr } = await findAuthUserByEmail(
+      adminClient,
+      PLATFORM_SUPER_ADMIN_EMAIL
+    );
+    if (lookupErr) {
+      return jsonResponse({ error: lookupErr }, 500);
+    }
+
+    if (existingAuth && existingAuth.email_confirmed_at) {
+      const { data: transferRes, error: transferErr } = await adminClient.rpc(
+        'medsync_finalize_platform_super_admin_transfer',
+        {
+          p_auth_user_id: existingAuth.id,
+          p_auth_email: PLATFORM_SUPER_ADMIN_EMAIL,
+          p_full_name: 'Beaver Soluções em Tecnologia',
+          p_email_confirmed_at: existingAuth.email_confirmed_at,
+          p_actor_user_id: authUser.id,
+        }
+      );
+      if (transferErr) {
+        return jsonResponse({ error: transferErr.message }, 400);
+      }
+      return jsonResponse({
+        success: true,
+        status: 'transferred',
+        transfer: transferRes,
+        message: `Conta ${PLATFORM_SUPER_ADMIN_EMAIL} já confirmada no Auth; transferência de Super Admin concluída imediatamente e ${LEGACY_CLINIC_ADMIN_EMAIL} preservado como clinic_admin.`,
+      });
+    }
+
+    let invitedUserId: string | null = existingAuth?.id || null;
+    if (!existingAuth) {
+      const { data: inviteRes, error: inviteErr } = await adminClient.auth.admin.inviteUserByEmail(
+        PLATFORM_SUPER_ADMIN_EMAIL,
+        {
+          redirectTo,
+          data: {
+            full_name: 'Beaver Soluções em Tecnologia',
+          },
+        }
+      );
+      if (inviteErr || !inviteRes?.user) {
+        return jsonResponse(
+          { error: inviteErr?.message || 'Não foi possível enviar convite oficial via Supabase Auth.' },
+          400
+        );
+      }
+      invitedUserId = inviteRes.user.id;
+    } else {
+      await adminClient.auth.resetPasswordForEmail(PLATFORM_SUPER_ADMIN_EMAIL, {
+        redirectTo,
+      });
+    }
+
+    await adminClient.from('saas_platform_admins').upsert(
+      {
+        user_id: invitedUserId,
+        email: PLATFORM_SUPER_ADMIN_EMAIL,
+        full_name: 'Beaver Soluções em Tecnologia',
+        is_active: false,
+        status: 'pending_activation',
+        promoted_from_email: callerProfile.email,
+      },
+      { onConflict: 'email' }
+    );
+
+    await adminClient.from('saas_audit_logs').insert({
+      actor_user_id: authUser.id,
+      actor_profile_id: callerProfile.id,
+      actor_email: callerProfile.email,
+      actor_role: callerProfile.role_code,
+      action: 'invite_platform_super_admin',
+      entity: 'saas_platform_admins',
+      reason: `Convite oficial enviado para ${PLATFORM_SUPER_ADMIN_EMAIL} assumir o Super Admin SaaS após confirmação de e-mail.`,
+      new_state: {
+        pending_super_admin_email: PLATFORM_SUPER_ADMIN_EMAIL,
+        auth_user_id: invitedUserId,
+        reused_unconfirmed_auth: Boolean(existingAuth),
+      },
+    });
+
+    return jsonResponse({
+      success: true,
+      status: existingAuth ? 'awaiting_confirmation' : 'invited',
+      authUserId: invitedUserId,
+      message: existingAuth
+        ? `A conta ${PLATFORM_SUPER_ADMIN_EMAIL} já existe e recebeu instruções para confirmação de e-mail e definição de senha.`
+        : `Convite oficial enviado para ${PLATFORM_SUPER_ADMIN_EMAIL}. Após aceitar o convite e definir a senha própria, conclua a transferência.`,
+    });
+  }
+
+  if (action === 'finalize_super_admin_transfer') {
+    const { user: targetAuth, error: lookupErr } = await findAuthUserByEmail(
+      adminClient,
+      PLATFORM_SUPER_ADMIN_EMAIL
+    );
+    if (lookupErr) {
+      return jsonResponse({ error: lookupErr }, 500);
+    }
+
+    if (!targetAuth) {
+      return jsonResponse(
+        {
+          error: `A conta ${PLATFORM_SUPER_ADMIN_EMAIL} ainda não foi criada no Supabase Auth. Envie o convite oficial antes de transferir.`,
+        },
+        409
+      );
+    }
+
+    if (!targetAuth.email_confirmed_at) {
+      return jsonResponse(
+        {
+          error: `A conta ${PLATFORM_SUPER_ADMIN_EMAIL} ainda não confirmou o e-mail. Para evitar bloqueio da plataforma, a transferência só é liberada após confirmação.`,
+        },
+        409
+      );
+    }
+
+    const { data: transferRes, error: transferErr } = await adminClient.rpc(
+      'medsync_finalize_platform_super_admin_transfer',
+      {
+        p_auth_user_id: targetAuth.id,
+        p_auth_email: PLATFORM_SUPER_ADMIN_EMAIL,
+        p_full_name: 'Beaver Soluções em Tecnologia',
+        p_email_confirmed_at: targetAuth.email_confirmed_at,
+        p_actor_user_id: authUser.id,
+      }
+    );
+
+    if (transferErr) {
+      return jsonResponse({ error: transferErr.message }, 400);
+    }
+
+    return jsonResponse({
+      success: true,
+      status: 'transferred',
+      transfer: transferRes,
+      message: `Transferência concluída: ${PLATFORM_SUPER_ADMIN_EMAIL} agora é o único Super Admin da plataforma SaaS e ${LEGACY_CLINIC_ADMIN_EMAIL} foi preservado como clinic_admin da Clínica Dr. Newton Mureb.`,
     });
   }
 
