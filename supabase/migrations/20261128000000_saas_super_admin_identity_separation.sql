@@ -1,7 +1,7 @@
 -- ====================================================================
 -- MIGRAÇÃO: SEPARAÇÃO DE IDENTIDADES E TRANSFERÊNCIA DO SUPER ADMIN SAAS
 -- MedSync SaaS:
---   - Plataforma SaaS (Super Admin): beaverstraining@gmail.com.br
+--   - Plataforma SaaS (Super Admin): beaverstraining@gmail.com
 --   - Clínica Dr. Newton Mureb (Clinic Admin): admin@drnewtonmureb.com.br
 -- Regra: idempotente, zero estado sem Super Admin ativo, zero perda clínica.
 -- ====================================================================
@@ -236,7 +236,7 @@ BEGIN
     SELECT 1
     FROM public.saas_platform_admins spa
     JOIN public.user_profiles up ON up.user_id = spa.user_id
-    WHERE lower(spa.email) = 'beaverstraining@gmail.com.br'
+    WHERE lower(spa.email) = 'beaverstraining@gmail.com'
       AND spa.is_active = true
       AND spa.status = 'active'
       AND up.is_active = true
@@ -246,7 +246,7 @@ BEGIN
   SELECT EXISTS (
     SELECT 1
     FROM public.saas_platform_admins spa
-    WHERE lower(spa.email) = 'beaverstraining@gmail.com.br'
+    WHERE lower(spa.email) = 'beaverstraining@gmail.com'
       AND spa.status = 'pending_activation'
   ) INTO v_has_pending_platform_super_admin;
 
@@ -459,7 +459,7 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_target_email CONSTANT TEXT := 'beaverstraining@gmail.com.br';
+  v_target_email CONSTANT TEXT := 'beaverstraining@gmail.com';
   v_legacy_email CONSTANT TEXT := 'admin@drnewtonmureb.com.br';
   v_clean_email TEXT;
   v_clean_name TEXT;
@@ -689,7 +689,7 @@ GRANT EXECUTE ON FUNCTION public.medsync_finalize_platform_super_admin_transfer(
 -- --------------------------------------------------------------------
 DO $$
 DECLARE
-  v_new_email CONSTANT TEXT := 'beaverstraining@gmail.com.br';
+  v_new_email CONSTANT TEXT := 'beaverstraining@gmail.com';
   v_old_email CONSTANT TEXT := 'admin@drnewtonmureb.com.br';
   v_new_auth RECORD;
   v_old_super RECORD;
@@ -734,7 +734,7 @@ BEGIN
       updated_at = now();
 
     -- Mantém temporariamente o super_admin existente registrado em saas_platform_admins
-    -- enquanto a ativação de beaverstraining@gmail.com.br é concluída.
+    -- enquanto a ativação de beaverstraining@gmail.com é concluída.
     SELECT up.id, up.user_id, up.email, up.full_name
     INTO v_old_super
     FROM public.user_profiles up
@@ -771,7 +771,7 @@ BEGIN
       'system',
       'super_admin_transfer_prepared',
       'saas_platform_admins',
-      'Transferência preparada aguardando criação/confirmação segura da conta beaverstraining@gmail.com.br no Supabase Auth.',
+      'Transferência preparada aguardando criação/confirmação segura da conta beaverstraining@gmail.com no Supabase Auth.',
       jsonb_build_object('current_super_admin_email', COALESCE(v_old_super.email, v_old_email)),
       jsonb_build_object(
         'pending_super_admin_email', v_new_email,
