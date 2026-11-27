@@ -1,6 +1,6 @@
 import React from 'react';
 import { ShieldCheck, Lock } from 'lucide-react';
-import type { Clinic, Branch } from '../types';
+import type { Clinic, Branch, Organization } from '../types';
 
 export const CLINIC_OFFICIAL_DATA = {
   legalName: 'NEWTON MUREB CLINICA MEDICA LTDA',
@@ -60,14 +60,70 @@ export interface ClinicBrandLogoProps {
   className?: string;
 }
 
-export const ClinicBrandLogo: React.FC<ClinicBrandLogoProps> = ({
+export const ClinicBrandLogo: React.FC<ClinicBrandLogoProps & { clinic?: Clinic | null; organization?: Organization | null }> = ({
   variant = 'dark',
   size = 'md',
   layout = 'stacked',
   showSubtitle = false,
-  subtitle = CLINIC_OFFICIAL_DATA.specialty,
+  subtitle,
+  clinic,
+  organization,
   className = '',
 }) => {
+  const isNewtonMureb =
+    organization?.id === 'org_mureb_01' ||
+    organization?.slug === 'dr-newton-mureb' ||
+    !clinic ||
+    clinic?.tradeName?.toLowerCase().includes('newton mureb') ||
+    clinic?.legalName?.toLowerCase().includes('newton mureb');
+
+  const customLogo = clinic?.logoUrl?.trim();
+
+  if (customLogo) {
+    return (
+      <div className={`inline-flex items-center ${className}`}>
+        <img
+          src={customLogo}
+          alt={clinic?.tradeName || 'Logotipo da Clínica'}
+          className={`object-contain rounded-xl ${
+            size === 'lg' ? 'h-16 max-w-[180px]' : size === 'sm' ? 'h-8 max-w-[100px]' : 'h-12 max-w-[140px]'
+          }`}
+        />
+      </div>
+    );
+  }
+
+  if (!isNewtonMureb) {
+    const clinicName = clinic?.tradeName || clinic?.legalName || 'Clínica Médica';
+    const initials = clinicName
+      .split(' ')
+      .map((w) => w[0])
+      .filter(Boolean)
+      .slice(0, 2)
+      .join('')
+      .toUpperCase() || 'CM';
+
+    const dimensions = {
+      sm: { box: 'px-3 py-2', monogram: 'text-lg', badgeW: 'w-10 h-10', badgeText: 'text-sm' },
+      md: { box: 'px-4 py-3', monogram: 'text-2xl', badgeW: 'w-12 h-12', badgeText: 'text-base' },
+      lg: { box: 'px-6 py-4', monogram: 'text-3xl', badgeW: 'w-16 h-16', badgeText: 'text-xl' },
+    }[size];
+
+    return (
+      <div className={`inline-flex items-center gap-3 ${className}`}>
+        <div className={`${dimensions.badgeW} rounded-xl bg-slate-900 border border-slate-700 text-sky-400 flex items-center justify-center font-bold tracking-wider shadow-xs`}>
+          {initials}
+        </div>
+        <div className="min-w-0">
+          <span className="block font-bold text-slate-900 truncate text-sm">{clinicName}</span>
+          {showSubtitle && subtitle && (
+            <span className="block text-[10px] text-slate-500 uppercase tracking-wider">{subtitle}</span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   const isDark = variant === 'dark';
 
   const dimensions = {
@@ -194,6 +250,7 @@ interface MedicalDocumentHeaderProps {
   badgeTone?: 'dark' | 'sky' | 'gold';
   clinic?: Clinic | null;
   branch?: Branch | null;
+  organization?: Organization | null;
 }
 
 export const MedicalDocumentHeader: React.FC<MedicalDocumentHeaderProps> = ({
@@ -202,6 +259,7 @@ export const MedicalDocumentHeader: React.FC<MedicalDocumentHeaderProps> = ({
   badgeTone = 'dark',
   clinic,
   branch,
+  organization,
 }) => {
   const badgeClasses =
     badgeTone === 'sky'
@@ -210,8 +268,16 @@ export const MedicalDocumentHeader: React.FC<MedicalDocumentHeaderProps> = ({
       ? 'bg-[#23262A] text-[#E5C158] border border-[#D4AF37]/50'
       : 'bg-[#1E2024] text-[#E5C158]';
 
-  const legalName = clinic?.legalName || clinic?.tradeName || CLINIC_OFFICIAL_DATA.legalName;
-  const cnpj = branch?.documentNumber || clinic?.documentNumber || CLINIC_OFFICIAL_DATA.cnpj;
+  const isNewtonMureb =
+    organization?.id === 'org_mureb_01' ||
+    !clinic ||
+    clinic?.tradeName?.toLowerCase().includes('newton mureb') ||
+    clinic?.legalName?.toLowerCase().includes('newton mureb');
+
+  const legalName = clinic?.legalName || clinic?.tradeName || (isNewtonMureb ? CLINIC_OFFICIAL_DATA.legalName : 'Clínica Médica');
+  const cnpj = branch?.documentNumber || clinic?.documentNumber || (isNewtonMureb ? CLINIC_OFFICIAL_DATA.cnpj : 'CNPJ a informar');
+  const specialtyText = isNewtonMureb ? CLINIC_OFFICIAL_DATA.specialty : 'Atendimento Médico Ambulatorial';
+
   const addressText = branch?.street
     ? [
         `${branch.street}${branch.number ? `, ${branch.number}` : ''}${branch.complement ? `, ${branch.complement}` : ''}`,
@@ -221,26 +287,34 @@ export const MedicalDocumentHeader: React.FC<MedicalDocumentHeaderProps> = ({
       ]
         .filter(Boolean)
         .join(' · ')
-    : `${CLINIC_OFFICIAL_DATA.street}, ${CLINIC_OFFICIAL_DATA.number}, ${CLINIC_OFFICIAL_DATA.complement} · ${CLINIC_OFFICIAL_DATA.neighborhood}, ${CLINIC_OFFICIAL_DATA.city} - ${CLINIC_OFFICIAL_DATA.state} · CEP: ${CLINIC_OFFICIAL_DATA.cep}`;
-  const phone = branch?.phone || clinic?.phone || CLINIC_OFFICIAL_DATA.phone;
-  const whatsapp = branch?.whatsapp || clinic?.whatsapp || CLINIC_OFFICIAL_DATA.whatsapp;
-  const email = branch?.email || clinic?.email || CLINIC_OFFICIAL_DATA.email;
+    : isNewtonMureb
+    ? `${CLINIC_OFFICIAL_DATA.street}, ${CLINIC_OFFICIAL_DATA.number}, ${CLINIC_OFFICIAL_DATA.complement} · ${CLINIC_OFFICIAL_DATA.neighborhood}, ${CLINIC_OFFICIAL_DATA.city} - ${CLINIC_OFFICIAL_DATA.state} · CEP: ${CLINIC_OFFICIAL_DATA.cep}`
+    : [
+        clinic?.phone ? `Tel: ${clinic.phone}` : '',
+        clinic?.email ? `E-mail: ${clinic.email}` : '',
+      ].filter(Boolean).join(' · ') || 'Clínica especializada';
+
+  const phone = branch?.phone || clinic?.phone || (isNewtonMureb ? CLINIC_OFFICIAL_DATA.phone : '');
+  const whatsapp = branch?.whatsapp || clinic?.whatsapp || (isNewtonMureb ? CLINIC_OFFICIAL_DATA.whatsapp : '');
+  const email = branch?.email || clinic?.email || (isNewtonMureb ? CLINIC_OFFICIAL_DATA.email : '');
 
   return (
-    <div className="medsync-break-avoid flex flex-col sm:flex-row sm:items-start justify-between gap-4 border-b-2 border-[#23262A] pb-4">
+    <div className="medsync-break-avoid flex flex-col sm:flex-row sm:items-start justify-between gap-4 border-b-2 border-slate-800 pb-4">
       <div className="flex items-start gap-3.5">
-        <ClinicBrandLogo variant="print" layout="horizontal" size="sm" className="shrink-0" />
+        <ClinicBrandLogo variant="print" layout="horizontal" size="sm" clinic={clinic} organization={organization} className="shrink-0" />
         <div className="border-l border-slate-200 pl-3.5 space-y-0.5">
           <h1 className="text-xs font-extrabold tracking-tight text-slate-900 uppercase">
             {legalName}
           </h1>
-          <p className="text-[11px] font-semibold text-[#9A7B2C]">
-            CNPJ: {cnpj} · {CLINIC_OFFICIAL_DATA.specialty}
+          <p className="text-[11px] font-semibold text-sky-900">
+            CNPJ: {cnpj} · {specialtyText}
           </p>
           <p className="text-[10px] text-slate-600 leading-snug">{addressText}</p>
-          <p className="text-[10px] text-slate-500">
-            Tel: {phone} · WhatsApp: {whatsapp} · E-mail: {email}
-          </p>
+          {(phone || email) && (
+            <p className="text-[10px] text-slate-500">
+              {phone ? `Tel: ${phone}` : ''} {whatsapp ? `· WhatsApp: ${whatsapp}` : ''} {email ? `· E-mail: ${email}` : ''}
+            </p>
+          )}
         </div>
       </div>
 
@@ -269,6 +343,8 @@ interface MedicalDocumentFooterProps {
   professionalCouncil?: string;
   cityState?: string;
   clinicLegalName?: string;
+  clinic?: Clinic | null;
+  organization?: Organization | null;
 }
 
 export const MedicalDocumentFooter: React.FC<MedicalDocumentFooterProps> = ({
@@ -282,11 +358,19 @@ export const MedicalDocumentFooter: React.FC<MedicalDocumentFooterProps> = ({
   professionalCouncil,
   cityState,
   clinicLegalName,
+  clinic,
+  organization,
 }) => {
-  const displayPhysician = professionalName?.trim() || CLINIC_OFFICIAL_DATA.physicianName;
-  const displayCouncil = professionalCouncil?.trim() || CLINIC_OFFICIAL_DATA.crm;
-  const displayCityState = cityState?.trim() || `${CLINIC_OFFICIAL_DATA.city} - ${CLINIC_OFFICIAL_DATA.state}`;
-  const displayLegalName = clinicLegalName?.trim() || CLINIC_OFFICIAL_DATA.legalName;
+  const isNewtonMureb =
+    organization?.id === 'org_mureb_01' ||
+    !clinic ||
+    clinic?.tradeName?.toLowerCase().includes('newton mureb') ||
+    clinic?.legalName?.toLowerCase().includes('newton mureb');
+
+  const displayPhysician = professionalName?.trim() || (isNewtonMureb ? CLINIC_OFFICIAL_DATA.physicianName : 'Profissional Responsável');
+  const displayCouncil = professionalCouncil?.trim() || (isNewtonMureb ? CLINIC_OFFICIAL_DATA.crm : 'CRM a informar');
+  const displayCityState = cityState?.trim() || (isNewtonMureb ? `${CLINIC_OFFICIAL_DATA.city} - ${CLINIC_OFFICIAL_DATA.state}` : 'Localidade');
+  const displayLegalName = clinicLegalName?.trim() || (isNewtonMureb ? CLINIC_OFFICIAL_DATA.legalName : (clinic?.legalName || clinic?.tradeName || 'Clínica Médica'));
 
   return (
     <div className="medsync-break-avoid pt-6 mt-6 border-t border-slate-200 flex flex-col sm:flex-row sm:items-end justify-between gap-4 text-xs">

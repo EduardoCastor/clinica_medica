@@ -49,6 +49,7 @@ export const ClinicSettings: React.FC = () => {
   const [phone, setPhone] = useState(clinic.phone);
   const [whatsapp, setWhatsapp] = useState(clinic.whatsapp);
   const [institutionalBio, setInstitutionalBio] = useState(clinic.institutionalBio);
+  const [logoUrl, setLogoUrl] = useState(clinic.logoUrl || '');
   const [n8nWebhookDisponibilidade, setN8nWebhookDisponibilidade] = useState(
     clinic.n8nWebhookDisponibilidade || DEFAULT_N8N_WEBHOOK_DISPONIBILIDADE
   );
@@ -90,6 +91,7 @@ export const ClinicSettings: React.FC = () => {
       phone,
       whatsapp,
       institutionalBio,
+      logoUrl: logoUrl.trim(),
       n8nWebhookDisponibilidade: n8nWebhookDisponibilidade.trim() || DEFAULT_N8N_WEBHOOK_DISPONIBILIDADE,
       n8nWebhookAgendamento: n8nWebhookAgendamento.trim() || DEFAULT_N8N_WEBHOOK_AGENDAMENTO,
       megaapiInstanceUrl: normalizeMegaapiBaseUrl(megaapiInstanceUrl),
@@ -483,6 +485,59 @@ export const ClinicSettings: React.FC = () => {
             onChange={(e) => setInstitutionalBio(e.target.value)}
             className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500 leading-relaxed"
           />
+        </div>
+
+        <div className="pt-4 border-t border-slate-100 space-y-3">
+          <label className="block text-xs font-bold text-slate-900">
+            Logotipo & Identidade Visual da Clínica
+          </label>
+          <p className="text-xs text-slate-500">
+            Esta imagem é exibida no cabeçalho do sistema, painel de chamada e documentos médicos impressos da clínica.
+          </p>
+
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 p-4 bg-slate-50 rounded-xl border border-slate-200">
+            <div className="w-16 h-16 rounded-xl bg-white border border-slate-200 flex items-center justify-center overflow-hidden shrink-0 shadow-xs">
+              {logoUrl ? (
+                <img src={logoUrl} alt="Logo Preview" className="w-full h-full object-contain" />
+              ) : (
+                <span className="text-xs font-bold text-slate-400">LOGO</span>
+              )}
+            </div>
+
+            <div className="flex-1 space-y-2 w-full">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 mb-1">URL do Logotipo (PNG, SVG, JPG)</label>
+                <input
+                  type="url"
+                  value={logoUrl}
+                  onChange={(e) => setLogoUrl(e.target.value)}
+                  placeholder="https://exemplo.com/logo-clinica.png"
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500 font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 mb-1">Ou carregar arquivo do computador</label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onload = () => {
+                        if (typeof reader.result === 'string') {
+                          setLogoUrl(reader.result);
+                        }
+                      };
+                      reader.readAsDataURL(file);
+                    }
+                  }}
+                  className="text-xs text-slate-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-sky-50 file:text-sky-700 hover:file:bg-sky-100 cursor-pointer"
+                />
+              </div>
+            </div>
+          </div>
         </div>
       </form>
 
