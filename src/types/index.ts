@@ -56,6 +56,8 @@ export interface Plan {
   isPopular?: boolean;
   features?: string[];
   isActive: boolean;
+  archivedAt?: string;
+  archivedReason?: string;
 }
 
 export type SaasPlan = Plan;

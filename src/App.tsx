@@ -28,7 +28,7 @@ import { SaasAdminDashboard } from './modules/saas-admin/SaasAdminDashboard';
 import { SaasAdminLoginScreen } from './modules/saas-admin/SaasAdminLoginScreen';
 import { ClinicLoginScreen } from './modules/clinic/ClinicLoginScreen';
 import { DomainSimulatorBanner } from './components/DomainSimulatorBanner';
-import { DomainResolver, PRODUCTION_DOMAINS } from './services/domainResolver';
+import { DomainResolver } from './services/domainResolver';
 import { isAttendanceDisplayPath } from './services/attendanceQueueUtils';
 import { MENU_DEFINITIONS } from './services/rbacConfig';
 import { useAttendanceAutoStartWatcher } from './hooks/useAttendanceAutoStartWatcher';
@@ -162,8 +162,8 @@ const MainAppContent: React.FC = () => {
       {currentMode === 'SAAS_LANDING' && (
         <main className="flex-1 flex flex-col">
           <LandingPage
-            onAccessClinic={() => DomainResolver.setSimulatedDomain(PRODUCTION_DOMAINS.CLINIC_APP)}
-            onAccessSuperAdmin={() => DomainResolver.setSimulatedDomain(PRODUCTION_DOMAINS.SAAS_ADMIN)}
+            onAccessClinic={() => DomainResolver.navigateToClinicApp()}
+            onAccessSuperAdmin={() => DomainResolver.navigateToSuperAdmin()}
           />
         </main>
       )}

@@ -280,7 +280,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             </button>
           </nav>
 
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <button
+              type="button"
+              onClick={onAccessClinic}
+              className="md:hidden px-3 py-2 text-xs font-semibold text-slate-700 hover:text-slate-900 border border-slate-300 rounded-lg transition-colors whitespace-nowrap shrink-0"
+            >
+              Entrar na Clínica
+            </button>
             <button
               type="button"
               onClick={() => openTrialModal('trial')}
@@ -506,9 +513,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
               {plans.map((plan) => {
-                const isPopular = Boolean(plan.isPopular || plan.code === 'advanced');
+                const isPopular = Boolean(plan.isPopular);
                 const pricing = calculatePlanCyclePricing(plan, billingCycle);
                 const isTrial = pricing.isTrial;
+                const isTrialNonApplicableCycle =
+                  isTrial && (billingCycle === 'quarterly' || billingCycle === 'yearly');
 
                 return (
                   <div
@@ -528,7 +537,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                             }`}
                           >
                             {isTrial
-                              ? `Avaliação gratuita · ${plan.trialDays || 10} dias`
+                              ? `Avaliação gratuita · ${plan.trialDays || 10} dias corridos`
                               : isPopular
                               ? 'Mais escolhido pelas clínicas'
                               : 'Plano comercial'}
@@ -545,52 +554,70 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       </div>
 
                       <div className="pt-1 space-y-1">
-                        <div className="flex items-baseline gap-1.5">
-                          <span className="text-xs font-semibold">R$</span>
-                          <span className="text-3xl font-extrabold tabular-nums">
-                            {isTrial ? '0,00' : formatBrl(pricing.effectiveMonthly)}
-                          </span>
-                          <span
-                            className={`text-xs ${
-                              isPopular ? 'text-slate-400' : 'text-slate-500'
-                            }`}
-                          >
-                            {isTrial ? `/ ${plan.trialDays || 10} dias` : '/mês'}
-                          </span>
-                        </div>
+                        {isTrialNonApplicableCycle ? (
+                          <>
+                            <div className="text-2xl font-extrabold text-slate-700">
+                              Não aplicável
+                            </div>
+                            <p className="text-[11px] font-mono tabular-nums text-slate-500">
+                              Plano Grátis: R$ 0,00 por {plan.trialDays || 10} dias corridos
+                            </p>
+                          </>
+                        ) : (
+                          <>
+                            <div className="flex items-baseline gap-1.5">
+                              <span className="text-xs font-semibold">R$</span>
+                              <span className="text-3xl font-extrabold tabular-nums">
+                                {isTrial ? '0,00' : formatBrl(pricing.effectiveMonthly)}
+                              </span>
+                              <span
+                                className={`text-xs ${
+                                  isPopular ? 'text-slate-400' : 'text-slate-500'
+                                }`}
+                              >
+                                {isTrial ? `/ ${plan.trialDays || 10} dias corridos` : '/mês'}
+                              </span>
+                            </div>
 
-                        {!isTrial && billingCycle === 'monthly' && (
-                          <p
-                            className={`text-[11px] font-mono tabular-nums ${
-                              isPopular ? 'text-slate-400' : 'text-slate-500'
-                            }`}
-                          >
-                            Cobrança mensal de R$ {formatBrl(pricing.finalPeriodAmount)}
-                          </p>
-                        )}
-                        {!isTrial && billingCycle === 'quarterly' && (
-                          <p
-                            className={`text-[11px] font-mono tabular-nums ${
-                              isPopular ? 'text-sky-300' : 'text-emerald-700'
-                            }`}
-                          >
-                            R$ {formatBrl(pricing.finalPeriodAmount)} / trimestre
-                            {pricing.discountPercent > 0
-                              ? ` (${pricing.discountPercent}% OFF)`
-                              : ''}
-                          </p>
-                        )}
-                        {!isTrial && billingCycle === 'yearly' && (
-                          <p
-                            className={`text-[11px] font-mono tabular-nums ${
-                              isPopular ? 'text-sky-300' : 'text-emerald-700'
-                            }`}
-                          >
-                            R$ {formatBrl(pricing.finalPeriodAmount)} / ano
-                            {pricing.discountPercent > 0
-                              ? ` (${pricing.discountPercent}% OFF)`
-                              : ''}
-                          </p>
+                            {isTrial && (
+                              <p className="text-[11px] font-mono text-slate-500">
+                                Ativo para novos cadastros sem cartão
+                              </p>
+                            )}
+                            {!isTrial && billingCycle === 'monthly' && (
+                              <p
+                                className={`text-[11px] font-mono tabular-nums ${
+                                  isPopular ? 'text-slate-400' : 'text-slate-500'
+                                }`}
+                              >
+                                Cobrança mensal de R$ {formatBrl(pricing.finalPeriodAmount)}
+                              </p>
+                            )}
+                            {!isTrial && billingCycle === 'quarterly' && (
+                              <p
+                                className={`text-[11px] font-mono tabular-nums ${
+                                  isPopular ? 'text-sky-300' : 'text-emerald-700'
+                                }`}
+                              >
+                                R$ {formatBrl(pricing.finalPeriodAmount)} / trimestre
+                                {pricing.discountPercent > 0
+                                  ? ` (${pricing.discountPercent}% OFF)`
+                                  : ''}
+                              </p>
+                            )}
+                            {!isTrial && billingCycle === 'yearly' && (
+                              <p
+                                className={`text-[11px] font-mono tabular-nums ${
+                                  isPopular ? 'text-sky-300' : 'text-emerald-700'
+                                }`}
+                              >
+                                R$ {formatBrl(pricing.finalPeriodAmount)} / ano
+                                {pricing.discountPercent > 0
+                                  ? ` (${pricing.discountPercent}% OFF)`
+                                  : ''}
+                              </p>
+                            )}
+                          </>
                         )}
                       </div>
 

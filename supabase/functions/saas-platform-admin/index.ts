@@ -196,36 +196,124 @@ Deno.serve(async (req: Request) => {
   }
 
   // =========================================================================
-  // 2. GESTÃO DE PLANOS E PREÇOS (SSOT SUPABASE)
+  // 2. GESTÃO DE PLANOS E PREÇOS (SSOT SUPABASE + VERIFICAÇÃO DE PERSISTÊNCIA)
   // =========================================================================
   if (action === 'upsert_plan') {
     const planInput = (body.plan || {}) as Record<string, unknown>;
+    const rawId = planInput.id ? String(planInput.id).trim() : '';
+    const isExistingById = Boolean(rawId);
     const code = String(planInput.code || '').trim().toLowerCase();
     const name = String(planInput.name || '').trim();
-    if (!code || !name) {
-      return jsonResponse({ error: 'Código e nome do plano são obrigatórios.' }, 400);
+
+    if (!code || !/^[a-z0-9][a-z0-9_-]{1,48}$/.test(code)) {
+      return jsonResponse(
+        { error: 'Código do plano inválido. Use apenas letras minúsculas, números, hífen ou underscore (mín. 2 caracteres).' },
+        400
+      );
+    }
+    if (name.length < 2) {
+      return jsonResponse({ error: 'Nome do plano é obrigatório (mín. 2 caracteres).' }, 400);
     }
 
-    const priceMonthly = roundMoney(Number(planInput.priceMonthly || 0));
-    const qDisc = Math.max(0, Math.min(95, roundMoney(Number(planInput.quarterlyDiscountPercent ?? (code === 'trial' ? 0 : 10)))));
-    const yDisc = Math.max(0, Math.min(95, roundMoney(Number(planInput.yearlyDiscountPercent ?? (code === 'trial' ? 0 : 20)))));
-    const priceQuarterly =
-      code === 'trial' || priceMonthly <= 0
-        ? 0
-        : roundMoney(priceMonthly * 3 * (1 - qDisc / 100));
-    const priceYearly =
-      code === 'trial' || priceMonthly <= 0
-        ? 0
-        : roundMoney(priceMonthly * 12 * (1 - yDisc / 100));
+    const isTrialCode = code === 'trial';
+    const rawPriceMonthly = roundMoney(Number(planInput.priceMonthly ?? 0));
+    const priceMonthly = isTrialCode ? 0 : rawPriceMonthly;
+    const isFree = isTrialCode || priceMonthly <= 0;
+    const qDisc = isFree
+      ? 0
+      : Math.max(0, Math.min(95, roundMoney(Number(planInput.quarterlyDiscountPercent ?? 10))));
+    const yDisc = isFree
+      ? 0
+      : Math.max(0, Math.min(95, roundMoney(Number(planInput.yearlyDiscountPercent ?? 20))));
 
-    const { data: existingPlan } = await adminClient
-      .from('plans')
-      .select('*')
-      .eq('code', code)
-      .maybeSingle();
+    // Cálculo autoritativo no PostgreSQL via medsync_compute_plan_pricing
+    let priceQuarterly = 0;
+    let priceYearly = 0;
+    if (!isFree) {
+      const [qRpc, yRpc] = await Promise.all([
+        adminClient.rpc('medsync_compute_plan_pricing', {
+          p_price_monthly: priceMonthly,
+          p_quarterly_discount: qDisc,
+          p_yearly_discount: yDisc,
+          p_cycle: 'quarterly',
+        }),
+        adminClient.rpc('medsync_compute_plan_pricing', {
+          p_price_monthly: priceMonthly,
+          p_quarterly_discount: qDisc,
+          p_yearly_discount: yDisc,
+          p_cycle: 'yearly',
+        }),
+      ]);
+
+      if (qRpc.error || !Array.isArray(qRpc.data) || qRpc.data.length === 0) {
+        return jsonResponse({ error: 'Falha ao calcular valor trimestral no servidor.' }, 500);
+      }
+      if (yRpc.error || !Array.isArray(yRpc.data) || yRpc.data.length === 0) {
+        return jsonResponse({ error: 'Falha ao calcular valor anual no servidor.' }, 500);
+      }
+
+      priceQuarterly = roundMoney(Number((qRpc.data[0] as Record<string, unknown>).final_amount ?? 0));
+      priceYearly = roundMoney(Number((yRpc.data[0] as Record<string, unknown>).final_amount ?? 0));
+    }
+
+    let previousPlan: Record<string, unknown> | null = null;
+    if (isExistingById) {
+      const { data: existingById, error: existingErr } = await adminClient
+        .from('plans')
+        .select('*')
+        .eq('id', rawId)
+        .maybeSingle();
+
+      if (existingErr) {
+        return jsonResponse({ error: existingErr.message }, 500);
+      }
+      if (!existingById) {
+        return jsonResponse(
+          {
+            success: false,
+            notFound: true,
+            error: 'Este plano não existe mais no banco de dados. Atualize a listagem.',
+          },
+          404
+        );
+      }
+      previousPlan = existingById as Record<string, unknown>;
+    } else {
+      const { data: dupByCode } = await adminClient
+        .from('plans')
+        .select('id, code')
+        .eq('code', code)
+        .maybeSingle();
+
+      if (dupByCode) {
+        return jsonResponse(
+          { error: `Já existe um plano cadastrado com o código "${code}".` },
+          409
+        );
+      }
+    }
+
+    if (previousPlan && String(previousPlan.code) !== code) {
+      const { data: codeConflict } = await adminClient
+        .from('plans')
+        .select('id')
+        .eq('code', code)
+        .neq('id', rawId)
+        .maybeSingle();
+
+      if (codeConflict) {
+        return jsonResponse(
+          { error: `Já existe outro plano utilizando o código "${code}".` },
+          409
+        );
+      }
+    }
+
+    const nextActive = isTrialCode ? true : planInput.isActive !== false;
+    const nowIso = new Date().toISOString();
 
     const dbPayload = {
-      code,
+      code: previousPlan ? String(previousPlan.code) : code,
       name,
       description: String(planInput.description || '').trim(),
       price_monthly: priceMonthly,
@@ -233,30 +321,61 @@ Deno.serve(async (req: Request) => {
       price_yearly: priceYearly,
       quarterly_discount_percent: qDisc,
       yearly_discount_percent: yDisc,
-      display_order: Math.max(1, Number(planInput.displayOrder || 10)),
-      trial_days: Math.max(0, Number(planInput.trialDays || 0)),
-      max_branches: Math.max(1, Number(planInput.maxBranches || 1)),
-      max_users: Math.max(1, Number(planInput.maxUsers || 1)),
-      max_patients: Math.max(0, Number(planInput.maxPatients || 0)),
+      display_order: Math.max(1, Math.round(Number(planInput.displayOrder || (isTrialCode ? 1 : 10)))),
+      trial_days: isTrialCode
+        ? Math.max(1, Math.round(Number(planInput.trialDays || 10)))
+        : Math.max(0, Math.round(Number(planInput.trialDays || 0))),
+      max_branches: Math.max(1, Math.round(Number(planInput.maxBranches || 1))),
+      max_users: Math.max(1, Math.round(Number(planInput.maxUsers || 1))),
+      max_patients: Math.max(0, Math.round(Number(planInput.maxPatients || 0))),
       has_patient_sharing: Boolean(planInput.hasPatientSharing),
       has_whatsapp_automation: Boolean(planInput.hasWhatsAppAutomation ?? planInput.hasWhatsappAutomation),
       has_custom_website: Boolean(planInput.hasCustomWebsite),
       has_financial_module: Boolean(planInput.hasFinancialModule),
       has_advanced_reports: Boolean(planInput.hasAdvancedReports),
-      is_popular: Boolean(planInput.isPopular),
-      is_active: planInput.isActive !== false,
+      is_popular: isTrialCode ? false : Boolean(planInput.isPopular),
+      is_active: nextActive,
+      archived_at: nextActive ? null : previousPlan?.archived_at || nowIso,
+      archived_reason: nextActive ? null : previousPlan?.archived_reason || 'Desativado no editor de planos',
       features: Array.isArray(planInput.features) ? planInput.features : [],
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso,
     };
 
-    const { data: savedPlan, error: saveErr } = await adminClient
+    let savedId = rawId;
+    if (previousPlan) {
+      const { error: updErr } = await adminClient
+        .from('plans')
+        .update(dbPayload)
+        .eq('id', rawId);
+
+      if (updErr) {
+        return jsonResponse({ error: updErr.message }, 500);
+      }
+    } else {
+      const { data: insertedRow, error: insErr } = await adminClient
+        .from('plans')
+        .insert(dbPayload)
+        .select('id')
+        .single();
+
+      if (insErr || !insertedRow) {
+        return jsonResponse({ error: insErr?.message || 'Erro ao criar plano.' }, 500);
+      }
+      savedId = String(insertedRow.id);
+    }
+
+    // Releitura real no banco para confirmar persistência antes de responder sucesso
+    const { data: verifiedPlan, error: verifyErr } = await adminClient
       .from('plans')
-      .upsert(dbPayload, { onConflict: 'code' })
-      .select()
+      .select('*')
+      .eq('id', savedId)
       .single();
 
-    if (saveErr) {
-      return jsonResponse({ error: saveErr.message }, 500);
+    if (verifyErr || !verifiedPlan) {
+      return jsonResponse(
+        { error: 'Não foi possível confirmar a persistência do plano no Supabase.' },
+        500
+      );
     }
 
     await adminClient.from('saas_audit_logs').insert({
@@ -264,15 +383,245 @@ Deno.serve(async (req: Request) => {
       actor_profile_id: callerProfile.id,
       actor_email: callerProfile.email,
       actor_role: callerProfile.role_code,
-      action: existingPlan ? 'update_plan' : 'create_plan',
+      action: previousPlan ? 'update_plan' : 'create_plan',
       entity: 'plans',
-      entity_id: String(savedPlan.id),
+      entity_id: String(verifiedPlan.id),
       reason: String(body.reason || 'Atualização de tabela comercial de planos.'),
-      previous_state: existingPlan || null,
-      new_state: savedPlan,
+      previous_state: previousPlan,
+      new_state: verifiedPlan,
     });
 
-    return jsonResponse({ success: true, plan: savedPlan });
+    return jsonResponse({ success: true, plan: verifiedPlan });
+  }
+
+  // =========================================================================
+  // 2B. EXCLUSÃO IDEMPOTENTE E PROTEGIDA DE PLANOS
+  // =========================================================================
+  if (action === 'delete_plan') {
+    const planId = String(body.planId || '').trim();
+    const reason = String(body.reason || 'Exclusão de plano via Administração Geral SaaS').trim();
+
+    if (!planId) {
+      return jsonResponse({ error: 'ID do plano é obrigatório para exclusão.' }, 400);
+    }
+
+    const { data: existingPlan, error: fetchErr } = await adminClient
+      .from('plans')
+      .select('*')
+      .eq('id', planId)
+      .maybeSingle();
+
+    if (fetchErr) {
+      return jsonResponse({ error: fetchErr.message }, 500);
+    }
+
+    if (!existingPlan) {
+      return jsonResponse({
+        success: true,
+        status: 'not_found',
+        deleted: false,
+        message: 'Este plano já havia sido removido do banco de dados. A listagem foi atualizada.',
+      });
+    }
+
+    if (String(existingPlan.code) === 'trial') {
+      return jsonResponse({
+        success: true,
+        status: 'blocked_system_plan',
+        deleted: false,
+        message:
+          'O plano Grátis (trial) é obrigatório para o fluxo de avaliação gratuita de 10 dias e não pode ser excluído.',
+      });
+    }
+
+    const [orgsRef, subsRef, invsRef] = await Promise.all([
+      adminClient.from('organizations').select('id', { count: 'exact', head: true }).eq('plan_id', planId),
+      adminClient.from('saas_subscriptions').select('id', { count: 'exact', head: true }).eq('plan_id', planId),
+      adminClient.from('saas_invoices').select('id', { count: 'exact', head: true }).eq('plan_id', planId),
+    ]);
+
+    if (orgsRef.error || subsRef.error || invsRef.error) {
+      return jsonResponse(
+        {
+          error:
+            orgsRef.error?.message ||
+            subsRef.error?.message ||
+            invsRef.error?.message ||
+            'Falha ao verificar vínculos do plano.',
+        },
+        500
+      );
+    }
+
+    const orgCount = orgsRef.count || 0;
+    const subCount = subsRef.count || 0;
+    const invCount = invsRef.count || 0;
+    const totalRefs = orgCount + subCount + invCount;
+
+    if (totalRefs > 0) {
+      return jsonResponse({
+        success: true,
+        status: 'blocked_in_use',
+        deleted: false,
+        references: {
+          organizations: orgCount,
+          subscriptions: subCount,
+          invoices: invCount,
+          total: totalRefs,
+        },
+        message: `Não é possível excluir "${existingPlan.name}" porque há ${orgCount} organização(ões), ${subCount} assinatura(s) e ${invCount} fatura(s) vinculadas. Utilize "Arquivar / Desativar" para preservar o histórico.`,
+      });
+    }
+
+    const { data: deletedRow, error: delErr } = await adminClient
+      .from('plans')
+      .delete()
+      .eq('id', planId)
+      .select('id')
+      .maybeSingle();
+
+    if (delErr) {
+      const msg = delErr.message || '';
+      if (msg.includes('PLAN_IN_USE') || msg.includes('PLAN_SYSTEM_PROTECTED')) {
+        return jsonResponse({
+          success: true,
+          status: msg.includes('PLAN_SYSTEM_PROTECTED') ? 'blocked_system_plan' : 'blocked_in_use',
+          deleted: false,
+          message: msg,
+        });
+      }
+      return jsonResponse({ error: msg }, 500);
+    }
+
+    if (!deletedRow) {
+      return jsonResponse({
+        success: true,
+        status: 'not_found',
+        deleted: false,
+        message: 'Este plano já havia sido removido do banco de dados. A listagem foi atualizada.',
+      });
+    }
+
+    await adminClient.from('saas_audit_logs').insert({
+      actor_user_id: authUser.id,
+      actor_profile_id: callerProfile.id,
+      actor_email: callerProfile.email,
+      actor_role: callerProfile.role_code,
+      action: 'delete_plan',
+      entity: 'plans',
+      entity_id: planId,
+      reason,
+      previous_state: existingPlan,
+      new_state: null,
+    });
+
+    return jsonResponse({
+      success: true,
+      status: 'deleted',
+      deleted: true,
+      deletedId: planId,
+      message: `Plano "${existingPlan.name}" excluído definitivamente do Supabase.`,
+    });
+  }
+
+  // =========================================================================
+  // 2C. ARQUIVAMENTO / DESATIVAÇÃO / REATIVAÇÃO SEGURA DE PLANOS
+  // =========================================================================
+  if (action === 'archive_plan') {
+    const planId = String(body.planId || '').trim();
+    const nextIsActive = Boolean(body.isActive);
+    const reason = String(
+      body.reason ||
+        (nextIsActive
+          ? 'Reativação comercial de plano na Administração Geral SaaS'
+          : 'Arquivamento / desativação comercial preservando vínculos históricos')
+    ).trim();
+
+    if (!planId) {
+      return jsonResponse({ error: 'ID do plano é obrigatório.' }, 400);
+    }
+
+    const { data: existingPlan, error: fetchErr } = await adminClient
+      .from('plans')
+      .select('*')
+      .eq('id', planId)
+      .maybeSingle();
+
+    if (fetchErr) {
+      return jsonResponse({ error: fetchErr.message }, 500);
+    }
+
+    if (!existingPlan) {
+      return jsonResponse(
+        {
+          success: false,
+          status: 'not_found',
+          notFound: true,
+          error: 'Este plano não foi encontrado no banco de dados. A listagem será atualizada.',
+        },
+        404
+      );
+    }
+
+    if (String(existingPlan.code) === 'trial' && !nextIsActive) {
+      return jsonResponse(
+        {
+          error:
+            'O plano Grátis (trial) é obrigatório para novos cadastros de avaliação de 10 dias e não pode ser desativado.',
+        },
+        400
+      );
+    }
+
+    const nowIso = new Date().toISOString();
+    const { error: updErr } = await adminClient
+      .from('plans')
+      .update({
+        is_active: nextIsActive,
+        archived_at: nextIsActive ? null : nowIso,
+        archived_reason: nextIsActive ? null : reason,
+        updated_at: nowIso,
+      })
+      .eq('id', planId);
+
+    if (updErr) {
+      return jsonResponse({ error: updErr.message }, 500);
+    }
+
+    const { data: verifiedPlan, error: verifyErr } = await adminClient
+      .from('plans')
+      .select('*')
+      .eq('id', planId)
+      .single();
+
+    if (verifyErr || !verifiedPlan) {
+      return jsonResponse(
+        { error: 'Falha ao confirmar atualização de status do plano no Supabase.' },
+        500
+      );
+    }
+
+    await adminClient.from('saas_audit_logs').insert({
+      actor_user_id: authUser.id,
+      actor_profile_id: callerProfile.id,
+      actor_email: callerProfile.email,
+      actor_role: callerProfile.role_code,
+      action: nextIsActive ? 'reactivate_plan' : 'archive_plan',
+      entity: 'plans',
+      entity_id: planId,
+      reason,
+      previous_state: existingPlan,
+      new_state: verifiedPlan,
+    });
+
+    return jsonResponse({
+      success: true,
+      status: nextIsActive ? 'reactivated' : 'archived',
+      plan: verifiedPlan,
+      message: nextIsActive
+        ? `Plano "${verifiedPlan.name}" reativado para comercialização.`
+        : `Plano "${verifiedPlan.name}" arquivado com histórico preservado.`,
+    });
   }
 
   // =========================================================================

@@ -139,6 +139,12 @@ export function mapDbPlanRowToPlan(row: Record<string, unknown>): Plan {
         : row.isActive !== undefined
         ? Boolean(row.isActive)
         : true,
+    archivedAt: row.archived_at ? String(row.archived_at) : row.archivedAt ? String(row.archivedAt) : undefined,
+    archivedReason: row.archived_reason
+      ? String(row.archived_reason)
+      : row.archivedReason
+      ? String(row.archivedReason)
+      : undefined,
   };
 
   const qDisc = deriveQuarterlyDiscount(basePlan);
@@ -150,8 +156,8 @@ export function mapDbPlanRowToPlan(row: Record<string, unknown>): Plan {
     ...basePlan,
     quarterlyDiscountPercent: qDisc,
     yearlyDiscountPercent: yDisc,
-    priceQuarterly: basePlan.priceQuarterly && basePlan.priceQuarterly > 0 ? basePlan.priceQuarterly : qCalc.finalPeriodAmount,
-    priceYearly: basePlan.priceYearly > 0 ? basePlan.priceYearly : yCalc.finalPeriodAmount,
+    priceQuarterly: qCalc.finalPeriodAmount,
+    priceYearly: yCalc.finalPeriodAmount,
   };
 }
 
@@ -719,14 +725,16 @@ export const SaasAdminCloudService = {
   async upsertPlan(
     plan: Plan,
     reason?: string
-  ): Promise<{ success: boolean; plan?: Plan; error?: string }> {
+  ): Promise<{ success: boolean; plan?: Plan; notFound?: boolean; error?: string }> {
     const res = await callAuthenticatedEdgeFunction<{
       success: boolean;
+      notFound?: boolean;
       plan?: Record<string, unknown>;
     }>('saas-platform-admin', {
       action: 'upsert_plan',
       reason: reason || 'Atualização comercial via Administração Geral SaaS',
       plan: {
+        id: plan.id ? plan.id : undefined,
         code: plan.code,
         name: plan.name,
         description: plan.description,
@@ -750,7 +758,11 @@ export const SaasAdminCloudService = {
     });
 
     if (res.error || !res.data?.plan) {
-      return { success: false, error: res.error || 'Erro ao salvar plano comercial.' };
+      return {
+        success: false,
+        notFound: Boolean(res.data?.notFound || res.status === 404),
+        error: res.error || 'Erro ao salvar plano comercial.',
+      };
     }
 
     const mapped = mapDbPlanRowToPlan(res.data.plan);
@@ -758,6 +770,110 @@ export const SaasAdminCloudService = {
       window.dispatchEvent(new Event('medsync-plans-updated'));
     }
     return { success: true, plan: mapped };
+  },
+
+  async deletePlan(
+    planId: string,
+    reason?: string
+  ): Promise<{
+    success: boolean;
+    status?: 'deleted' | 'not_found' | 'blocked_in_use' | 'blocked_system_plan';
+    deleted?: boolean;
+    message?: string;
+    references?: {
+      organizations: number;
+      subscriptions: number;
+      invoices: number;
+      total: number;
+    };
+    error?: string;
+  }> {
+    const res = await callAuthenticatedEdgeFunction<{
+      success: boolean;
+      status?: 'deleted' | 'not_found' | 'blocked_in_use' | 'blocked_system_plan';
+      deleted?: boolean;
+      message?: string;
+      references?: {
+        organizations: number;
+        subscriptions: number;
+        invoices: number;
+        total: number;
+      };
+    }>('saas-platform-admin', {
+      action: 'delete_plan',
+      planId,
+      reason: reason || 'Exclusão de plano via Administração Geral SaaS',
+    });
+
+    if (res.error || !res.data) {
+      return {
+        success: false,
+        error: res.error || 'Erro ao excluir plano no servidor.',
+      };
+    }
+
+    if (res.data.status === 'deleted' || res.data.status === 'not_found') {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('medsync-plans-updated'));
+      }
+    }
+
+    return {
+      success: true,
+      status: res.data.status,
+      deleted: Boolean(res.data.deleted),
+      message: res.data.message,
+      references: res.data.references,
+    };
+  },
+
+  async archivePlan(
+    planId: string,
+    isActive: boolean,
+    reason?: string
+  ): Promise<{
+    success: boolean;
+    status?: 'archived' | 'reactivated' | 'not_found';
+    notFound?: boolean;
+    plan?: Plan;
+    message?: string;
+    error?: string;
+  }> {
+    const res = await callAuthenticatedEdgeFunction<{
+      success: boolean;
+      status?: 'archived' | 'reactivated' | 'not_found';
+      notFound?: boolean;
+      plan?: Record<string, unknown>;
+      message?: string;
+    }>('saas-platform-admin', {
+      action: 'archive_plan',
+      planId,
+      isActive,
+      reason:
+        reason ||
+        (isActive
+          ? 'Reativação comercial de plano na Administração Geral SaaS'
+          : 'Arquivamento de plano na Administração Geral SaaS'),
+    });
+
+    if (res.error || !res.data?.plan) {
+      return {
+        success: false,
+        notFound: Boolean(res.data?.notFound || res.status === 404),
+        error: res.error || 'Erro ao atualizar status do plano no servidor.',
+      };
+    }
+
+    const mapped = mapDbPlanRowToPlan(res.data.plan);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('medsync-plans-updated'));
+    }
+    return {
+      success: true,
+      status: res.data.status,
+      plan: mapped,
+      message: res.data.message,
+    };
   },
 
   async updateOrganizationLicense(payload: {

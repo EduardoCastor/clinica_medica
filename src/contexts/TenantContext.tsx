@@ -45,10 +45,12 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     window.addEventListener('medsync_storage_update', refreshData);
     window.addEventListener('medsync-plans-updated', refreshData);
     window.addEventListener('medsync_domain_simulation_changed', refreshData);
+    window.addEventListener('popstate', refreshData);
     return () => {
       window.removeEventListener('medsync_storage_update', refreshData);
       window.removeEventListener('medsync-plans-updated', refreshData);
       window.removeEventListener('medsync_domain_simulation_changed', refreshData);
+      window.removeEventListener('popstate', refreshData);
     };
   }, []);
 

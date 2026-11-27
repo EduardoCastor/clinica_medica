@@ -1,12 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import {
   AlertTriangle,
+  Archive,
   CalendarClock,
   CheckCircle2,
   CreditCard,
+  Info,
   Loader2,
+  Plus,
   ShieldCheck,
   Sparkles,
+  Trash2,
   UserCheck,
   X,
 } from 'lucide-react';
@@ -29,15 +33,27 @@ import {
 interface PlanEditorModalProps {
   plan: Plan | null;
   onClose: () => void;
-  onSaved: (message: string) => void;
+  onSaved: (message: string) => Promise<void> | void;
+  onRefreshList?: () => Promise<boolean | void> | void;
 }
 
 export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
   plan,
   onClose,
   onSaved,
+  onRefreshList,
 }) => {
   const [draft, setDraft] = useState<Plan | null>(plan);
+  const [codeInput, setCodeInput] = useState('');
+  const [priceMonthlyStr, setPriceMonthlyStr] = useState('0');
+  const [qDiscStr, setQDiscStr] = useState('10');
+  const [yDiscStr, setYDiscStr] = useState('20');
+  const [displayOrderStr, setDisplayOrderStr] = useState('1');
+  const [trialDaysStr, setTrialDaysStr] = useState('0');
+  const [maxBranchesStr, setMaxBranchesStr] = useState('1');
+  const [maxUsersStr, setMaxUsersStr] = useState('5');
+  const [maxPatientsStr, setMaxPatientsStr] = useState('1000');
+  const [featuresText, setFeaturesText] = useState('');
   const [reason, setReason] = useState('Atualização comercial de tabela de planos');
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -45,37 +61,113 @@ export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
   useEffect(() => {
     setDraft(plan);
     setErrorMsg(null);
+    if (plan) {
+      setCodeInput(plan.code || '');
+      setPriceMonthlyStr(String(plan.priceMonthly ?? 0));
+      setQDiscStr(String(plan.quarterlyDiscountPercent ?? (plan.code === 'trial' ? 0 : 10)));
+      setYDiscStr(String(plan.yearlyDiscountPercent ?? (plan.code === 'trial' ? 0 : 20)));
+      setDisplayOrderStr(String(plan.displayOrder ?? 1));
+      setTrialDaysStr(String(plan.trialDays ?? 0));
+      setMaxBranchesStr(String(plan.maxBranches ?? 1));
+      setMaxUsersStr(String(plan.maxUsers ?? 1));
+      setMaxPatientsStr(String(plan.maxPatients ?? 0));
+      setFeaturesText(Array.isArray(plan.features) ? plan.features.join('\n') : '');
+      setReason(
+        plan.id
+          ? 'Atualização comercial de tabela de planos'
+          : 'Criação de novo plano comercial via Administração Geral SaaS'
+      );
+    }
   }, [plan]);
 
   if (!draft) return null;
 
-  const qCalc = calculatePlanCyclePricing(draft, 'quarterly');
-  const yCalc = calculatePlanCyclePricing(draft, 'yearly');
+  const isCreating = !draft.id;
+  const effectiveCode = (isCreating ? codeInput : draft.code).trim().toLowerCase();
+  const isTrialPlan = effectiveCode === 'trial';
+  const parsedMonthly = Number(priceMonthlyStr.replace(',', '.'));
+  const safeMonthly = Number.isFinite(parsedMonthly) && parsedMonthly >= 0 ? parsedMonthly : 0;
+  const parsedQDisc = Number(qDiscStr.replace(',', '.'));
+  const safeQDisc = Number.isFinite(parsedQDisc) ? Math.max(0, Math.min(95, parsedQDisc)) : 0;
+  const parsedYDisc = Number(yDiscStr.replace(',', '.'));
+  const safeYDisc = Number.isFinite(parsedYDisc) ? Math.max(0, Math.min(95, parsedYDisc)) : 0;
+  const isFreeOrTrial = isTrialPlan || safeMonthly <= 0;
+
+  const previewDraft: Plan = {
+    ...draft,
+    code: effectiveCode || draft.code,
+    priceMonthly: isTrialPlan ? 0 : safeMonthly,
+    quarterlyDiscountPercent: isFreeOrTrial ? 0 : safeQDisc,
+    yearlyDiscountPercent: isFreeOrTrial ? 0 : safeYDisc,
+  };
+
+  const qCalc = calculatePlanCyclePricing(previewDraft, 'quarterly');
+  const yCalc = calculatePlanCyclePricing(previewDraft, 'yearly');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSaving) return;
     setErrorMsg(null);
-    setIsSaving(true);
 
-    const normalized: Plan = {
-      ...draft,
-      priceQuarterly: qCalc.finalPeriodAmount,
-      priceYearly: yCalc.finalPeriodAmount,
-      quarterlyDiscountPercent: qCalc.discountPercent,
-      yearlyDiscountPercent: yCalc.discountPercent,
-    };
-
-    const res = await SaasAdminCloudService.upsertPlan(normalized, reason.trim());
-    setIsSaving(false);
-
-    if (!res.success) {
-      setErrorMsg(res.error || 'Não foi possível salvar o plano comercial.');
+    const normalizedCode = (isCreating ? codeInput : draft.code).trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9_-]{1,48}$/.test(normalizedCode)) {
+      setErrorMsg(
+        'Código inválido. Utilize letras minúsculas, números, hífen ou underscore (mín. 2 caracteres).'
+      );
+      return;
+    }
+    if (draft.name.trim().length < 2) {
+      setErrorMsg('Informe o nome do plano (mínimo 2 caracteres).');
       return;
     }
 
-    onSaved(`Plano "${normalized.name}" atualizado no Supabase e sincronizado com a página comercial.`);
-    onClose();
+    setIsSaving(true);
+    try {
+      const parsedFeatures = featuresText
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+      const normalized: Plan = {
+        ...draft,
+        code: normalizedCode,
+        name: draft.name.trim(),
+        description: draft.description.trim(),
+        priceMonthly: isTrialPlan ? 0 : safeMonthly,
+        priceQuarterly: qCalc.finalPeriodAmount,
+        priceYearly: yCalc.finalPeriodAmount,
+        quarterlyDiscountPercent: qCalc.discountPercent,
+        yearlyDiscountPercent: yCalc.discountPercent,
+        displayOrder: Math.max(1, Math.round(Number(displayOrderStr) || 1)),
+        trialDays: isTrialPlan
+          ? Math.max(1, Math.round(Number(trialDaysStr) || 10))
+          : Math.max(0, Math.round(Number(trialDaysStr) || 0)),
+        maxBranches: Math.max(1, Math.round(Number(maxBranchesStr) || 1)),
+        maxUsers: Math.max(1, Math.round(Number(maxUsersStr) || 1)),
+        maxPatients: Math.max(0, Math.round(Number(maxPatientsStr) || 0)),
+        isPopular: isTrialPlan ? false : Boolean(draft.isPopular),
+        isActive: isTrialPlan ? true : draft.isActive !== false,
+        features: parsedFeatures,
+      };
+
+      const res = await SaasAdminCloudService.upsertPlan(normalized, reason.trim());
+      if (!res.success || !res.plan) {
+        if (res.notFound && onRefreshList) {
+          await onRefreshList();
+        }
+        setErrorMsg(res.error || 'Não foi possível salvar o plano comercial.');
+        return;
+      }
+
+      await onSaved(
+        isCreating
+          ? `Plano "${res.plan.name}" criado e confirmado no Supabase.`
+          : `Plano "${res.plan.name}" atualizado no Supabase e sincronizado com a página comercial.`
+      );
+      onClose();
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -83,11 +175,20 @@ export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
       <div className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 my-6">
         <div className="flex items-center justify-between pb-3 border-b border-slate-100">
           <div>
-            <h3 className="text-base font-bold text-slate-900">
-              Editar Plano Comercial: {draft.name}
+            <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+              {isCreating ? (
+                <Plus className="w-4 h-4 text-purple-700" />
+              ) : (
+                <Sparkles className="w-4 h-4 text-purple-700" />
+              )}
+              <span>
+                {isCreating ? 'Criar Novo Plano Comercial' : `Editar Plano Comercial: ${draft.name}`}
+              </span>
             </h3>
             <span className="text-[11px] text-slate-500 font-mono">
-              Código: {draft.code} · Ordem de exibição: {draft.displayOrder ?? 1}
+              {isCreating
+                ? 'Defina o código único, preço mensal e descontos individuais'
+                : `Código: ${draft.code} · Ordem de exibição: ${displayOrderStr || '1'}`}
             </span>
           </div>
           <button
@@ -108,15 +209,31 @@ export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
             <div className="sm:col-span-2">
               <label className="block font-semibold text-slate-700 mb-1">Nome do Plano</label>
               <input
                 type="text"
                 required
+                minLength={2}
+                placeholder="Ex: Profissional"
                 value={draft.name}
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900 font-semibold"
+              />
+            </div>
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">Código Único</label>
+              <input
+                type="text"
+                required
+                disabled={!isCreating}
+                placeholder="ex: enterprise"
+                value={isCreating ? codeInput : draft.code}
+                onChange={(e) => setCodeInput(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
+                className={`w-full px-3 py-2 border border-slate-300 rounded-lg font-mono ${
+                  isCreating ? 'bg-white text-slate-900' : 'bg-slate-100 text-slate-500'
+                }`}
               />
             </div>
             <div>
@@ -124,8 +241,8 @@ export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
               <input
                 type="number"
                 min={1}
-                value={draft.displayOrder ?? 1}
-                onChange={(e) => setDraft({ ...draft, displayOrder: Number(e.target.value) })}
+                value={displayOrderStr}
+                onChange={(e) => setDisplayOrderStr(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900 tabular-nums"
               />
             </div>
@@ -155,9 +272,12 @@ export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
                   step="0.01"
                   min={0}
                   required
-                  value={draft.priceMonthly}
-                  onChange={(e) => setDraft({ ...draft, priceMonthly: Number(e.target.value) })}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg tabular-nums font-bold text-slate-900 bg-white"
+                  disabled={isTrialPlan}
+                  value={isTrialPlan ? '0' : priceMonthlyStr}
+                  onChange={(e) => setPriceMonthlyStr(e.target.value)}
+                  className={`w-full px-3 py-2 border border-slate-300 rounded-lg tabular-nums font-bold ${
+                    isTrialPlan ? 'bg-slate-100 text-slate-500' : 'bg-white text-slate-900'
+                  }`}
                 />
               </div>
 
@@ -170,14 +290,12 @@ export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
                   step="0.5"
                   min={0}
                   max={95}
-                  value={draft.quarterlyDiscountPercent ?? 0}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      quarterlyDiscountPercent: Number(e.target.value),
-                    })
-                  }
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg tabular-nums font-bold text-slate-900 bg-white"
+                  disabled={isFreeOrTrial}
+                  value={isFreeOrTrial ? '0' : qDiscStr}
+                  onChange={(e) => setQDiscStr(e.target.value)}
+                  className={`w-full px-3 py-2 border border-slate-300 rounded-lg tabular-nums font-bold ${
+                    isFreeOrTrial ? 'bg-slate-100 text-slate-500' : 'bg-white text-slate-900'
+                  }`}
                 />
               </div>
 
@@ -190,14 +308,12 @@ export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
                   step="0.5"
                   min={0}
                   max={95}
-                  value={draft.yearlyDiscountPercent ?? 0}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      yearlyDiscountPercent: Number(e.target.value),
-                    })
-                  }
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg tabular-nums font-bold text-slate-900 bg-white"
+                  disabled={isFreeOrTrial}
+                  value={isFreeOrTrial ? '0' : yDiscStr}
+                  onChange={(e) => setYDiscStr(e.target.value)}
+                  className={`w-full px-3 py-2 border border-slate-300 rounded-lg tabular-nums font-bold ${
+                    isFreeOrTrial ? 'bg-slate-100 text-slate-500' : 'bg-white text-slate-900'
+                  }`}
                 />
               </div>
 
@@ -205,29 +321,42 @@ export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
                 <label className="block font-semibold text-slate-700 mb-1">Dias de Trial</label>
                 <input
                   type="number"
-                  min={0}
-                  value={draft.trialDays}
-                  onChange={(e) => setDraft({ ...draft, trialDays: Number(e.target.value) })}
+                  min={isTrialPlan ? 1 : 0}
+                  value={trialDaysStr}
+                  onChange={(e) => setTrialDaysStr(e.target.value)}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg tabular-nums text-slate-900 bg-white"
                 />
               </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200 text-[11px] text-slate-700">
-              <div>
-                Trimestral calculado:{' '}
-                <strong className="font-mono tabular-nums text-slate-900">
-                  R$ {formatBrl(qCalc.finalPeriodAmount)}
-                </strong>{' '}
-                (equiv. R$ {formatBrl(qCalc.effectiveMonthly)}/mês)
-              </div>
-              <div>
-                Anual calculado:{' '}
-                <strong className="font-mono tabular-nums text-slate-900">
-                  R$ {formatBrl(yCalc.finalPeriodAmount)}
-                </strong>{' '}
-                (equiv. R$ {formatBrl(yCalc.effectiveMonthly)}/mês)
-              </div>
+              {isFreeOrTrial ? (
+                <>
+                  <div>
+                    Trimestral: <strong className="text-slate-600">Não aplicável</strong>
+                  </div>
+                  <div>
+                    Anual: <strong className="text-slate-600">Não aplicável</strong>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    Trimestral calculado:{' '}
+                    <strong className="font-mono tabular-nums text-slate-900">
+                      R$ {formatBrl(qCalc.finalPeriodAmount)}
+                    </strong>{' '}
+                    (equiv. R$ {formatBrl(qCalc.effectiveMonthly)}/mês)
+                  </div>
+                  <div>
+                    Anual calculado:{' '}
+                    <strong className="font-mono tabular-nums text-slate-900">
+                      R$ {formatBrl(yCalc.finalPeriodAmount)}
+                    </strong>{' '}
+                    (equiv. R$ {formatBrl(yCalc.effectiveMonthly)}/mês)
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
@@ -237,8 +366,8 @@ export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
               <input
                 type="number"
                 min={1}
-                value={draft.maxBranches}
-                onChange={(e) => setDraft({ ...draft, maxBranches: Number(e.target.value) })}
+                value={maxBranchesStr}
+                onChange={(e) => setMaxBranchesStr(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900 tabular-nums"
               />
             </div>
@@ -247,8 +376,8 @@ export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
               <input
                 type="number"
                 min={1}
-                value={draft.maxUsers}
-                onChange={(e) => setDraft({ ...draft, maxUsers: Number(e.target.value) })}
+                value={maxUsersStr}
+                onChange={(e) => setMaxUsersStr(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900 tabular-nums"
               />
             </div>
@@ -257,11 +386,24 @@ export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
               <input
                 type="number"
                 min={0}
-                value={draft.maxPatients}
-                onChange={(e) => setDraft({ ...draft, maxPatients: Number(e.target.value) })}
+                value={maxPatientsStr}
+                onChange={(e) => setMaxPatientsStr(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900 tabular-nums"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">
+              Recursos Adicionais (Opcional · 1 por linha)
+            </label>
+            <textarea
+              rows={2}
+              placeholder="Ex: Suporte prioritário em horário comercial"
+              value={featuresText}
+              onChange={(e) => setFeaturesText(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-800 resize-none"
+            />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-slate-100">
@@ -311,24 +453,28 @@ export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
               />
               <span>Compartilhamento entre Filiais (Modelo B)</span>
             </label>
-            <label className="flex items-center gap-2 p-2 rounded-lg border border-amber-200 bg-amber-50/50 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={Boolean(draft.isPopular)}
-                onChange={(e) => setDraft({ ...draft, isPopular: e.target.checked })}
-              />
-              <span className="font-semibold text-amber-900">Destaque "Mais escolhido"</span>
-            </label>
-            <label className="flex items-center gap-2 p-2 rounded-lg border border-emerald-200 bg-emerald-50/50 cursor-pointer sm:col-span-2">
-              <input
-                type="checkbox"
-                checked={draft.isActive !== false}
-                onChange={(e) => setDraft({ ...draft, isActive: e.target.checked })}
-              />
-              <span className="font-semibold text-emerald-900">
-                Disponível comercialmente (visível na Landing Page e Checkout)
-              </span>
-            </label>
+            {!isTrialPlan && (
+              <label className="flex items-center gap-2 p-2 rounded-lg border border-amber-200 bg-amber-50/50 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(draft.isPopular)}
+                  onChange={(e) => setDraft({ ...draft, isPopular: e.target.checked })}
+                />
+                <span className="font-semibold text-amber-900">Destaque "Mais escolhido"</span>
+              </label>
+            )}
+            {!isTrialPlan && (
+              <label className="flex items-center gap-2 p-2 rounded-lg border border-emerald-200 bg-emerald-50/50 cursor-pointer sm:col-span-2">
+                <input
+                  type="checkbox"
+                  checked={draft.isActive !== false}
+                  onChange={(e) => setDraft({ ...draft, isActive: e.target.checked })}
+                />
+                <span className="font-semibold text-emerald-900">
+                  Disponível comercialmente (visível na Landing Page e Checkout)
+                </span>
+              </label>
+            )}
           </div>
 
           <div>
@@ -349,6 +495,7 @@ export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
             <button
               type="button"
               onClick={onClose}
+              disabled={isSaving}
               className="px-4 py-2 text-slate-600 hover:text-slate-900 font-semibold"
             >
               Cancelar
@@ -363,10 +510,257 @@ export const PlanEditorModal: React.FC<PlanEditorModalProps> = ({
               ) : (
                 <Sparkles className="w-3.5 h-3.5" />
               )}
-              <span>{isSaving ? 'Salvando...' : 'Salvar e Publicar'}</span>
+              <span>
+                {isSaving
+                  ? 'Salvando e validando...'
+                  : isCreating
+                  ? 'Criar Plano no Supabase'
+                  : 'Salvar e Publicar'}
+              </span>
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+};
+
+interface PlanDeleteConfirmModalProps {
+  plan: Plan | null;
+  onClose: () => void;
+  onCompleted: (message: string) => Promise<void> | void;
+}
+
+export const PlanDeleteConfirmModal: React.FC<PlanDeleteConfirmModalProps> = ({
+  plan,
+  onClose,
+  onCompleted,
+}) => {
+  const [reason, setReason] = useState('Exclusão / limpeza de catálogo comercial via Super Admin');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [blockedRefs, setBlockedRefs] = useState<{
+    organizations: number;
+    subscriptions: number;
+    invoices: number;
+    total: number;
+  } | null>(null);
+  const [blockedSystemMsg, setBlockedSystemMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    setErrorMsg(null);
+    setBlockedRefs(null);
+    setBlockedSystemMsg(null);
+    setReason('Exclusão / limpeza de catálogo comercial via Super Admin');
+  }, [plan]);
+
+  if (!plan) return null;
+
+  const handleConfirmDelete = async () => {
+    if (isProcessing) return;
+    setIsProcessing(true);
+    setErrorMsg(null);
+    setBlockedRefs(null);
+    setBlockedSystemMsg(null);
+
+    try {
+      const res = await SaasAdminCloudService.deletePlan(plan.id, reason.trim());
+      if (!res.success) {
+        setErrorMsg(res.error || 'Falha ao processar exclusão do plano.');
+        return;
+      }
+
+      if (res.status === 'deleted') {
+        await onCompleted(res.message || `Plano "${plan.name}" excluído definitivamente.`);
+        onClose();
+        return;
+      }
+
+      if (res.status === 'not_found') {
+        await onCompleted(
+          res.message || 'Este plano já havia sido removido do banco. A listagem foi sincronizada.'
+        );
+        onClose();
+        return;
+      }
+
+      if (res.status === 'blocked_system_plan') {
+        setBlockedSystemMsg(
+          res.message || 'Este plano faz parte da infraestrutura de cadastro e não pode ser excluído.'
+        );
+        return;
+      }
+
+      if (res.status === 'blocked_in_use') {
+        setBlockedRefs(
+          res.references || {
+            organizations: 0,
+            subscriptions: 0,
+            invoices: 0,
+            total: 1,
+          }
+        );
+        setErrorMsg(
+          res.message ||
+            'Existem organizações, assinaturas ou faturas vinculadas a este plano. Arquive/desative em vez de excluir.'
+        );
+      }
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleArchiveInstead = async () => {
+    if (isProcessing) return;
+    setIsProcessing(true);
+    setErrorMsg(null);
+
+    try {
+      const res = await SaasAdminCloudService.archivePlan(
+        plan.id,
+        false,
+        reason.trim() || 'Plano arquivado por possuir vínculos históricos'
+      );
+      if (!res.success) {
+        if (res.notFound) {
+          await onCompleted('Plano já não existia no banco de dados. Listagem atualizada.');
+          onClose();
+          return;
+        }
+        setErrorMsg(res.error || 'Falha ao arquivar o plano.');
+        return;
+      }
+
+      await onCompleted(
+        res.message ||
+          `Plano "${plan.name}" arquivado/desativado preservando todos os registros vinculados.`
+      );
+      onClose();
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-xs p-4">
+      <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4">
+        <div className="flex items-start justify-between pb-3 border-b border-slate-100">
+          <div className="space-y-0.5">
+            <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+              <Trash2 className="w-4 h-4 text-rose-600" />
+              <span>Excluir Plano Comercial</span>
+            </h3>
+            <p className="text-xs text-slate-500 font-mono">
+              {plan.name} · código: {plan.code}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100"
+            aria-label="Fechar"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="space-y-3 text-xs">
+          {blockedSystemMsg ? (
+            <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 flex items-start gap-2.5">
+              <Info className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <span>{blockedSystemMsg}</span>
+            </div>
+          ) : blockedRefs ? (
+            <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 space-y-2">
+              <div className="flex items-start gap-2 font-bold">
+                <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                <span>Exclusão bloqueada para preservar o histórico</span>
+              </div>
+              <p className="leading-relaxed text-amber-900">{errorMsg}</p>
+              <div className="grid grid-cols-3 gap-2 pt-1 font-mono text-[11px] tabular-nums">
+                <div className="p-2 bg-white rounded-lg border border-amber-200 text-center">
+                  <strong className="block text-slate-900">{blockedRefs.organizations}</strong>
+                  <span className="text-slate-600">Organizações</span>
+                </div>
+                <div className="p-2 bg-white rounded-lg border border-amber-200 text-center">
+                  <strong className="block text-slate-900">{blockedRefs.subscriptions}</strong>
+                  <span className="text-slate-600">Assinaturas</span>
+                </div>
+                <div className="p-2 bg-white rounded-lg border border-amber-200 text-center">
+                  <strong className="block text-slate-900">{blockedRefs.invoices}</strong>
+                  <span className="text-slate-600">Faturas</span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 space-y-1.5">
+              <strong className="block">Confirma a exclusão definitiva de "{plan.name}"?</strong>
+              <p className="text-rose-800 leading-relaxed">
+                O sistema verificará no servidor se existem organizações, assinaturas ou faturas vinculadas. Se houver vínculos, a exclusão será bloqueada e você poderá arquivar o plano sem perder histórico.
+              </p>
+            </div>
+          )}
+
+          {errorMsg && !blockedRefs && (
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
+
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">
+              Motivo / Registro de Auditoria
+            </label>
+            <input
+              type="text"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900"
+            />
+          </div>
+        </div>
+
+        <div className="pt-3 flex flex-wrap justify-end gap-2 border-t border-slate-100 text-xs">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isProcessing}
+            className="px-4 py-2 text-slate-600 hover:text-slate-900 font-semibold"
+          >
+            Cancelar
+          </button>
+
+          {blockedRefs ? (
+            <button
+              type="button"
+              onClick={() => void handleArchiveInstead()}
+              disabled={isProcessing}
+              className="px-4 py-2 font-bold text-white bg-amber-700 hover:bg-amber-800 disabled:opacity-60 rounded-xl inline-flex items-center gap-1.5"
+            >
+              {isProcessing ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Archive className="w-3.5 h-3.5" />
+              )}
+              <span>Arquivar / Desativar Comercialização</span>
+            </button>
+          ) : !blockedSystemMsg ? (
+            <button
+              type="button"
+              onClick={() => void handleConfirmDelete()}
+              disabled={isProcessing}
+              className="px-4 py-2 font-bold text-white bg-rose-700 hover:bg-rose-800 disabled:opacity-60 rounded-xl inline-flex items-center gap-1.5"
+            >
+              {isProcessing ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="w-3.5 h-3.5" />
+              )}
+              <span>{isProcessing ? 'Verificando e excluindo...' : 'Confirmar Exclusão'}</span>
+            </button>
+          ) : null}
+        </div>
       </div>
     </div>
   );

@@ -5,10 +5,18 @@ import {
   ONBOARDING_STEPS,
   calculatePlanCyclePricing,
   computeTrialLicenseState,
+  deriveQuarterlyDiscount,
+  deriveYearlyDiscount,
   normalizeOnboardingProgress,
   resolveCanonicalLicenseStatus,
   sortPlansByCommercialOrder,
 } from '../src/services/saasCommercialUtils';
+import {
+  PRODUCTION_DOMAINS,
+  isClinicLoginPath,
+  resolveTenantFromInputs,
+} from '../src/services/domainResolver';
+import { INITIAL_PLANS } from '../src/services/mockData';
 import { validatePublicSupabaseKey } from '../src/services/supabaseClient';
 import {
   computeHmacSha256Hex,
@@ -546,6 +554,173 @@ async function runTests() {
       checkoutModalCode.includes('INITIAL_PLANS'),
       false,
       'Checkout modal must not fallback to INITIAL_PLANS'
+    );
+  }
+
+  // 10. Official 3-Plan Reorganization, Pricing Persistence & Idempotent Delete/Archive Protection
+  {
+    const plansMigrationPath = path.join(
+      root,
+      'supabase/migrations/20261127020000_saas_plans_reorg_delete_guard.sql'
+    );
+    assert.equal(fs.existsSync(plansMigrationPath), true, 'Migration 20261127020000 must exist');
+    const plansMigrationSql = fs.readFileSync(plansMigrationPath, 'utf8');
+
+    // Teste 1: Official 3 plans baseline (Grátis, Básico, Avançado)
+    assert.deepEqual(
+      sortPlansByCommercialOrder(INITIAL_PLANS).map((p) => p.code),
+      ['trial', 'basic', 'advanced']
+    );
+
+    const trialPlan = INITIAL_PLANS.find((p) => p.code === 'trial')!;
+    const basicPlan = INITIAL_PLANS.find((p) => p.code === 'basic')!;
+    const advancedPlan = INITIAL_PLANS.find((p) => p.code === 'advanced')!;
+
+    assert.equal(trialPlan.name, 'Grátis');
+    assert.equal(trialPlan.priceMonthly, 0);
+    assert.equal(trialPlan.trialDays, 10);
+    assert.equal(calculatePlanCyclePricing(trialPlan, 'quarterly').isApplicable, false);
+    assert.equal(calculatePlanCyclePricing(trialPlan, 'yearly').isApplicable, false);
+    assert.equal(deriveQuarterlyDiscount(trialPlan), 0);
+    assert.equal(deriveYearlyDiscount(trialPlan), 0);
+
+    assert.equal(basicPlan.name, 'Básico');
+    assert.equal(basicPlan.priceMonthly, 399);
+    const basicQuarterly = calculatePlanCyclePricing(basicPlan, 'quarterly');
+    const basicYearly = calculatePlanCyclePricing(basicPlan, 'yearly');
+    assert.equal(basicQuarterly.isApplicable, true);
+    assert.equal(basicQuarterly.discountPercent, 10);
+    assert.equal(basicQuarterly.finalPeriodAmount, 1077.3);
+    assert.equal(basicYearly.isApplicable, true);
+    assert.equal(basicYearly.discountPercent, 20);
+    assert.equal(basicYearly.finalPeriodAmount, 3830.4);
+
+    assert.equal(advancedPlan.name, 'Avançado');
+    assert.equal(advancedPlan.priceMonthly, 799);
+    const advQuarterly = calculatePlanCyclePricing(advancedPlan, 'quarterly');
+    const advYearly = calculatePlanCyclePricing(advancedPlan, 'yearly');
+    assert.equal(advQuarterly.isApplicable, true);
+    assert.equal(advQuarterly.discountPercent, 10);
+    assert.equal(advQuarterly.finalPeriodAmount, 2157.3);
+    assert.equal(advYearly.isApplicable, true);
+    assert.equal(advYearly.discountPercent, 20);
+    assert.equal(advYearly.finalPeriodAmount, 7670.4);
+
+    assert.equal(
+      plansMigrationSql.includes('trg_plans_prevent_referenced_delete') &&
+        plansMigrationSql.includes('medsync_prevent_referenced_plan_delete'),
+      true,
+      'Migration 20261127020000 must enforce SQL delete protection trigger on public.plans'
+    );
+    assert.equal(
+      plansMigrationSql.includes('archived_at') && plansMigrationSql.includes('archived_reason'),
+      true,
+      'Migration 20261127020000 must support non-destructive plan archiving'
+    );
+
+    // Teste 2 & Teste 3: Edge Function + Cloud Service + Admin Modals/Dashboard persistence & delete/archive
+    const saasCloudCode = fs.readFileSync(path.join(root, 'src/services/saasCloudService.ts'), 'utf8');
+    const saasModalsCode = fs.readFileSync(
+      path.join(root, 'src/modules/saas-admin/SaasAdminModals.tsx'),
+      'utf8'
+    );
+    const saasDashboardCode = fs.readFileSync(
+      path.join(root, 'src/modules/saas-admin/SaasAdminDashboard.tsx'),
+      'utf8'
+    );
+
+    assert.equal(
+      platformAdminEdgeCode.includes("action === 'upsert_plan'") &&
+        platformAdminEdgeCode.includes("action === 'delete_plan'") &&
+        platformAdminEdgeCode.includes("action === 'archive_plan'"),
+      true,
+      'saas-platform-admin must expose upsert_plan, delete_plan, and archive_plan'
+    );
+    assert.equal(
+      platformAdminEdgeCode.includes('blocked_system_plan') &&
+        platformAdminEdgeCode.includes('blocked_in_use') &&
+        platformAdminEdgeCode.includes("status: 'not_found'"),
+      true,
+      'delete_plan must handle missing rows idempotently and block system/referenced plans'
+    );
+    assert.equal(
+      saasCloudCode.includes("action: 'delete_plan'") &&
+        saasCloudCode.includes("action: 'archive_plan'") &&
+        saasCloudCode.includes('id: plan.id ? plan.id : undefined'),
+      true,
+      'SaasAdminCloudService must pass plan id on upsert and expose deletePlan/archivePlan'
+    );
+    assert.equal(
+      saasModalsCode.includes('PlanDeleteConfirmModal') &&
+        saasModalsCode.includes('PlanEditorModal') &&
+        saasModalsCode.includes('onRefreshList'),
+      true,
+      'SaasAdminModals must provide PlanEditorModal with DB refresh and PlanDeleteConfirmModal'
+    );
+    assert.equal(
+      saasDashboardCode.includes('await loadSaasData()') &&
+        saasDashboardCode.includes('PlanDeleteConfirmModal'),
+      true,
+      'SaasAdminDashboard must await Supabase reload before confirming actions and wire PlanDeleteConfirmModal'
+    );
+  }
+
+  // 11. Teste 4: Institutional Landing Clinic Access Buttons & Domain/Route Navigation Isolation
+  {
+    assert.equal(isClinicLoginPath('/login'), true);
+    assert.equal(isClinicLoginPath('/'), false);
+
+    // Production Landing Root -> SAAS_LANDING
+    const prodLanding = resolveTenantFromInputs({
+      realHostname: PRODUCTION_DOMAINS.SAAS_LANDING,
+      pathname: '/',
+      simulationAllowed: false,
+      simulatedDomain: null,
+    });
+    assert.equal(prodLanding.mode, 'SAAS_LANDING');
+
+    // Production Landing /login -> CLINIC_APP (ClinicLoginScreen)
+    const prodLogin = resolveTenantFromInputs({
+      realHostname: PRODUCTION_DOMAINS.SAAS_LANDING,
+      pathname: '/login',
+      simulationAllowed: false,
+      simulatedDomain: null,
+    });
+    assert.equal(prodLogin.mode, 'CLINIC_APP');
+
+    // Production SAAS_ADMIN strict isolation even on /login
+    const prodAdminLogin = resolveTenantFromInputs({
+      realHostname: PRODUCTION_DOMAINS.SAAS_ADMIN,
+      pathname: '/login',
+      simulationAllowed: false,
+      simulatedDomain: null,
+    });
+    assert.equal(prodAdminLogin.mode, 'SAAS_ADMIN');
+
+    // Preview/Simulation environment: switching from SAAS_LANDING to CLINIC_APP
+    const simClinic = resolveTenantFromInputs({
+      realHostname: 'preview.vercel.app',
+      pathname: '/',
+      simulationAllowed: true,
+      simulatedDomain: PRODUCTION_DOMAINS.CLINIC_APP,
+    });
+    assert.equal(simClinic.mode, 'CLINIC_APP');
+
+    const landingCode = fs.readFileSync(
+      path.join(root, 'src/modules/landing/LandingPage.tsx'),
+      'utf8'
+    );
+    const accessClinicMatches = landingCode.match(/onAccessClinic/g) || [];
+    assert.equal(
+      accessClinicMatches.length >= 5,
+      true,
+      'LandingPage must wire onAccessClinic across desktop header, mobile header, hero CTA, footer, and trial success CTA'
+    );
+    assert.equal(
+      landingCode.includes('onAccessSuperAdmin') &&
+        landingCode.includes('Administração Geral SaaS'),
+      true,
+      'LandingPage must preserve separate Super Admin entry point'
     );
   }
 

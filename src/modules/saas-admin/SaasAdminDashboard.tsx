@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Archive,
   Building2,
   CalendarClock,
   CheckCircle2,
@@ -11,10 +12,13 @@ import {
   KeyRound,
   LayoutDashboard,
   Loader2,
+  Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   ShieldCheck,
   Sparkles,
+  Trash2,
   UserCheck,
   Users,
 } from 'lucide-react';
@@ -43,6 +47,7 @@ import { SuperAdminCandidateInfo, TeamCloudService } from '../../services/teamCl
 import {
   ManualPaymentModal,
   OrganizationDetailModal,
+  PlanDeleteConfirmModal,
   PlanEditorModal,
 } from './SaasAdminModals';
 
@@ -109,6 +114,8 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
 
   // Modals
   const [editingPlan, setEditingPlan] = useState<Plan | null>(null);
+  const [deletingPlan, setDeletingPlan] = useState<Plan | null>(null);
+  const [togglingPlanId, setTogglingPlanId] = useState<string | null>(null);
   const [selectedTenant, setSelectedTenant] = useState<SaasAdminTenantRecord | null>(null);
   const [manualPaymentInvoice, setManualPaymentInvoice] = useState<SaasInvoice | null>(null);
   const [isManualPaymentOpen, setIsManualPaymentOpen] = useState(false);
@@ -120,30 +127,94 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
   const [targetSuperAdminEmail, setTargetSuperAdminEmail] = useState('admin@drnewtonmureb.com.br');
   const [requireEmailConfirmation, setRequireEmailConfirmation] = useState(false);
 
-  const loadSaasData = useCallback(async () => {
+  const loadSaasData = useCallback(async (): Promise<boolean> => {
     setIsLoading(true);
     setLoadError(null);
     const res = await SaasAdminCloudService.fetchDashboardData();
     if (!res.success || !res.data) {
       setLoadError(res.error || 'Erro ao carregar dados administrativos do servidor SaaS.');
       setIsLoading(false);
-      return;
+      return false;
     }
     setPlans(sortPlansByCommercialOrder(res.data.plans));
     setTenants(res.data.tenants);
     setInvoices(res.data.invoices);
     setAuditLogs(res.data.auditLogs);
     setIsLoading(false);
+    return true;
   }, []);
 
   useEffect(() => {
     void loadSaasData();
   }, [loadSaasData]);
 
-  const showToast = (msg: string) => {
-    setFeedbackMessage(msg);
+  const showToast = async (msg: string) => {
     setErrorMessage(null);
-    void loadSaasData();
+    const refreshed = await loadSaasData();
+    if (refreshed) {
+      setFeedbackMessage(msg);
+    } else {
+      setFeedbackMessage(null);
+      setErrorMessage('Alteração enviada, mas não foi possível confirmar a releitura no Supabase.');
+    }
+  };
+
+  const handleOpenCreatePlan = () => {
+    setEditingPlan({
+      id: '',
+      code: '',
+      name: '',
+      description: '',
+      priceMonthly: 0,
+      priceQuarterly: 0,
+      priceYearly: 0,
+      quarterlyDiscountPercent: 10,
+      yearlyDiscountPercent: 20,
+      displayOrder: Math.max(4, plans.length + 1),
+      trialDays: 0,
+      maxBranches: 1,
+      maxUsers: 5,
+      maxPatients: 1000,
+      hasPatientSharing: false,
+      hasWhatsAppAutomation: false,
+      hasCustomWebsite: true,
+      hasFinancialModule: true,
+      hasAdvancedReports: false,
+      isPopular: false,
+      isActive: true,
+    });
+  };
+
+  const handleToggleArchivePlan = async (plan: Plan) => {
+    if (togglingPlanId) return;
+    setErrorMessage(null);
+    setFeedbackMessage(null);
+    setTogglingPlanId(plan.id);
+    try {
+      const nextActive = !plan.isActive;
+      const res = await SaasAdminCloudService.archivePlan(
+        plan.id,
+        nextActive,
+        nextActive
+          ? 'Plano reativado na Administração Geral SaaS'
+          : 'Plano arquivado / desativado na Administração Geral SaaS'
+      );
+      if (!res.success) {
+        if (res.notFound) {
+          await loadSaasData();
+        }
+        setErrorMessage(res.error || 'Não foi possível alterar o status comercial do plano.');
+        return;
+      }
+      await showToast(
+        res.message ||
+          (nextActive
+            ? `Plano "${plan.name}" reativado para comercialização.`
+            : `Plano "${plan.name}" arquivado preservando o histórico.`)
+      );
+    } finally {
+      setTogglingPlanId(null);
+    }
   };
 
   // Enrich tenants with canonical license calculation
@@ -900,19 +971,32 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
                 Catálogo Comercial de Planos (Fonte Única de Verdade)
               </h2>
               <p className="text-slate-600">
-                Alterações de preço mensal, descontos trimestrais/anuais, ordem e disponibilidade atualizam a Landing Page e o Checkout imediatamente.
+                Alterações de preço mensal, descontos trimestrais/anuais, arquivamento, exclusão e ordem atualizam a Landing Page e o Checkout diretamente no Supabase.
               </p>
             </div>
+            <button
+              type="button"
+              onClick={handleOpenCreatePlan}
+              className="px-4 py-2 bg-purple-700 hover:bg-purple-800 text-white font-bold rounded-xl inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 self-start sm:self-auto"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Novo Plano</span>
+            </button>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
             {plans.map((plan) => {
               const qCalc = calculatePlanCyclePricing(plan, 'quarterly');
               const yCalc = calculatePlanCyclePricing(plan, 'yearly');
+              const isTrialPlan = plan.code === 'trial' || plan.priceMonthly <= 0;
+              const isToggling = togglingPlanId === plan.id;
+
               return (
                 <div
                   key={plan.id}
-                  className="p-5 bg-white rounded-2xl border border-slate-200 flex flex-col justify-between space-y-4 text-xs"
+                  className={`p-5 bg-white rounded-2xl border flex flex-col justify-between space-y-4 text-xs ${
+                    plan.isActive ? 'border-slate-200' : 'border-slate-300 bg-slate-50/70'
+                  }`}
                 >
                   <div className="space-y-3">
                     <div className="flex items-start justify-between gap-2">
@@ -923,13 +1007,15 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
                         <h3 className="text-base font-bold text-slate-900">{plan.name}</h3>
                       </div>
                       <span
-                        className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${
+                        className={`px-2 py-0.5 rounded border text-[11px] font-semibold whitespace-nowrap ${
                           plan.isActive
                             ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : plan.archivedAt
+                            ? 'bg-amber-50 text-amber-800 border-amber-200'
                             : 'bg-slate-100 text-slate-600 border-slate-300'
                         }`}
                       >
-                        {plan.isActive ? 'Ativo' : 'Oculto'}
+                        {plan.isActive ? 'Ativo' : plan.archivedAt ? 'Arquivado' : 'Oculto'}
                       </span>
                     </div>
 
@@ -938,22 +1024,25 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
                     <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1 font-mono tabular-nums">
                       <div className="flex justify-between">
                         <span className="text-slate-600">Mensal:</span>
-                        <strong className="text-slate-900">R$ {formatBrl(plan.priceMonthly)}</strong>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-600">
-                          Trimestral ({qCalc.discountPercent}% off):
-                        </span>
                         <strong className="text-slate-900">
-                          R$ {formatBrl(qCalc.finalPeriodAmount)}
+                          R$ {formatBrl(plan.priceMonthly)}
+                          {isTrialPlan ? ` · ${plan.trialDays || 10} dias` : ''}
                         </strong>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-600">
-                          Anual ({yCalc.discountPercent}% off):
+                          {isTrialPlan ? 'Trimestral:' : `Trimestral (${qCalc.discountPercent}% off):`}
                         </span>
-                        <strong className="text-slate-900">
-                          R$ {formatBrl(yCalc.finalPeriodAmount)}
+                        <strong className={isTrialPlan ? 'text-slate-500 font-sans' : 'text-slate-900'}>
+                          {isTrialPlan ? 'Não aplicável' : `R$ ${formatBrl(qCalc.finalPeriodAmount)}`}
+                        </strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-600">
+                          {isTrialPlan ? 'Anual:' : `Anual (${yCalc.discountPercent}% off):`}
+                        </span>
+                        <strong className={isTrialPlan ? 'text-slate-500 font-sans' : 'text-slate-900'}>
+                          {isTrialPlan ? 'Não aplicável' : `R$ ${formatBrl(yCalc.finalPeriodAmount)}`}
                         </strong>
                       </div>
                     </div>
@@ -971,14 +1060,56 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => setEditingPlan(plan)}
-                    className="w-full py-2 px-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl inline-flex items-center justify-center gap-1.5"
-                  >
-                    <Edit className="w-3.5 h-3.5" />
-                    <span>Editar Preços, Descontos e Limites</span>
-                  </button>
+                  <div className="space-y-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setEditingPlan(plan)}
+                      className="w-full py-2 px-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl inline-flex items-center justify-center gap-1.5"
+                    >
+                      <Edit className="w-3.5 h-3.5" />
+                      <span>Editar Preços, Descontos e Limites</span>
+                    </button>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        disabled={plan.code === 'trial' || isToggling}
+                        onClick={() => void handleToggleArchivePlan(plan)}
+                        title={
+                          plan.code === 'trial'
+                            ? 'O plano Grátis é obrigatório para novos cadastros'
+                            : plan.isActive
+                            ? 'Arquivar / desativar comercialização'
+                            : 'Reativar comercialização'
+                        }
+                        className="py-1.5 px-2.5 border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-45 text-slate-700 font-semibold rounded-xl inline-flex items-center justify-center gap-1"
+                      >
+                        {isToggling ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : plan.isActive ? (
+                          <Archive className="w-3.5 h-3.5" />
+                        ) : (
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        )}
+                        <span>{plan.isActive ? 'Arquivar' : 'Reativar'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={plan.code === 'trial'}
+                        onClick={() => setDeletingPlan(plan)}
+                        title={
+                          plan.code === 'trial'
+                            ? 'O plano Grátis sustenta o teste gratuito e não pode ser excluído'
+                            : 'Excluir plano se não houver vínculos'
+                        }
+                        className="py-1.5 px-2.5 border border-rose-200 bg-rose-50/70 hover:bg-rose-100 disabled:opacity-45 text-rose-800 font-semibold rounded-xl inline-flex items-center justify-center gap-1"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Excluir</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               );
             })}
@@ -1300,6 +1431,13 @@ export const SaasAdminDashboard: React.FC<SaasAdminDashboardProps> = ({
         plan={editingPlan}
         onClose={() => setEditingPlan(null)}
         onSaved={showToast}
+        onRefreshList={loadSaasData}
+      />
+
+      <PlanDeleteConfirmModal
+        plan={deletingPlan}
+        onClose={() => setDeletingPlan(null)}
+        onCompleted={showToast}
       />
 
       <OrganizationDetailModal

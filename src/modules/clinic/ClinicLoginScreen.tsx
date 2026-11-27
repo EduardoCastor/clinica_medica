@@ -13,12 +13,14 @@ import {
   Loader2,
   CheckCircle2,
   UserPlus,
+  ArrowLeft,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTenant } from '../../contexts/TenantContext';
 import { ClinicBrandLogo, CLINIC_OFFICIAL_DATA } from '../../components/ClinicBrandLogo';
 import { FirstAccessBootstrapPanel } from './FirstAccessBootstrapPanel';
 import { getSupabaseConfigError } from '../../services/supabaseClient';
+import { DomainResolver } from '../../services/domainResolver';
 
 interface ClinicLoginScreenProps {
   onSuccess?: () => void;
@@ -345,6 +347,19 @@ export const ClinicLoginScreen: React.FC<ClinicLoginScreenProps> = ({ onSuccess 
             <span>Conformidade CFM nº 1.821/2007 · LGPD Dados Sensíveis · Acesso Autenticado</span>
           </div>
         </div>
+
+        {(DomainResolver.isClinicLoginRoute() || DomainResolver.isSimulationAllowed()) && (
+          <div className="text-center">
+            <button
+              type="button"
+              onClick={() => DomainResolver.navigateToLanding()}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-slate-900 transition"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Voltar para a página institucional do MedSync</span>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

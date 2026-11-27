@@ -3,6 +3,7 @@ import { BillingCycle, LicenseStatus, OnboardingProgress, Organization, Plan } f
 export interface CyclePricingBreakdown {
   cycle: BillingCycle;
   isTrial: boolean;
+  isApplicable: boolean;
   months: number;
   baseMonthly: number;
   fullPeriodAmount: number;
@@ -123,6 +124,7 @@ export function formatBrl(value: number): string {
 }
 
 export function deriveQuarterlyDiscount(plan: Plan): number {
+  if (plan.code === 'trial' || (plan.priceMonthly || 0) <= 0) return 0;
   if (plan.quarterlyDiscountPercent !== undefined && plan.quarterlyDiscountPercent !== null) {
     return clampDiscountPercent(plan.quarterlyDiscountPercent);
   }
@@ -130,10 +132,11 @@ export function deriveQuarterlyDiscount(plan: Plan): number {
     const full = plan.priceMonthly * 3;
     return clampDiscountPercent((1 - plan.priceQuarterly / full) * 100);
   }
-  return plan.code === 'trial' || plan.priceMonthly <= 0 ? 0 : 10;
+  return 10;
 }
 
 export function deriveYearlyDiscount(plan: Plan): number {
+  if (plan.code === 'trial' || (plan.priceMonthly || 0) <= 0) return 0;
   if (plan.yearlyDiscountPercent !== undefined && plan.yearlyDiscountPercent !== null) {
     return clampDiscountPercent(plan.yearlyDiscountPercent);
   }
@@ -141,7 +144,7 @@ export function deriveYearlyDiscount(plan: Plan): number {
     const full = plan.priceMonthly * 12;
     return clampDiscountPercent((1 - plan.priceYearly / full) * 100);
   }
-  return plan.code === 'trial' || plan.priceMonthly <= 0 ? 0 : 20;
+  return 20;
 }
 
 export function calculatePlanCyclePricing(
@@ -155,6 +158,7 @@ export function calculatePlanCyclePricing(
     return {
       cycle: 'trial',
       isTrial: true,
+      isApplicable: false,
       months: 0,
       baseMonthly: 0,
       fullPeriodAmount: 0,
@@ -168,15 +172,11 @@ export function calculatePlanCyclePricing(
   if (cycle === 'quarterly') {
     const discountPercent = deriveQuarterlyDiscount(plan);
     const fullPeriodAmount = roundMoney(baseMonthly * 3);
-    const finalPeriodAmount =
-      plan.priceQuarterly &&
-      plan.priceQuarterly > 0 &&
-      plan.quarterlyDiscountPercent === undefined
-        ? roundMoney(plan.priceQuarterly)
-        : roundMoney(fullPeriodAmount * (1 - discountPercent / 100));
+    const finalPeriodAmount = roundMoney(fullPeriodAmount * (1 - discountPercent / 100));
     return {
       cycle: 'quarterly',
       isTrial: false,
+      isApplicable: true,
       months: 3,
       baseMonthly,
       fullPeriodAmount,
@@ -190,13 +190,11 @@ export function calculatePlanCyclePricing(
   if (cycle === 'yearly') {
     const discountPercent = deriveYearlyDiscount(plan);
     const fullPeriodAmount = roundMoney(baseMonthly * 12);
-    const finalPeriodAmount =
-      plan.priceYearly > 0 && plan.yearlyDiscountPercent === undefined
-        ? roundMoney(plan.priceYearly)
-        : roundMoney(fullPeriodAmount * (1 - discountPercent / 100));
+    const finalPeriodAmount = roundMoney(fullPeriodAmount * (1 - discountPercent / 100));
     return {
       cycle: 'yearly',
       isTrial: false,
+      isApplicable: true,
       months: 12,
       baseMonthly,
       fullPeriodAmount,
@@ -210,6 +208,7 @@ export function calculatePlanCyclePricing(
   return {
     cycle: 'monthly',
     isTrial: false,
+    isApplicable: true,
     months: 1,
     baseMonthly,
     fullPeriodAmount: baseMonthly,
